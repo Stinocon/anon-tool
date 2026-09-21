@@ -56,6 +56,13 @@ is the list of what a second pass should pick up, roughly in the order I would t
 - The CI job installs the converter and skips its tests if that fails — the skip should be visible
   in the run summary rather than only in the log.
 
+## Found while closing (fixed, but the cause is worth knowing)
+
+- A tool run over a *decisions* directory can leave `DEC-XXXX.redacted.md` next to `DEC-XXXX.md`.
+  `verify.py` maps `id -> file` and keeps the last match alphabetically, so such a file can shadow
+  the real decision during verification. Prevented with `.gitignore` entries in the decisions store;
+  the structural fix (make the decision scan ignore `*.redacted.*`) is still **open**.
+
 ## Verified today (not open)
 
 - The Pi skill integration works end to end: `convert → anon → --check → audit → deanon`, with the
