@@ -50,6 +50,7 @@ ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
 DEFAULT_ENTITIES = ANON_HOME / "entities.txt"
 DEFAULT_MAPS = ANON_HOME / "maps"
 DEFAULT_ALLOW = ANON_HOME / "allow.txt"
+CATALOGS_DIR = ANON_HOME / "catalogs"
 
 PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*-\d+\]")
 
@@ -184,6 +185,80 @@ _PLACEHOLDER_PREFIX = re.compile(
 )
 
 
+# --- Italian/IBAN identifiers: FORMAT + CHECKSUM. A validated identifier has almost no false
+# positives, which is the opposite of a word list — this is where a privacy tool gets its
+# precision. Algorithms: DPR 633/1972 (partita IVA), the standard CF check-character tables,
+# ISO 13616 mod-97 (IBAN).
+_OMOCodia = str.maketrans({"L": "0", "M": "1", "N": "2", "P": "3", "Q": "4",
+                          "R": "5", "S": "6", "T": "7", "U": "8", "V": "9"})
+_CF_ODD = {
+    "0": 1, "1": 0, "2": 5, "3": 7, "4": 9, "5": 13, "6": 15, "7": 17, "8": 19, "9": 21,
+    "A": 1, "B": 0, "C": 5, "D": 7, "E": 9, "F": 13, "G": 15, "H": 17, "I": 19, "J": 21,
+    "K": 2, "L": 4, "M": 18, "N": 20, "O": 11, "P": 3, "Q": 6, "R": 8, "S": 12, "T": 14,
+    "U": 16, "V": 10, "W": 22, "X": 25, "Y": 24, "Z": 23,
+}
+# Even positions: a digit is its own value, a letter is its 0-based alphabet index (A=0..Z=25).
+_CF_EVEN = {
+    **{str(digit): digit for digit in range(10)},
+    **{char: index for index, char in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ")},
+}
+_CF_FORMAT = re.compile(
+    r"[A-Z]{6}[0-9LMNPQRSTUV]{2}[ABCDEHLMPRST][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z]"
+)
+
+
+def _valid_codice_fiscale(value: str) -> bool:
+    """16 chars whose 16th is the check character computed from the first 15."""
+    candidate = value.strip().upper()
+    if not _CF_FORMAT.fullmatch(candidate):
+        return False
+    # Omocodia: a numeric field may be written with letters (0->L, 1->M, ...). Decode first.
+    body = candidate[:15]
+    digits = [body[6], body[7], body[9], body[10], body[12], body[13], body[14]]
+    decoded = "".join(digits).translate(_OMOCodia)
+    if not decoded.isdigit():
+        return False
+    body = body[:6] + decoded[0:2] + body[8] + decoded[2:4] + body[11] + decoded[4:7]
+    total = 0
+    for index, char in enumerate(body, start=1):
+        total += _CF_ODD[char] if index % 2 else _CF_EVEN[char]
+    return "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[total % 26] == candidate[15]
+
+
+def _valid_partita_iva(value: str) -> bool:
+    """11 digits; the 11th is (10 - total mod 10) mod 10, doubling the EVEN positions."""
+    candidate = re.sub(r"\D", "", value)
+    if len(candidate) != 11:
+        return False
+    total = 0
+    for index, char in enumerate(candidate[:10], start=1):
+        digit = int(char)
+        if index % 2 == 0:
+            doubled = digit * 2
+            total += doubled // 10 + doubled % 10
+        else:
+            total += digit
+    return (10 - total % 10) % 10 == int(candidate[10])
+
+
+_IBAN_FORMAT = re.compile(r"[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}")
+
+
+def _valid_iban(value: str) -> bool:
+    """ISO 13616: move the first 4 chars to the end, letters -> 10..35, mod 97 must be 1."""
+    candidate = re.sub(r"[\s\-]", "", value).upper()
+    if not _IBAN_FORMAT.fullmatch(candidate):
+        return False
+    rearranged = candidate[4:] + candidate[:4]
+    numeric = "".join(str(int(char, 36)) for char in rearranged)
+    return int(numeric) % 97 == 1
+
+
+def _valid_targa(value: str) -> bool:
+    """Current Italian plate format (AA123BB). No checksum exists, so the format is the rule."""
+    return bool(re.fullmatch(r"[A-Z]{2}\d{3}[A-Z]{2}", value.strip().upper()))
+
+
 def _valid_secret(value: str) -> bool:
     """False for values that are placeholders (`your-api-key-here`, `changeme`)."""
     lowered = value.casefold().strip()
@@ -202,9 +277,12 @@ def _valid_secret(value: str) -> bool:
 class Rule:
     type: str
     regex: re.Pattern[str]
-    group: int = 0
+    capture: int = 0
     validator: Callable[[str], bool] | None = None
     trim_trailing: str = ""
+    # Pattern family, so a caller can enable/disable a whole class (`identity`, `network`,
+    # `legal`). Ticked on demand in the UI, `--patterns` on the command line.
+    family: str = "identity"
     # When the validator rejects a match, retry with trailing labels removed. A hostname
     # followed by a file extension (`db01.azienda.it.log`) must still yield the host.
     shrink_labels: bool = False
@@ -240,7 +318,7 @@ RULES: tuple[Rule, ...] = (
     Rule(
         "KEY",
         re.compile(r"(?i:bearer)\s+([A-Za-z0-9._\-]{20,})", re.IGNORECASE),
-        group=1,
+        capture=1,
         validator=_valid_secret,
     ),
     Rule(
@@ -253,17 +331,58 @@ RULES: tuple[Rule, ...] = (
             r"\b\s*[:=]\s*[\"']?)"
             r"([A-Za-z0-9._\-+/=]{8,})"
         ),
-        group=1,
+        capture=1,
         validator=_valid_secret,
+    ),
+    # --- legal/administrative identifiers (validated, so precision is high) ----------------
+    Rule(
+        "CODICEFISCALE",
+        re.compile(r"(?<![\w])[A-Z]{6}[0-9LMNPQRSTUV]{2}[ABCDEHLMPRST][0-9LMNPQRSTUV]{2}[A-Z][0-9LMNPQRSTUV]{3}[A-Z](?![\w])", re.IGNORECASE),
+        validator=_valid_codice_fiscale,
+        family="legal",
+    ),
+    Rule(
+        "PARTITAIVA",
+        # `(?:IT)?` — writing `IT?` would mean "an I followed by an optional T".
+        re.compile(r"(?<![\d.])(?:IT)?\s?(\d{11})(?!\d)", re.IGNORECASE),
+        capture=1,
+        validator=_valid_partita_iva,
+        family="legal",
+    ),
+    Rule(
+        "IBAN",
+        re.compile(r"(?<![\w])IT\s?\d{2}\s?[A-Z]\s?(?:[A-Z0-9]\s?){10,30}(?![\w])", re.IGNORECASE),
+        validator=_valid_iban,
+        family="legal",
+    ),
+    Rule(
+        "TARGA",
+        re.compile(r"(?<![\w])[A-Z]{2}\s?\d{3}\s?[A-Z]{2}(?![\w])"),
+        validator=_valid_targa,
+        family="legal",
+    ),
+    Rule(
+        # An address identifies a person as surely as a name does. The marker word is required,
+        # and at least one name token plus a civic number: `via Roma 12`, `Piazza G. Verdi, 3`.
+        "INDIRIZZO",
+        re.compile(
+            r"(?<![\w])(?:via|viale|v\\.?le|piazza|piazzale|p\\.?zza|corso|strada|vicolo|largo|"
+            r"lungomare)\s+[A-Za-zÀ-Ý][\w'’\-]*(?:\s+[\w'’\-]+){0,4}?[,\s]+(?:n\\.?\s*)?"
+            r"(\d{1,4})(?:\s*[/\-]\s*\d{1,3})?(?![\w])",
+            re.IGNORECASE,
+        ),
+        validator=lambda value: len(re.findall(r"\d", value)) >= 1,
+        family="legal",
     ),
 )
 
 HEURISTIC_RULES: tuple[Rule, ...] = (
-    Rule("IP", re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])"), validator=_valid_ip),
+    Rule("IP", re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])"), validator=_valid_ip, family="network"),
     Rule(
         "IP",
         re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])"),
         validator=_valid_ip,
+        family="network",
     ),
     Rule(
         "TEL",
@@ -274,6 +393,7 @@ HEURISTIC_RULES: tuple[Rule, ...] = (
             r"|3\d{2}[\s.\-/]?\d{3,4}[\s.\-/]?\d{3})(?![\w])"
         ),
         validator=_valid_phone,
+        family="network",
     ),
     Rule(
         "HOST",
@@ -283,8 +403,11 @@ HEURISTIC_RULES: tuple[Rule, ...] = (
         ),
         validator=_valid_host,
         shrink_labels=True,
+        family="network",
     ),
 )
+
+PATTERN_FAMILIES = ("identity", "network", "legal")
 
 
 # Legal forms are stripped from the dictionary value and tolerated as an optional suffix, so a
@@ -307,7 +430,31 @@ LEGAL_SUFFIX_RE = r"(?:\s+" + LEGAL_FORM_SRC + r"(?![a-z0-9]))?"
 NAME_SEPARATOR_RE = r"[\s.\-_'’,]+"
 
 
-def _entity_regexes(value: str) -> list[re.Pattern[str]]:
+ENTITY_GROUP = "entity"
+
+
+@dataclass(frozen=True)
+class Entity:
+    """A dictionary entry: what to look for, what it is, and how it matches."""
+
+    type: str
+    surface: str
+    regex: re.Pattern[str]
+
+    def spans(self, text: str):
+        """Yield (start, end, matched_text) for every occurrence."""
+        for match in self.regex.finditer(text):
+            start, end = match.span(ENTITY_GROUP)
+            yield start, end, match.group(ENTITY_GROUP)
+
+
+def _entity_regexes(
+    value: str,
+    *,
+    stem: bool = False,
+    case_sensitive: bool = False,
+    context: str | None = None,
+) -> list[re.Pattern[str]]:
     """One regex per Unicode normalization form, so a macOS NFD file matches an NFC dictionary."""
     tokens = [token for token in re.split(r"\s+", value.strip()) if token]
     # `len(tokens) > 1`: a company literally named "SA"/"AG"/"AB" must stay declarable. Stripping
@@ -316,56 +463,137 @@ def _entity_regexes(value: str) -> list[re.Pattern[str]]:
         tokens.pop()
     if not tokens:
         return []
-    body = NAME_SEPARATOR_RE.join(re.escape(token) for token in tokens)
-    patterns = {unicodedata.normalize(form, body) for form in ("NFC", "NFD")}
-    return [
-        re.compile(r"(?<!\w)" + form + LEGAL_SUFFIX_RE + r"(?!\w)", re.IGNORECASE) for form in patterns
-    ]
+    core = NAME_SEPARATOR_RE.join(re.escape(token) for token in tokens) + LEGAL_SUFFIX_RE
+    if stem:
+        # `Pincopallino` must also cover `Pincopallino1`, `Pincopallino-DB01`, `PINCOPALLINO_srv`.
+        # Opt-in per entry: on a common word a stem rule would over-redact.
+        core += r"[\w\-]*"
+    # Case sensitivity applies to the ENTITY only: a `@context` marker like "comune di" must
+    # still match however it is capitalized in the document, while `Prato` must not match `prato`.
+    inner = f"(?-i:{core})" if case_sensitive else core
+    named = f"(?P<{ENTITY_GROUP}>{inner})"
+    if context:
+        # The context is looked for but NOT captured: only the entity span is redacted.
+        named = f"(?:{context})(?<!\\w){named}"
+    else:
+        named = r"(?<!\w)" + named
+    pattern = named + r"(?!\w)"
+    forms = {unicodedata.normalize(form, pattern) for form in ("NFC", "NFD")}
+    return [re.compile(form, re.IGNORECASE) for form in forms]
 
 
-def load_entities(path: Path) -> list[tuple[str, str, re.Pattern[str]]]:
-    """Parse the dictionary into case-insensitive rules.
+# Directives apply to the entries that FOLLOW them, so one file can mix behaviours (a
+# case-sensitive, context-gated city catalog next to plain names).
+KNOWN_DIRECTIVES = ("type", "stem", "match", "context")
+_TRUE = ("", "on", "true", "yes", "1")
+_FALSE = ("off", "false", "no", "0")
+
+
+def load_entities(path: Path) -> list[Entity]:
+    """Parse a dictionary/catalog file.
 
     Line syntax:
         TYPE|value                a single surface form
         TYPE|value|alias|alias    extra surface forms of the same entity
         value                     no `|` -> TYPE is ALTRO
+        @type X                   type for the entries that follow
+        @stem on|off              `Pincopallino` also matches `Pincopallino1`
+        @match case-sensitive     do not case-fold (proper nouns: `Brescia`, not `prato`)
+        @context <regex>          only match when preceded by this context
 
-    Variants are matched thanks to case folding, legal-form tolerance and separator tolerance;
-    each distinct surface form still gets its OWN placeholder, which keeps anon -> deanon
-    lossless (the exact spelling is restored, not a canonicalized one).
+    An unknown directive is a hard ERROR, never ignored: a typo in `@stem`/`@context` would
+    silently change what gets redacted, and silent under-redaction is a leak.
     """
     if not path.exists():
         return []
-    entries: list[tuple[str, str, re.Pattern[str]]] = []
+    entries: list[Entity] = []
     seen: set[tuple[str, str]] = set()
+    ptype, stem, case_sensitive, context = "ALTRO", False, False, None
+
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith("@"):
+            name, _, argument = line[1:].partition(" ")
+            name, argument = name.strip().lower(), argument.strip()
+            if name not in KNOWN_DIRECTIVES:
+                raise ValueError(f"{path}:{lineno}: unknown directive '@{name}'")
+            if name == "type":
+                if not argument:
+                    raise ValueError(f"{path}:{lineno}: @type needs a value")
+                ptype = argument.upper()
+            elif name == "stem":
+                if argument.lower() not in _TRUE + _FALSE:
+                    raise ValueError(f"{path}:{lineno}: @stem takes on|off, not {argument!r}")
+                stem = argument.lower() in _TRUE
+            elif name == "match":
+                if argument.lower() not in ("case-sensitive", "sensitive", "insensitive", "case-insensitive", "i"):
+                    raise ValueError(f"{path}:{lineno}: @match takes case-sensitive|insensitive")
+                case_sensitive = argument.lower() in ("case-sensitive", "sensitive")
+            else:  # context
+                if not argument:
+                    raise ValueError(f"{path}:{lineno}: @context needs a regex")
+                try:
+                    re.compile(argument)  # fail loudly on a broken context, not at match time
+                except re.error as exc:
+                    # Normalized to ValueError so every bad-dictionary failure reaches the caller
+                    # as one error type (the CLI turns it into exit 2).
+                    raise ValueError(f"{path}:{lineno}: invalid @context regex: {exc}") from exc
+                context = argument
+            continue
+
         fields = [field.strip() for field in line.split("|")]
         if len(fields) >= 2:
-            ptype = (fields[0] or "ALTRO").upper()
+            line_type = (fields[0] or ptype).upper()
             forms = [form for form in fields[1:] if form]
         else:
-            ptype, forms = "ALTRO", [line]
+            line_type, forms = ptype, [line]
         if not forms:
-            print(f"anon: entities.txt line {lineno}: no value, skipped", file=sys.stderr)
+            print(f"anon: {path.name} line {lineno}: no value, skipped", file=sys.stderr)
             continue
         for value in forms:
-            key = (ptype, value.casefold())
+            key = (line_type, value.casefold())
             if key in seen:
                 continue
             seen.add(key)
-            regexes = _entity_regexes(value)
+            regexes = _entity_regexes(
+                value, stem=stem, case_sensitive=case_sensitive, context=context
+            )
             if not regexes:
-                print(f"anon: entities.txt line {lineno}: '{ptype}' has no usable name, skipped", file=sys.stderr)
+                print(f"anon: {path.name} line {lineno}: '{line_type}' has no usable name, skipped", file=sys.stderr)
                 continue
-            for regex in regexes:
-                entries.append((ptype, value, regex))
+            entries.extend(Entity(line_type, value, regex) for regex in regexes)
     # Longest surface first, so "Acme Italia" wins over "Acme".
-    entries.sort(key=lambda item: len(item[1]), reverse=True)
+    entries.sort(key=lambda entity: len(entity.surface), reverse=True)
     return entries
+
+
+def load_entities_many(paths: Iterable[Path]) -> list[Entity]:
+    """The custom dictionary plus every selected catalog, as one list."""
+    merged: list[Entity] = []
+    for path in paths:
+        merged.extend(load_entities(Path(path).expanduser()))
+    merged.sort(key=lambda entity: len(entity.surface), reverse=True)
+    return merged
+
+
+def catalog_path(name: str) -> Path:
+    return CATALOGS_DIR / (name if name.endswith(".txt") else f"{name}.txt")
+
+
+def list_catalogs() -> list[dict[str, object]]:
+    """Available catalogs (name, path, entry count) for `--list-catalogs` and the web UI."""
+    if not CATALOGS_DIR.is_dir():
+        return []
+    available = []
+    for path in sorted(CATALOGS_DIR.glob("*.txt")):
+        try:
+            count = len(load_entities(path))
+        except ValueError:
+            count = -1
+        available.append({"name": path.stem, "path": str(path), "entries": count})
+    return available
 
 
 def load_allowlist(path: Path) -> list[str]:
@@ -393,10 +621,15 @@ def is_allowed(path: Path, patterns: Iterable[str]) -> bool:
 
 def detect(
     text: str,
-    entities: list[tuple[str, str, re.Pattern[str]]],
+    entities: list[Entity],
     include_heuristics: bool = True,
+    families: Iterable[str] | None = None,
 ) -> list[tuple[int, int, str]]:
-    """Return non-overlapping (start, end, TYPE) spans of sensitive content, in order."""
+    """Return non-overlapping (start, end, TYPE) spans of sensitive content, in order.
+
+    `families` limits which pattern groups run (None = all). The curated dictionary is always
+    applied: it is the operator's own list, not a default.
+    """
     claimed = bytearray(len(text))
     found: list[tuple[int, int, str]] = []
 
@@ -415,8 +648,10 @@ def detect(
         found.append((start, end, ptype))
 
     def apply(rule: Rule) -> None:
+        if families is not None and rule.family not in families:
+            return
         for m in rule.regex.finditer(text):
-            group = rule.group
+            group = rule.capture
             if group and m.group(group) is None:
                 continue
             start, end = (m.start(group), m.end(group)) if group else (m.start(), m.end())
@@ -440,9 +675,9 @@ def detect(
 
     for rule in RULES:
         apply(rule)
-    for ptype, _value, regex in entities:
-        for m in regex.finditer(text):
-            claim(m.start(), m.end(), ptype, m.group(0))
+    for entity in entities:
+        for start, end, value in entity.spans(text):
+            claim(start, end, entity.type, value)
     if include_heuristics:
         for rule in HEURISTIC_RULES:
             apply(rule)
@@ -451,10 +686,13 @@ def detect(
 
 
 def anonymize(
-    text: str, entities: list[tuple[str, str, re.Pattern[str]]], include_heuristics: bool = True
+    text: str,
+    entities: list[Entity],
+    include_heuristics: bool = True,
+    families: Iterable[str] | None = None,
 ) -> tuple[str, dict[str, dict[str, str]], dict[str, int]]:
     """Replace sensitive spans with stable placeholders. Returns (redacted, entries, counts)."""
-    found = detect(text, entities, include_heuristics)
+    found = detect(text, entities, include_heuristics, families)
     by_key: dict[tuple[str, str], str] = {}
     counters: dict[str, int] = {}
     entries: dict[str, dict[str, str]] = {}
@@ -504,6 +742,37 @@ def _write_private(path: Path, data: str) -> None:
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def resolve_entities(args: argparse.Namespace) -> list[Entity]:
+    """The custom dictionary plus the selected catalogs, as one list."""
+    paths: list[Path] = [Path(args.entities).expanduser() if args.entities else DEFAULT_ENTITIES]
+    requested = getattr(args, "catalogs", None)
+    if requested:
+        for name in (item.strip() for item in requested.split(",")):
+            if not name:
+                continue
+            path = catalog_path(name)
+            if not path.is_file():
+                available = ", ".join(item["name"] for item in list_catalogs()) or "(none installed)"
+                raise ValueError(f"unknown catalog '{name}' — available: {available}")
+            paths.append(path)
+    return load_entities_many(paths)
+
+
+def resolve_families(args: argparse.Namespace) -> set[str] | None:
+    """`--patterns identity,network` restricts the built-in pattern groups (default: all)."""
+    requested = getattr(args, "patterns", None)
+    if not requested:
+        return None
+    families = {item.strip().lower() for item in requested.split(",") if item.strip()}
+    unknown = families - set(PATTERN_FAMILIES)
+    if unknown:
+        raise ValueError(
+            f"unknown pattern group(s): {', '.join(sorted(unknown))} — "
+            f"available: {', '.join(PATTERN_FAMILIES)}"
+        )
+    return families
 
 
 # A .docx/.xlsx/.pptx/.odt is a ZIP; .doc/.xls a CFB; a PDF starts with %PDF-. Reading any of
@@ -578,9 +847,9 @@ def cmd_check(args: argparse.Namespace) -> int:
     if args.file == "-":
         # stdin mode: check arbitrary text (e.g. the Markdown anon-guard just produced)
         # without writing a temp file that would hold the very data being inspected.
-        entities = load_entities(Path(args.entities) if args.entities else DEFAULT_ENTITIES)
+        entities = resolve_entities(args)
         text = sys.stdin.read()
-        return _emit_check(args, detect(text, entities), Path("<stdin>"), text=text)
+        return _emit_check(args, detect(text, entities, families=resolve_families(args)), Path("<stdin>"), text=text)
     target = Path(args.file).expanduser()
     allow = load_allowlist(Path(args.allow) if args.allow else DEFAULT_ALLOW)
     if is_allowed(target, allow):
@@ -601,8 +870,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         # tool, so it must NOT be reported as clean. Fail closed.
         return _emit_check(args, [], target, binary=True, unscannable=True)
     text = read_text(target)
-    entities = load_entities(Path(args.entities) if args.entities else DEFAULT_ENTITIES)
-    found = detect(text, entities)
+    entities = resolve_entities(args)
+    found = detect(text, entities, families=resolve_families(args))
     return _emit_check(args, found, target, text=text)
 
 
@@ -661,9 +930,11 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    entities = load_entities(Path(args.entities) if args.entities else DEFAULT_ENTITIES)
+    entities = resolve_entities(args)
     text = read_text(src)
-    redacted, entries, counts = anonymize(text, entities, include_heuristics=not args.no_hosts)
+    redacted, entries, counts = anonymize(
+        text, entities, include_heuristics=not args.no_hosts, families=resolve_families(args)
+    )
 
     if args.stdout:
         sys.stdout.write(redacted)
@@ -721,10 +992,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="anon.py",
         description="Deterministic, local anonymizer: FILE -> redacted copy + reversible map.",
     )
-    parser.add_argument("file", help="text file to anonymize ('-' with --check reads stdin)")
+    parser.add_argument("file", nargs="?", help="text file to anonymize ('-' with --check reads stdin)")
     parser.add_argument("--out", help="write the redacted copy here (default: <name>.redacted.<ext>)")
     parser.add_argument("--map", help="write the map here (default: ~/.anon/maps/<id>.map.json)")
     parser.add_argument("--entities", help="dictionary file (default: ~/.anon/entities.txt)")
+    parser.add_argument("--catalogs", help="comma-separated catalog names from ~/.anon/catalogs/")
+    parser.add_argument("--patterns", help=f"pattern groups to apply: {', '.join(PATTERN_FAMILIES)}")
+    parser.add_argument("--list-catalogs", action="store_true", help="list the installed catalogs and exit")
     parser.add_argument("--allow", help="path-glob allowlist used by --check (default: ~/.anon/allow.txt)")
     parser.add_argument("--check", action="store_true", help="report sensitive content, write nothing")
     parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
@@ -737,7 +1011,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return cmd_check(args) if args.check else cmd_anonymize(args)
+    if args.list_catalogs:
+        available = list_catalogs()
+        if not available:
+            print(f"anon: no catalogs installed under {CATALOGS_DIR}")
+            return 0
+        for item in available:
+            print(f"{item['name']}\t{item['entries']} entries\t{item['path']}")
+        return 0
+    if not args.file:
+        print("anon: a file is required (or use --list-catalogs)", file=sys.stderr)
+        return 2
+    try:
+        return cmd_check(args) if args.check else cmd_anonymize(args)
+    except ValueError as exc:
+        print(f"anon: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

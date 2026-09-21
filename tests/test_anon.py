@@ -41,27 +41,25 @@ sys.modules[_espec.name] = deanon
 _espec.loader.exec_module(deanon)
 
 
+# The synthetic dictionary used by the round-trip tests. Loaded through the REAL parser so the
+# tests exercise the shipped code path (directives, legal forms, normalization) rather than a
+# parallel implementation that could drift.
 ENTITIES = [
-    ("CLIENTE", "Acme", None),
-    ("AZIENDA", "Acme Italia S.r.l.", None),
-    ("SEDE", "Sede di Brescia", None),
-    ("PERSONA", "Mario Rossi", None),
+    ("CLIENTE", "Acme"),
+    ("AZIENDA", "Acme Italia S.r.l."),
+    ("SEDE", "Sede di Brescia"),
+    ("PERSONA", "Mario Rossi"),
 ]
-
-
-def compile_entities(raw: list[tuple[str, str, object]]) -> list[tuple[str, str, object]]:
-    import re
-
-    out = [(t, v, re.compile(r"(?<!\w)" + re.escape(v) + r"(?!\w)", re.IGNORECASE)) for t, v, _ in raw]
-    out.sort(key=lambda item: len(item[1]), reverse=True)
-    return out
 
 
 class RoundTripTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.entities = compile_entities(ENTITIES)
         self._tmpdir = tempfile.mkdtemp(prefix="anon-entities-")
         self.tmp_entities = Path(self._tmpdir) / "entities.txt"
+        self.tmp_entities.write_text(
+            "".join(f"{ptype}|{value}\n" for ptype, value in ENTITIES), encoding="utf-8"
+        )
+        self.entities = anon.load_entities(self.tmp_entities)
 
     def tearDown(self) -> None:
         shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -380,6 +378,39 @@ class CliTest(unittest.TestCase):
         self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
         self.assertIn('"line": 3', res.stdout)
 
+    def test_catalogs_flag_and_pattern_groups(self) -> None:
+        catalogs = self.tmp / "catalogs"
+        catalogs.mkdir()
+        (catalogs / "mycity.txt").write_text(
+            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nBrescia\n", encoding="utf-8"
+        )
+        src = self.tmp / "doc.txt"
+        src.write_text("sede di Brescia, il prato e' verde. CF RSSMRA80A01H501U\n", encoding="utf-8")
+
+        listing = self.run_anon("--list-catalogs")
+        self.assertEqual(listing.returncode, 0)
+        self.assertIn("mycity", listing.stdout)
+
+        with_catalog = self.run_anon(str(src), "--catalogs", "mycity", "--out", str(self.tmp / "a.txt"),
+                                     "--map", str(self.tmp / "a.json"), "--quiet")
+        self.assertEqual(with_catalog.returncode, 0, with_catalog.stderr)
+        redacted = (self.tmp / "a.txt").read_text(encoding="utf-8")
+        self.assertIn("[CITTÀ-1]", redacted)
+        self.assertIn("il prato", redacted, "case-sensitive: the meadow is not a city")
+        self.assertIn("[CODICEFISCALE-1]", redacted)
+
+        identity_only = self.run_anon(str(src), "--patterns", "identity", "--out", str(self.tmp / "b.txt"),
+                                      "--map", str(self.tmp / "b.json"), "--quiet")
+        self.assertEqual(identity_only.returncode, 0, identity_only.stderr)
+        self.assertIn("RSSMRA80A01H501U", (self.tmp / "b.txt").read_text(encoding="utf-8"),
+                      "--patterns identity must leave the legal group off")
+
+    def test_unknown_catalog_or_group_is_an_error(self) -> None:
+        src = self.tmp / "doc.txt"
+        src.write_text("ciao\n", encoding="utf-8")
+        self.assertEqual(self.run_anon(str(src), "--catalogs", "nope").returncode, 2)
+        self.assertEqual(self.run_anon(str(src), "--patterns", "nope").returncode, 2)
+
     def test_allowlist_disables_check(self) -> None:
         (self.tmp / "allow.txt").write_text(f"{self.tmp}/*\n", encoding="utf-8")
         src = self.tmp / "nota.txt"
@@ -387,6 +418,104 @@ class CliTest(unittest.TestCase):
         res = self.run_anon(str(src), "--check", "--json")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn('"allowed": true', res.stdout)
+
+
+class ValidatorTest(unittest.TestCase):
+    """Checksum-validated identifiers: high precision is the whole point of having them."""
+
+    def test_codice_fiscale(self) -> None:
+        self.assertTrue(anon._valid_codice_fiscale("RSSMRA80A01H501U"))          # known-good example
+        self.assertTrue(anon._valid_codice_fiscale("rssmra80a01h501u"))          # case-insensitive
+        self.assertTrue(anon._valid_codice_fiscale("RSSMRA8LA01H501U"))          # omocodia (0 -> L)
+        self.assertFalse(anon._valid_codice_fiscale("RSSMRA80A01H501X"))         # wrong check char
+        self.assertFalse(anon._valid_codice_fiscale("RSSMRA80A01H50"))
+
+    def test_partita_iva(self) -> None:
+        # Worked example from the published algorithm: even positions doubled, digit-sums added.
+        self.assertTrue(anon._valid_partita_iva("02342520158"))
+        self.assertFalse(anon._valid_partita_iva("02342520159"))
+        self.assertFalse(anon._valid_partita_iva("0234252015"))
+
+    def test_iban(self) -> None:
+        self.assertTrue(anon._valid_iban("IT60X0542811101000000123456"))
+        self.assertTrue(anon._valid_iban("IT60 X054 2811 1010 0000 0123 456"))  # spaces allowed
+        self.assertFalse(anon._valid_iban("IT60X0542811101000000123457"))
+
+    def test_targa(self) -> None:
+        self.assertTrue(anon._valid_targa("AB123CD"))
+        self.assertFalse(anon._valid_targa("AB1234C"))
+
+    def test_identifiers_are_detected_in_text(self) -> None:
+        text = (
+            "CF RSSMRA80A01H501U, P.IVA 02342520158, IBAN IT60X0542811101000000123456, "
+            "sede in Via Roma 12, targa AB123CD."
+        )
+        types = {ptype for _s, _e, ptype in anon.detect(text, [])}
+        self.assertEqual(types, {"CODICEFISCALE", "PARTITAIVA", "IBAN", "INDIRIZZO", "TARGA"})
+
+    def test_pattern_families_can_be_selected(self) -> None:
+        text = "CF RSSMRA80A01H501U su 10.0.0.1, mail a@b.it"
+        legal = {ptype for _s, _e, ptype in anon.detect(text, [], families={"legal"})}
+        non_legal = {ptype for _s, _e, ptype in anon.detect(text, [], families={"identity", "network"})}
+        self.assertEqual(legal, {"CODICEFISCALE"})
+        self.assertEqual(non_legal, {"IP", "EMAIL"})
+        self.assertEqual(
+            {ptype for _s, _e, ptype in anon.detect(text, [])},
+            {"CODICEFISCALE", "IP", "EMAIL"},
+            "no families means every family",
+        )
+
+
+class DirectivesTest(unittest.TestCase):
+    """Catalog directives: @type, @stem, @match, @context."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-directives-"))
+        self.file = self.tmp / "cat.txt"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def entities(self, text: str):
+        self.file.write_text(text, encoding="utf-8")
+        return anon.load_entities(self.file)
+
+    def test_stem_covers_numbered_and_suffixed_names(self) -> None:
+        entities = self.entities("@type HOST\n@stem on\nPincopallino\n")
+        for text in ("Pincopallino", "Pincopallino1", "Pincopallino-DB01", "PINCOPALLINO_srv"):
+            self.assertTrue(anon.detect(text, entities), f"stem missed {text!r}")
+        self.assertFalse(anon.detect("Pincopallin", entities), "a shorter word is not the stem")
+
+    def test_stem_is_opt_in_per_entry(self) -> None:
+        entities = self.entities("@type HOST\nPincopallino\n")
+        self.assertTrue(anon.detect("Pincopallino", entities))
+        self.assertFalse(anon.detect("Pincopallino1", entities), "without @stem the suffix is not matched")
+
+    def test_case_sensitive_keeps_lowercase_words_intact(self) -> None:
+        entities = self.entities("@type CITTÀ\n@match case-sensitive\nPrato\n")
+        self.assertTrue(anon.detect("Prato", entities))
+        self.assertFalse(anon.detect("il prato è verde", entities), "`prato` is not a city here")
+
+    def test_context_gates_a_low_signal_entry(self) -> None:
+        entities = self.entities("@type CITTÀ\n@match case-sensitive\n@context (?:comune di|sede di)\\s+\nBrescia\n")
+        self.assertTrue(anon.detect("sede di Brescia", entities))
+        self.assertFalse(anon.detect("Brescia", entities), "without the context marker it is not redacted")
+        # only the city is redacted, the context marker stays readable
+        found = anon.detect("comune di Brescia", entities)
+        self.assertEqual(["comune di Brescia"[s:e] for s, e, _t in found], ["Brescia"])
+
+    def test_unknown_directive_is_an_error(self) -> None:
+        with self.assertRaises(ValueError):
+            self.entities("@contxt x\nCITTÀ|Brescia\n")
+        with self.assertRaises(ValueError):
+            self.entities("@stem maybe\nX|Y\n")
+        with self.assertRaises(ValueError):
+            self.entities("@context (unbalanced\nX|Y\n")
+
+    def test_type_directive_applies_to_following_entries(self) -> None:
+        entities = self.entities("@type CLIENTE\nAcme\n@type PERSONA\n\nMario Rossi\n")
+        types = {ptype for _s, _e, ptype in anon.detect("Acme e Mario Rossi", entities)}
+        self.assertEqual(types, {"CLIENTE", "PERSONA"})
 
 
 class DeanonContainerTest(unittest.TestCase):

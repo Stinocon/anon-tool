@@ -1,0 +1,46 @@
+# catalogs/free-mail-domains.txt — consumer mail providers.
+#
+# WHY
+#   In a document, `mario.rossi@gmail.com` is already redacted as a whole by the EMAIL rule: the
+#   *local part* is what names the person. This catalog adds the case where the domain appears
+#   WITHOUT the address ("iscritto con una casella gmail"). It is low-signal, so it is opt-in.
+#
+# NOTE ON ORDERING
+#   The EMAIL rule runs before the dictionary, so an address is redacted as a whole and never
+#   fragmented into `[DOMAIN-1]` + local part.
+
+@type DOMAIN
+
+gmail.com
+googlemail.com
+hotmail.com
+hotmail.it
+outlook.com
+outlook.it
+live.com
+live.it
+msn.com
+yahoo.com
+yahoo.it
+libero.it
+virgilio.it
+tin.it
+alice.it
+tiscali.it
+fastwebnet.it
+inwind.it
+iol.it
+icloud.com
+me.com
+mac.com
+aol.com
+gmx.com
+gmx.it
+mail.com
+protonmail.com
+proton.me
+tutanota.com
+posteo.de
+zoho.com
+yandex.com
+mail.ru

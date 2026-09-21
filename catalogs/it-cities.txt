@@ -1,0 +1,71 @@
+# catalogs/it-cities.txt — Italian municipalities (starter list).
+#
+# WHY THIS IS OPT-IN AND CONTEXT-GATED
+#   A city alone rarely identifies anyone, it appears in normal prose, and many municipality
+#   names are ordinary Italian words (Prato, Massa, Sarno, Rocca, Carrara...). Redacting every
+#   occurrence would shred a report ("the stabilimento di [CITTÀ-1] has [CITTÀ-2] findings")
+#   without adding much protection. So this catalog:
+#     * is NOT applied unless you select it (`--catalogs it-cities`, or the checkbox in the UI);
+#     * matches case-SENSITIVELY (`Brescia` yes, `il prato è verde` no);
+#     * only fires after a context marker (`comune di`, `sede di`, `stabilimento di`, ...).
+#
+# HOW TO GET THE COMPLETE LIST
+#   Download the ISTAT list of Italian municipalities (a public dataset, one name per line or a
+#   CSV) and append the names below, one per line, keeping this header. The tool never invents
+#   entries: a partial list stays partial.
+
+@type CITTÀ
+@match case-sensitive
+@context (?:\b(?:comune|sede|stabilimento|filiale|magazzino|deposito|ufficio|punto vendita)\s+di\s+)
+
+# --- starter set: the largest cities (extend with the ISTAT list) ---
+Roma
+Milano
+Napoli
+Torino
+Palermo
+Genova
+Bologna
+Firenze
+Bari
+Catania
+Venezia
+Verona
+Messina
+Padova
+Trieste
+Brescia
+Parma
+Prato
+Taranto
+Modena
+Reggio Calabria
+Reggio Emilia
+Perugia
+Ravenna
+Livorno
+Cagliari
+Foggia
+Rimini
+Salerno
+Ferrara
+Sassari
+Latina
+Giugliano in Campania
+Monza
+Siracusa
+Pescara
+Bergamo
+Forlì
+Trento
+Vicenza
+Terni
+Bolzano
+Novara
+Piacenza
+Ancona
+Andria
+Arezzo
+Udine
+Cesena
+Lecce
