@@ -41,10 +41,31 @@ Work in progress, built in public-quality steps but kept **private** for now.
 
 | Phase | Content | State |
 |---|---|---|
-| 0 | engine: office-aware `deanon`, residual detection, stem matching, checksum validators, catalogs, `audit` | in progress |
-| 1 | local web UI (stdlib server + vanilla front-end, loopback only) | planned |
+| 0 | engine: office-aware `deanon`, residual detection, stem matching, checksum validators, catalogs, `audit` | done |
+| 1 | local web UI (stdlib server + vanilla front-end, loopback only) | done |
 | 2 | Docker packaging, one-command start | planned |
 | 3 | public release: docs, license, CI, generic catalogs | planned |
+
+## Quick start (engine)
+
+```bash
+python3 anon.py report.txt                    # -> report.redacted.txt + a map in ~/.anon/maps/
+python3 anon.py report.txt --check --json     # is it safe to read? (the Pi guard uses this)
+python3 anon.py report.txt --audit            # is an ALREADY redacted file really redacted?
+python3 deanon.py final.docx <map.json>       # put the real values back (text or .docx/.xlsx/.odt)
+python3 anon.py --list-catalogs               # what built-in lists are installed
+```
+
+## Quick start (web UI)
+
+```bash
+python3 web/server.py                         # -> http://127.0.0.1:1407  (loopback only)
+```
+
+The UI has **no authentication** and is therefore bound to loopback only: it refuses a
+non-loopback `--host` unless `--allow-lan` is passed, every request must carry the correct `Host`
+and a per-run token, and no client-supplied filesystem path is ever used. See
+`docs/DESIGN.md` §7 for the full perimeter.
 
 The engine lives at `~/.anon/` and is mirrored into this repository by
 `scripts/sync-from-live.sh` (code only — maps, `entities.txt` and `allow.txt` never leave the
