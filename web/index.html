@@ -86,8 +86,9 @@
     <div class="card">
       <h2>Ripristina i valori reali</h2>
       <p class="muted">Carica il documento finale (con i placeholder) e la mappa con cui è stato redatto.</p>
-      <label class="field">Documento finale
-        <input type="file" id="file-deanon">
+      <label class="drop" id="drop-deanon">
+        <input type="file" id="file-deanon" hidden>
+        <span>Trascina qui il documento finale (con i placeholder), oppure <span class="link">scegli</span></span>
       </label>
       <label class="field">Mappa
         <select id="map-select"><option value="">— seleziona —</option></select>

@@ -61,6 +61,28 @@ records `placeholder → {type, exact original}` in a map. Because the *exact su
 Placeholder-shaped text already present in the source is *reserved*, so a literal `[EMAIL-1]` in
 the document is never mistaken for one this run produced.
 
+## 4b. Residual risk: the map is not bound to the document (declared)
+
+Placeholder numbering is **per document** (`[EMAIL-1]` is the first email of *that* run). Nothing
+in the content itself can tell a document produced from run A from run B, so if the operator
+picks client B's map for client A's document, the run will happily substitute B's real values and
+report success. The tool cannot detect this, and pretending otherwise would be worse than saying
+so.
+
+What is done about it:
+
+- `complete` is now **fail-closed**: it requires `remaining == 0` **and** `unknown == 0` **and**
+  at least one replacement. A document containing `[EMAIL-9]`, or a document with no placeholder
+  at all, is reported as INCOMPLETE (exit 3) instead of success.
+- The report carries the map's provenance (`map_source`, `map_created`, `map_counts`), so an
+  operator can see which run produced it — the only available signal.
+- The web UI **preselects the map created by the current run** and shows date/source/counts in
+  the picker.
+
+The structural fix (a per-map tag inside the placeholder, e.g. `[EMAIL-1-a3f9]`) would make a
+mismatch detectable, at the cost of a longer token the model has to carry through unchanged. It
+is deliberately not done yet.
+
 ## 5. Dictionary matching (what "the same entity" means)
 
 One entry covers a family of spellings, deterministically:

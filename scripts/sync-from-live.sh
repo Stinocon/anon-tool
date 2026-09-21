@@ -38,6 +38,14 @@ for d in tests catalogs web; do
 done
 
 # --- deterministic gate: refuse to commit a red suite --------------------
+if [ -f "$REPO/tests/ui_load_check.mjs" ]; then
+  if ! node "$REPO/tests/ui_load_check.mjs" >/tmp/anon-sync-ui.log 2>&1; then
+    echo "[anon-sync] UI LOAD FAILURE (app.js throws at load) — not committing:" >&2
+    tail -10 /tmp/anon-sync-ui.log >&2
+    exit 1
+  fi
+fi
+
 for suite in tests/test_anon.py tests/test_web.py; do
   [ -f "$REPO/$suite" ] || continue
   if ! python3 "$REPO/$suite" >/tmp/anon-sync-tests.log 2>&1; then

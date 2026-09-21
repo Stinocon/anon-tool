@@ -273,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             "version": anon.VERSION,
             "catalogs": anon.list_catalogs(),
             "patterns": list(anon.PATTERN_FAMILIES),
-            "maps": len(self._list_maps()),
+            "maps_count": len(self._list_maps()),
             "converter": CONVERTER.is_file(),
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),

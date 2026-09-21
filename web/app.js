@@ -6,7 +6,20 @@ const $ = (id) => document.getElementById(id);
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
 
+async function request(path, options) {
+  const response = await api(path, options);
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {};
+  }
+  if (!response.ok) throw new Error(payload.error || `richiesta fallita (${response.status})`);
+  return payload;
+}
+
 const state = { maps: [], catalogs: [], redactedName: "redatto", lastMapId: null };
+let deanonFile = null;
 
 /* ---------------------------------------------------------------- tabs */
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -78,8 +91,7 @@ const selected = (selector) => [...document.querySelectorAll(selector)].filter((
 
 /* ---------------------------------------------------------------- state */
 async function refresh() {
-  const response = await api("/api/state");
-  const info = await response.json();
+  const info = await request("/api/state");
   $("version").textContent = `v${info.version} · ${info.schema}`;
   const conv = $("converter-badge");
   conv.textContent = info.converter ? "converter: docx/pdf ok" : "converter: assente";
@@ -100,8 +112,7 @@ async function refresh() {
 }
 
 async function refreshMaps() {
-  const response = await api("/api/maps");
-  const { maps } = await response.json();
+  const { maps = [] } = await request("/api/maps");
   state.maps = maps;
   const select = $("map-select");
   select.innerHTML = '<option value="">— seleziona —</option>';
@@ -146,7 +157,7 @@ $("run-anon").addEventListener("click", async () => {
   setStatus($("anon-status"), "elaborazione…");
   try {
     if (file && file.type !== "text/plain" && anonNeedsUpload(file.name)) {
-      const response = await api("/api/anonymize-document", {
+      const result = await request("/api/anonymize-document", {
         method: "POST",
         headers: {
           "X-Filename": file.name,
@@ -156,19 +167,15 @@ $("run-anon").addEventListener("click", async () => {
         },
         body: await file.arrayBuffer(),
       });
-      const result = await response.json();
-      if (result.error) throw new Error(result.error);
       showAnonymize(result, file.name.replace(/\.[^.]+$/, "") + ".redacted.md");
       setStatus($("anon-status"), `convertito e redatto (${result.origin})`, "ok");
     } else {
       const payload = { text: file ? await readFile(file) : text, catalogs: selected(".catalog"), patterns: selected(".pattern") };
-      const response = await api("/api/anonymize", {
+      const result = await request("/api/anonymize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const result = await response.json();
-      if (result.error) throw new Error(result.error);
       const base = file ? file.name : "incollato";
       showAnonymize(result, base.replace(/\.[^.]+$/, "") + ".redacted.txt");
       setStatus($("anon-status"), `fatto · ${result.rules_applied} regole applicate`, "ok");
@@ -195,14 +202,15 @@ $("download-redacted").addEventListener("click", () => {
 
 $("reveal-map").addEventListener("click", async () => {
   if (!state.lastMapId) return;
-  const response = await api("/api/maps/reveal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: state.lastMapId, confirm: true }),
-  });
-  const data = await response.json();
-  if (data.error) {
-    $("mapping").textContent = data.error;
+  let data;
+  try {
+    data = await request("/api/maps/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: state.lastMapId, confirm: true }),
+    });
+  } catch (error) {
+    $("mapping").textContent = String(error.message || error);
     return;
   }
   $("mapping").innerHTML = "";
@@ -217,7 +225,7 @@ $("reveal-map").addEventListener("click", async () => {
 
 /* ---------------------------------------------------------------- deanonimizza */
 $("run-deanon").addEventListener("click", async () => {
-  const file = $("file-deanon").files[0];
+  const file = deanonFile || $("file-deanon").files[0];
   const mapId = $("map-select").value;
   if (!file || !mapId) {
     setStatus($("deanon-status"), "servono documento e mappa", "error");
@@ -226,13 +234,11 @@ $("run-deanon").addEventListener("click", async () => {
   $("run-deanon").disabled = true;
   setStatus($("deanon-status"), "elaborazione…");
   try {
-    const response = await api("/api/deanonymize", {
+    const result = await request("/api/deanonymize", {
       method: "POST",
       headers: { "X-Filename": file.name, "X-Map-Id": mapId, "Content-Type": "application/octet-stream" },
       body: await file.arrayBuffer(),
     });
-    const result = await response.json();
-    if (result.error) throw new Error(result.error);
     const report = result.report || {};
     const box = $("deanon-report");
     box.hidden = false;
@@ -271,19 +277,20 @@ async function runAudit() {
     alert("Incolla del testo o carica un file da verificare.");
     return;
   }
-  const response = await api("/api/audit", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      catalogs: selected(".catalog"),
-      patterns: selected(".pattern"),
-      reveal: $("audit-reveal").checked,
-    }),
-  });
-  const result = await response.json();
-  if (result.error) {
-    alert(result.error);
+  let result;
+  try {
+    result = await request("/api/audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        catalogs: selected(".catalog"),
+        patterns: selected(".pattern"),
+        reveal: $("audit-reveal").checked,
+      }),
+    });
+  } catch (error) {
+    alert(String(error.message || error));
     return;
   }
   $("audit-result").hidden = false;
@@ -324,19 +331,19 @@ $("audit-reveal").addEventListener("change", () => {
 
 /* ---------------------------------------------------------------- dizionario */
 async function loadEntities() {
-  const response = await api("/api/entities");
-  const data = await response.json();
+  const data = await request("/api/entities");
   $("entities-text").value = data.text || "";
 }
 $("save-entities").addEventListener("click", async () => {
-  const response = await api("/api/entities", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: $("entities-text").value }),
-  });
-  const result = await response.json();
-  if (result.error) {
-    setStatus($("entities-status"), result.error, "error");
+  let result;
+  try {
+    result = await request("/api/entities", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: $("entities-text").value }),
+    });
+  } catch (error) {
+    setStatus($("entities-status"), String(error.message || error), "error");
     return;
   }
   setStatus($("entities-status"), `salvato · ${result.entries} regole attive`, "ok");
@@ -356,7 +363,10 @@ dropzone($("drop-anon"), $("file-anon"), async (file) => {
     setStatus($("anon-status"), `${file.name} caricato`, "ok");
   }
 });
-dropzone($("drop-deanon"), null, () => {});
+dropzone($("drop-deanon"), $("file-deanon"), (file) => {
+  deanonFile = file;
+  setStatus($("deanon-status"), `${file.name} pronto`, "ok");
+});
 
 refresh().then(() => {
   refreshMaps();

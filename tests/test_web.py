@@ -41,6 +41,38 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
+class StaticUiTest(unittest.TestCase):
+    """Checks on the front-end that need no browser.
+
+    A `$(missing-id)` throws at load time and silently kills every initialisation after it
+    (`refresh()`, `refreshMaps()`, `loadEntities()`), which left the UI half-dead while every
+    HTTP test stayed green. One real browser run is worth more than a thousand assertions, but a
+    static consistency check catches this whole class for free.
+    """
+
+    JS = (HOME / "web" / "app.js").read_text(encoding="utf-8")
+    HTML = (HOME / "web" / "index.html").read_text(encoding="utf-8")
+
+    def test_every_referenced_element_id_exists(self) -> None:
+        declared = set(re.findall(r'id="([^"]+)"', self.HTML))
+        referenced = set(re.findall(r'\$\("([^"]+)"\)', self.JS))
+        missing = sorted(referenced - declared)
+        self.assertEqual(missing, [], f"app.js references ids missing from index.html: {missing}")
+
+    def test_tab_panels_match_their_aria_controls(self) -> None:
+        controls = re.findall(r'aria-controls="([^"]+)"', self.HTML)
+        declared = set(re.findall(r'id="([^"]+)"', self.HTML))
+        self.assertEqual(sorted(set(controls) - declared), [], "every tab must control a real panel")
+        self.assertEqual(len(controls), len(set(controls)), "duplicated aria-controls")
+
+    def test_no_inline_script_without_a_nonce(self) -> None:
+        for match in re.finditer(r"<script([^>]*)>", self.HTML):
+            attributes = match.group(1)
+            if "src=" in attributes:
+                continue
+            self.assertIn("nonce=", attributes, f"inline script without a nonce: {match.group(0)}")
+
+
 class WebUiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
