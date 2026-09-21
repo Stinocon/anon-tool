@@ -44,9 +44,14 @@ import deanon as deanon_engine  # noqa: E402
 
 MAX_BODY_BYTES = 32 * 1024 * 1024
 TOKEN_HEADER = "X-Anon-Token"
-CONVERTER = Path(
-    os.environ.get("ANON_CONVERTER") or (Path.home() / ".pi" / "agent" / "skills" / "docs" / "docs.py")
-)
+# The tool ships its own converter; the Pi `docs` skill is used only as a fallback when the
+# tool's own convert.py is missing (older installs).
+def _default_converter() -> Path:
+    own = Path(__file__).resolve().parent.parent / "convert.py"
+    return own if own.is_file() else Path.home() / ".pi" / "agent" / "skills" / "docs" / "docs.py"
+
+
+CONVERTER = Path(os.environ.get("ANON_CONVERTER") or _default_converter())
 STATE = {"token": None, "nonce": None, "port": 1407, "jobs": 0}
 CONVERT_MAX_BYTES = 32 * 1024 * 1024
 LOCK = threading.Lock()

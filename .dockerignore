@@ -1,0 +1,22 @@
+# Build context hygiene: the image needs the code, not the repository or the operator's data.
+.git
+.gitignore
+Makefile
+README.md
+docs
+scripts
+tests
+*.md
+maps
+entities.txt
+allow.txt
+profiles
+__pycache__
+*.pyc
+*.map.json
+*.redacted.*
+*.deanon.*
+.venv
+venv
+.env
+.DS_Store

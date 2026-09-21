@@ -1,0 +1,37 @@
+# anon-tool — local UI. `docker compose up -d` and open http://127.0.0.1:1407
+#
+# SECURITY: the UI has NO authentication. It is therefore published on 127.0.0.1 only. Changing
+# the port mapping to "1407:1407" would expose your documents and your entity dictionary to the
+# whole network — don't, unless you really mean it.
+
+services:
+  anon-tool:
+    build:
+      context: .
+      args:
+        WITH_CONVERTER: "1" # 0 = text formats only, smaller image
+    image: anon-tool:local
+    container_name: anon-tool
+    ports:
+      - "127.0.0.1:1407:1407"
+    volumes:
+      # The SAME entities.txt and the SAME maps the CLI uses: one source of truth.
+      - "${ANON_HOME:-$HOME/.anon}:/data"
+    environment:
+      ANON_HOME: /data
+      ANON_CONVERTER: /app/convert.py
+    read_only: true
+    tmpfs:
+      - /tmp # the converter needs scratch space
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:1407/',timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 5s

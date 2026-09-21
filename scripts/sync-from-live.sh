@@ -30,7 +30,7 @@ while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.2; done
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 # --- mirror the code subset ----------------------------------------------
-for f in anon.py deanon.py; do
+for f in anon.py deanon.py convert.py; do
   [ -f "$LIVE/$f" ] && cp "$LIVE/$f" "$REPO/$f"
 done
 for d in tests catalogs web; do
