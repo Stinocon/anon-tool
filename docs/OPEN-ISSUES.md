@@ -51,7 +51,15 @@ is the list of what a second pass should pick up, roughly in the order I would t
 
 ## Documentation and polish
 
-- A screenshot of the UI in the README (needs an asset that is safe to publish).
+- A screenshot of the UI in the README (needs an asset that is safe to publish). A working
+  capture command on this machine — note that `--dump-dom` hangs here, `--screenshot` does not:
+
+  ```bash
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \
+    --user-data-dir=/tmp/prof --hide-scrollbars --force-device-scale-factor=2 \
+    --window-size=1100,900 --virtual-time-budget=3000 \
+    --screenshot=/tmp/ui.png http://127.0.0.1:1407/
+  ```
 - `docs/DESIGN.md` is getting long; it now covers both engine and UI and could be split.
 - The CI job installs the converter and skips its tests if that fails — the skip should be visible
   in the run summary rather than only in the log.
