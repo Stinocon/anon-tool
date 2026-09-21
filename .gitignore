@@ -1,0 +1,20 @@
+# Private data — NEVER versioned (this repo holds code and generic catalogs only).
+maps/
+*.map.json
+entities.txt
+allow.txt
+profiles/
+*.redacted.*
+*.deanon.*
+
+# Runtime scratch
+work/
+out/
+__pycache__/
+*.pyc
+
+# Local env
+.venv/
+venv/
+.env
+.DS_Store
