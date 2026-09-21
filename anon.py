@@ -44,7 +44,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-VERSION = "1.0.0"
+VERSION = "1.3.0"
+SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
 DEFAULT_ENTITIES = ANON_HOME / "entities.txt"
@@ -744,6 +745,109 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _fold_entity(value: str) -> str:
+    """Canonical key for fuzzy comparison: case-folded, legal forms dropped, non-alphanumerics
+    removed. `Contoso S.r.l.` and `Contoso` fold to the same key."""
+    tokens = [token for token in re.split(r"\s+", value.strip()) if token]
+    while len(tokens) > 1 and LEGAL_FORM_RE.fullmatch(tokens[-1]):
+        tokens.pop()
+    return "".join(char for char in "".join(tokens).casefold() if char.isalnum())
+
+
+NEAR_MISS_WORD_LIMIT = 400
+NEAR_MISS_VOCAB_LIMIT = 200
+NEAR_MISS_CUTOFF = 0.86
+WORD_RE = re.compile(r"[^\W\d_][\w'’\-]*", re.UNICODE)
+
+
+def near_misses(
+    text: str, entities: list[Entity], found: list[tuple[int, int, str]]
+) -> tuple[list[dict[str, object]], bool]:
+    """Dictionary entries that the text almost contains.
+
+    Two kinds, both REPORTED for a human to declare — never used to redact, because a fuzzy rule
+    that silently misses is worse than an explicit alias added once:
+      * `variant` — the text writes the entity differently but it folds to the same key
+        (`Contoso` / `Contoso Srl` vs a declared `Contoso`); found by folding adjacent-word joins.
+      * `near` — a single word that is close but not identical (a typo, another transliteration).
+    Bounded on purpose (word and vocabulary caps) so the audit stays fast.
+    """
+    import difflib
+
+    covered = bytearray(len(text))
+    for start, end, _type in found:
+        covered[start:end] = b"\x01" * (end - start)
+
+    vocabulary: dict[str, Entity] = {}
+    for entity in entities:
+        key = _fold_entity(entity.surface)
+        if len(key) >= 5:
+            vocabulary.setdefault(key, entity)
+    if not vocabulary:
+        return [], False
+
+    words: list[tuple[int, int, str]] = []
+    for match in WORD_RE.finditer(text):
+        if any(covered[match.start():match.end()]):
+            continue
+        words.append((match.start(), match.end(), match.group(0)))
+        if len(words) >= NEAR_MISS_WORD_LIMIT:
+            break
+    if not words:
+        return [], False
+
+    hits: dict[str, tuple[str, int, str, Entity, float]] = {}
+    # 1) joins of adjacent words on the same line: `Be` + `Safe` -> `contoso`
+    for index in range(len(words)):
+        for size in (2, 3):
+            chunk = words[index:index + size]
+            if len(chunk) < size:
+                continue
+            if any("\n" in text[chunk[k][1]:chunk[k + 1][0]] for k in range(len(chunk) - 1)):
+                continue
+            joined = "".join(word for _p, _e, word in chunk)
+            key = _fold_entity(joined)
+            entity = vocabulary.get(key)
+            if entity is not None and key not in hits:
+                hits[key] = ("variant", chunk[0][0], text[chunk[0][0]:chunk[-1][1]], entity, 1.0)
+    # 2) single words: exact folding or a close match
+    keys = list(vocabulary)[:NEAR_MISS_VOCAB_LIMIT]
+    for position, _end, word in words:
+        if len(word) < 5:
+            continue
+        key = _fold_entity(word)
+        if key in hits:
+            continue
+        entity = vocabulary.get(key)
+        if entity is not None:
+            hits[key] = ("variant", position, word, entity, 1.0)
+            continue
+        close = difflib.get_close_matches(key, keys, n=1, cutoff=NEAR_MISS_CUTOFF)
+        if close:
+            hits[key] = (
+                "near",
+                position,
+                word,
+                vocabulary[close[0]],
+                round(difflib.SequenceMatcher(None, key, close[0]).ratio(), 3),
+            )
+
+    out: list[dict[str, object]] = []
+    for kind, position, label, entity, similarity in hits.values():
+        out.append({
+            "kind": kind,
+            "type": entity.type,
+            "line": text.count("\n", 0, position) + 1,
+            "similarity": similarity,
+            "token_masked": label[:1] + "\u2022" * (len(label) - 1),
+            # Filled only with --reveal: the default report must be safe to hand to an agent.
+            "token": label,
+            "entity": entity.surface,
+        })
+    out.sort(key=lambda item: (-float(item["similarity"]), str(item["token_masked"])))
+    return out, len(words) >= NEAR_MISS_WORD_LIMIT or len(vocabulary) > NEAR_MISS_VOCAB_LIMIT
+
+
 def resolve_entities(args: argparse.Namespace) -> list[Entity]:
     """The custom dictionary plus the selected catalogs, as one list."""
     paths: list[Path] = [Path(args.entities).expanduser() if args.entities else DEFAULT_ENTITIES]
@@ -875,6 +979,72 @@ def cmd_check(args: argparse.Namespace) -> int:
     return _emit_check(args, found, target, text=text)
 
 
+def _envelope(tool: str) -> dict[str, object]:
+    return {"schema": SCHEMA, "tool": tool, "version": VERSION}
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Is this file REALLY anonymized? Report residual risk, without echoings any value."""
+    target = Path(args.file).expanduser()
+    if not target.is_file():
+        print(f"anon: not a file: {target}", file=sys.stderr)
+        return 2
+    if sniff(target) is not None:
+        print(f"anon: {target.name} is binary — convert it to Markdown first", file=sys.stderr)
+        return 2
+    text = read_text(target)
+    entities = resolve_entities(args)
+    found = detect(text, entities, families=resolve_families(args))
+    candidates, capped = near_misses(text, entities, found)
+    placeholders = sum(1 for match in PLACEHOLDER_RE.finditer(text))
+
+    by_type: dict[str, int] = {}
+    findings: list[dict[str, object]] = []
+    for start, _end, ptype in found:
+        by_type[ptype] = by_type.get(ptype, 0) + 1
+        if len(findings) < 50:
+            findings.append({"type": ptype, "line": text.count("\n", 0, start) + 1})
+
+    verdict = "sensitive" if found else ("suspicious" if candidates else "clean")
+    report: dict[str, object] = {
+        **_envelope("anon.py audit"),
+        "file": str(target),
+        "verdict": verdict,
+        "total": len(found),
+        "types": by_type,
+        "findings": findings,
+        "near_miss": candidates if args.reveal else [
+            {k: v for k, v in item.items() if k not in ("token", "entity")} for item in candidates
+        ],
+        "revealed": bool(args.reveal),
+        "candidates_capped": capped,
+        "placeholders_present": placeholders,
+    }
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False))
+    elif not args.quiet or args.reveal:
+        if found:
+            summary = ", ".join(f"{k}x{v}" for k, v in sorted(by_type.items()))
+            lines = ", ".join(f"line {item['line']}" for item in findings[:8])
+            print(f"anon: SENSITIVE content found ({summary}) at {lines}")
+        if candidates:
+            print(f"anon: {len(candidates)} candidate(s) — a declared entity written differently"
+                  f"{'' if args.reveal else ' (masked; use --reveal to see them, they ARE the sensitive data)'}")
+            for item in candidates:
+                label = f"{item['token']!r} ~ {item['entity']!r}" if args.reveal else str(item["token_masked"])
+                print(f"        line {item['line']} [{item['kind']}]: {label} ({item['type']}, {item['similarity']})")
+        if placeholders:
+            print(f"anon: {placeholders} placeholder(s) present — consistent with an already-redacted document")
+        if not found and not candidates:
+            print(f"anon: CLEAN — no sensitive content, no near miss ({len(entities)} rules applied)")
+        print(f"anon: verdict: {verdict}")
+
+    if found:
+        return 1
+    return 4 if candidates else 0
+
+
 def _emit_check(
     args: argparse.Namespace,
     found: list[tuple[int, int, str]],
@@ -891,6 +1061,7 @@ def _emit_check(
         if len(findings) < 20:
             findings.append({"type": ptype, "line": text.count("\n", 0, start) + 1})
     result: dict[str, object] = {
+        **_envelope("anon.py --check"),
         "sensitive": bool(found) or unscannable,
         "file": str(target),
         "total": len(found),
@@ -963,6 +1134,7 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
 
     if args.json:
         print(json.dumps({
+            **_envelope("anon.py"),
             "sensitive": bool(entries),
             "redacted": str(out) if out else "(stdout)",
             "map": str(map_path) if map_path else None,
@@ -1001,6 +1173,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-catalogs", action="store_true", help="list the installed catalogs and exit")
     parser.add_argument("--allow", help="path-glob allowlist used by --check (default: ~/.anon/allow.txt)")
     parser.add_argument("--check", action="store_true", help="report sensitive content, write nothing")
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="verify that a file is REALLY anonymized (residual content + near misses), write nothing",
+    )
+    parser.add_argument(
+        "--reveal",
+        action="store_true",
+        help="with --audit: show the near-miss words and entity names (they are the sensitive data)",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
     parser.add_argument("--stdout", action="store_true", help="write the redacted text to stdout")
     parser.add_argument("--no-hosts", action="store_true", help="skip hostname/phone/IP heuristics")
@@ -1023,6 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
         print("anon: a file is required (or use --list-catalogs)", file=sys.stderr)
         return 2
     try:
+        if args.audit:
+            return cmd_audit(args)
         return cmd_check(args) if args.check else cmd_anonymize(args)
     except ValueError as exc:
         print(f"anon: {exc}", file=sys.stderr)

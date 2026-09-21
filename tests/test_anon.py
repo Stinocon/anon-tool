@@ -518,6 +518,134 @@ class DirectivesTest(unittest.TestCase):
         self.assertEqual(types, {"CLIENTE", "PERSONA"})
 
 
+class AuditTest(unittest.TestCase):
+    """`--audit`: is this file REALLY anonymized? The report must not leak what it checks."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-audit-"))
+        self.entities = self.tmp / "entities.txt"
+        self.entities.write_text("AZIENDA|Contoso\n", encoding="utf-8")
+        self.env = {**os.environ, "ANON_HOME": str(self.tmp)}
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def audit(self, name: str, content: str, *extra: str) -> subprocess.CompletedProcess[str]:
+        path = self.tmp / name
+        path.write_text(content, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(ANON_PY), str(path), "--audit", "--json",
+             "--entities", str(self.entities), *extra],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+
+    def test_clean_file(self) -> None:
+        res = self.audit("clean.txt", "Solo note tecniche sul firewall perimetrale.\n")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(json.loads(res.stdout)["verdict"], "clean")
+
+    def test_sensitive_file_reports_without_echoing_values(self) -> None:
+        res = self.audit("bad.txt", "Referente mario.rossi@contoso.it su 10.42.7.19\n")
+        self.assertEqual(res.returncode, 1)
+        report = json.loads(res.stdout)
+        self.assertEqual(report["verdict"], "sensitive")
+        self.assertEqual(report["types"], {"EMAIL": 1, "IP": 1})
+        self.assertNotIn("contoso.it", res.stdout, "the audit must not leak what it detected")
+        self.assertNotIn("10.42.7.19", res.stdout)
+
+    def test_variant_candidate_is_flagged_and_masked(self) -> None:
+        res = self.audit("variant.txt", "Il cliente Contoso Srl ha tre stabilimenti.\n")
+        self.assertEqual(res.returncode, 4, res.stdout + res.stderr)
+        report = json.loads(res.stdout)
+        self.assertEqual(report["verdict"], "suspicious")
+        self.assertEqual(report["near_miss"][0]["kind"], "variant")
+        self.assertNotIn("Contoso", res.stdout)
+        self.assertNotIn("Contoso", res.stdout, "entity names are sensitive too")
+        self.assertIn("\u2022", report["near_miss"][0]["token_masked"])
+
+    def test_reveal_shows_the_candidates(self) -> None:
+        res = self.audit("variant2.txt", "Il cliente Contoso Srl ha tre stabilimenti.\n", "--reveal")
+        self.assertEqual(res.returncode, 4)
+        report = json.loads(res.stdout)
+        self.assertTrue(report["revealed"])
+        self.assertEqual(report["near_miss"][0]["token"], "Contoso")
+        self.assertEqual(report["near_miss"][0]["entity"], "Contoso")
+
+    def test_binary_document_is_refused(self) -> None:
+        path = self.tmp / "doc.docx"
+        path.write_bytes(b"PK\x03\x04" + bytes(64))
+        res = subprocess.run(
+            [sys.executable, str(ANON_PY), str(path), "--audit"],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("binary", res.stderr)
+
+
+class StructuredFormatTest(unittest.TestCase):
+    """JSON/YAML: keys as well as values, and the round-trip must keep the syntax intact."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-structured-"))
+        self.entities = self.tmp / "entities.txt"
+        self.entities.write_text("AZIENDA|Contoso\nPERSONA|Mario Rossi\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, *args], capture_output=True, text=True, check=False)
+
+    def test_json_keys_and_values_and_roundtrip(self) -> None:
+        source = self.tmp / "data.json"
+        original = (
+            '{\n  "Contoso S.r.l.": {\n    "referente": "Mario Rossi",\n'
+            '    "email": "mario.rossi@contoso.it",\n    "nota": "quote \\"interna\\" ok"\n  }\n}\n'
+        )
+        source.write_text(original, encoding="utf-8")
+        redacted = self.tmp / "data.redacted.json"
+        run = self._run(str(ANON_PY), str(source), "--entities", str(self.entities),
+                        "--out", str(redacted), "--map", str(self.tmp / "m.json"), "--quiet")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        text = redacted.read_text(encoding="utf-8")
+        json.loads(text)  # the syntax must survive redaction, keys included
+        self.assertNotIn("Contoso", text)
+        self.assertNotIn("Mario Rossi", text)
+        self.assertNotIn("contoso.it", text)
+
+        back = self.tmp / "data.back.json"
+        de = self._run(str(DEANON_PY), str(redacted), str(self.tmp / "m.json"), "--out", str(back), "--quiet")
+        self.assertEqual(de.returncode, 0, de.stderr)
+        self.assertEqual(back.read_text(encoding="utf-8"), original)
+
+    def test_yaml_values_and_keys(self) -> None:
+        source = self.tmp / "data.yaml"
+        source.write_text("Contoso S.r.l.:\n  referente: Mario Rossi\n  email: mario@contoso.it\n", encoding="utf-8")
+        out = self.tmp / "data.redacted.yaml"
+        run = self._run(str(ANON_PY), str(source), "--entities", str(self.entities),
+                        "--out", str(out), "--map", str(self.tmp / "y.json"), "--quiet")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        text = out.read_text(encoding="utf-8")
+        self.assertIn("[AZIENDA-1]:", text)
+        self.assertNotIn("Mario Rossi", text)
+
+    def test_every_json_output_carries_the_schema(self) -> None:
+        source = self.tmp / "x.txt"
+        source.write_text("mail mario.rossi@contoso.it\n", encoding="utf-8")
+        outputs = [
+            self._run(str(ANON_PY), str(source), "--entities", str(self.entities),
+                      "--out", str(self.tmp / "x.red.txt"), "--map", str(self.tmp / "x.json"), "--json"),
+            self._run(str(ANON_PY), str(source), "--check", "--json", "--entities", str(self.entities)),
+            self._run(str(ANON_PY), str(source), "--audit", "--json", "--entities", str(self.entities)),
+        ]
+        for result in outputs:
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["schema"], anon.SCHEMA)
+            self.assertIn("tool", payload)
+            self.assertIn("version", payload)
+
+
 class DeanonContainerTest(unittest.TestCase):
     """Office containers (docx/odt) are ZIPs of XML parts: deanon must rewrite them in place."""
 
