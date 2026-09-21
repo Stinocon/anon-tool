@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Integration tests for the local web UI (`web/server.py`).
+
+Starts the real server in a subprocess against a hermetic `ANON_HOME` and drives it over HTTP:
+the engine endpoints, plus the security guards (token, Host header, Origin) that make a
+loopback-only, unauthenticated UI an acceptable trade-off.
+
+  python3 ~/.anon/tests/test_web.py
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+HOME = HERE.parent
+SERVER = HOME / "web" / "server.py"
+TOKEN_HEADER = "X-Anon-Token"
+
+sys.dont_write_bytecode = True
+
+DOCX_AVAILABLE = (Path.home() / ".pi" / "agent" / "skills" / "docs" / "docs.py").is_file()
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class WebUiTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp(prefix="anon-web-test-"))
+        (cls.tmp / "maps").mkdir()
+        (cls.tmp / "catalogs").mkdir()
+        (cls.tmp / "entities.txt").write_text("AZIENDA|Contoso\n", encoding="utf-8")
+        (cls.tmp / "catalogs" / "cities.txt").write_text(
+            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nBrescia\n", encoding="utf-8"
+        )
+        cls.port = free_port()
+        cls.env = {**os.environ, "ANON_HOME": str(cls.tmp)}
+        cls.process = subprocess.Popen(
+            [sys.executable, str(SERVER), "--port", str(cls.port)],
+            env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.time() + 15
+        page = None
+        while time.time() < deadline:
+            # Check for death FIRST: a bare `except Exception` around the probe would swallow the
+            # AssertionError that reports why the server died.
+            if cls.process.poll() is not None:
+                raise AssertionError(f"server died: {cls.process.stderr.read()}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/", timeout=1) as response:
+                    page = response.read().decode()
+                break
+            except Exception:  # noqa: BLE001 - still starting
+                time.sleep(0.2)
+        if page is None:
+            raise AssertionError(
+                f"server did not start (stderr: {cls.process.stderr.read() if cls.process.poll() is not None else 'still running'})"
+            )
+        match = re.search(r'window\.ANON_TOKEN = "([^"]+)"', page)
+        assert match, "token not injected into the page"
+        cls.token = match.group(1)
+        cls.page = page
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.process.terminate()
+        try:
+            cls.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.process.kill()
+        for stream in (cls.process.stdout, cls.process.stderr):
+            if stream:
+                stream.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    # --- helpers -----------------------------------------------------------------
+    def call(self, path: str, payload: dict | None = None, headers: dict | None = None,
+             method: str | None = None, raw: bytes | None = None):
+        data = raw if raw is not None else (json.dumps(payload).encode() if payload is not None else None)
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data,
+                                         method=method or ("POST" if data else "GET"))
+        request.add_header(TOKEN_HEADER, self.token)
+        for key, value in (headers or {}).items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.status, json.loads(response.read().decode() or "{}")
+        except urllib.error.HTTPError as error:
+            body = error.read().decode()
+            try:
+                return error.code, json.loads(body)
+            except json.JSONDecodeError:
+                return error.code, {"raw": body}
+
+    # --- tests -------------------------------------------------------------------
+    def test_page_and_state(self) -> None:
+        self.assertIn("anon-tool", self.page)
+        self.assertNotIn("__ANON_TOKEN__", self.page, "the token placeholder must be replaced")
+        status, info = self.call("/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(info["schema"], "anon/1")
+        self.assertEqual([c["name"] for c in info["catalogs"]], ["cities"])
+        self.assertEqual(info["patterns"], ["identity", "network", "legal"])
+
+    def test_security_guards(self) -> None:
+        without_token = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/state")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(without_token, timeout=5)
+        self.assertEqual(caught.exception.code, 403, "the API must reject a request without the token")
+
+        status, _payload = self.call("/api/state", headers={"Host": "evil.example.com"})
+        self.assertEqual(status, 403, "a foreign Host header (DNS rebinding) must be refused")
+
+        status, _payload = self.call("/api/state", headers={"Origin": "http://evil.example.com"})
+        self.assertEqual(status, 403, "a foreign Origin must be refused")
+
+    def test_anonymize_and_reveal_and_deanonymize(self) -> None:
+        status, result = self.call("/api/anonymize", {
+            "text": "Cliente Contoso S.r.l. e sede di Brescia, referente mario@contoso.it\n",
+            "catalogs": ["cities"],
+            "patterns": ["identity", "network", "legal"],
+        })
+        self.assertEqual(status, 200)
+        self.assertIn("[AZIENDA-1]", result["redacted"])
+        self.assertIn("sede di [CITTÀ-1]", result["redacted"])
+        self.assertIn("[EMAIL-1]", result["redacted"])
+        self.assertTrue(result["map_id"])
+        self.assertEqual({item["type"] for item in result["entries"]}, {"AZIENDA", "CITTÀ", "EMAIL"})
+
+        status, revealed = self.call("/api/maps/reveal", {"id": result["map_id"], "confirm": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(revealed["entries"]["[EMAIL-1]"]["original"], "mario@contoso.it")
+
+        status, refused = self.call("/api/maps/reveal", {"id": result["map_id"]})
+        self.assertEqual(status, 400, "revealing the real values needs an explicit confirmation")
+
+        restored = "Cliente [AZIENDA-1] e sede di [CITTÀ-1], referente [EMAIL-1]\n"
+        status, back = self.call("/api/deanonymize", None,
+                                 headers={"X-Filename": "finale.txt", "X-Map-Id": result["map_id"],
+                                          "Content-Type": "application/octet-stream"},
+                                 raw=restored.encode())
+        self.assertEqual(status, 200)
+        self.assertTrue(back["report"]["complete"])
+        content = base64.b64decode(back["content_b64"]).decode()
+        self.assertIn("Contoso S.r.l.", content)
+        self.assertIn("mario@contoso.it", content)
+
+    def test_audit_never_returns_the_values(self) -> None:
+        status, result = self.call("/api/audit", {"text": "Il cliente Contoso e mario@contoso.it\n"})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["verdict"], "sensitive")
+        raw = json.dumps(result)
+        self.assertNotIn("contoso.it", raw)
+        self.assertNotIn("Contoso", raw)
+        self.assertNotIn("Contoso", raw)
+
+        status, revealed = self.call("/api/audit", {"text": "Il cliente Contoso e mario@contoso.it\n", "reveal": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(revealed["near_miss"][0]["token"], "Contoso")
+
+    def test_entities_can_be_read_and_saved(self) -> None:
+        status, data = self.call("/api/entities")
+        self.assertEqual(status, 200)
+        self.assertIn("Contoso", data["text"])
+
+        status, saved = self.call("/api/entities", {"text": "AZIENDA|Contoso\nPERSONA|Mario Rossi\n"}, method="PUT")
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["entries"], 2)
+
+        bad = self.call("/api/entities", {"text": "@nope x\nAZIENDA|Y\n"}, method="PUT")
+        self.assertEqual(bad[0], 400, "a broken dictionary must be rejected, not written")
+        status, after = self.call("/api/entities")
+        self.assertIn("Mario Rossi", after["text"], "the previous dictionary must still be intact")
+
+    def test_map_list_exposes_metadata_only(self) -> None:
+        status, data = self.call("/api/maps")
+        self.assertEqual(status, 200)
+        for entry in data["maps"]:
+            self.assertNotIn("original", json.dumps(entry))
+            self.assertIn("entries", entry)
+
+    @unittest.skipUnless(DOCX_AVAILABLE, "document converter not installed")
+    def test_document_upload_is_converted_and_redacted(self) -> None:
+        work = Path(tempfile.mkdtemp(prefix="anon-web-doc-"))
+        try:
+            markdown = work / "doc.md"
+            markdown.write_text("Cliente Contoso con referente mario@contoso.it\n", encoding="utf-8")
+            docx = work / "doc.docx"
+            subprocess.run(["pandoc", str(markdown), "-o", str(docx)], check=True)
+            status, result = self.call("/api/anonymize-document", None,
+                                       headers={"X-Filename": "doc.docx", "X-Catalogs": "",
+                                                "X-Patterns": "identity", "Content-Type": "application/octet-stream"},
+                                       raw=docx.read_bytes())
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["origin"], "converted")
+            self.assertIn("[EMAIL-1]", result["redacted"])
+            self.assertIn("[AZIENDA-1]", result["redacted"])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

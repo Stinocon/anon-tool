@@ -579,6 +579,24 @@ def load_entities_many(paths: Iterable[Path]) -> list[Entity]:
     return merged
 
 
+def _as_list(value) -> list[str]:
+    """Accept both a comma-separated CLI string and a JSON array (the web UI sends arrays)."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def entity_count(entities: Iterable[Entity]) -> int:
+    """Distinct declared entries — not the internal per-normalization regex variants.
+
+    One accented or non-ASCII entry compiles to two patterns (NFC + NFD), so counting rules
+    would report `100 voci` for a 50-city catalog.
+    """
+    return len({(entity.type, entity.surface) for entity in entities})
+
+
 def catalog_path(name: str) -> Path:
     return CATALOGS_DIR / (name if name.endswith(".txt") else f"{name}.txt")
 
@@ -590,7 +608,7 @@ def list_catalogs() -> list[dict[str, object]]:
     available = []
     for path in sorted(CATALOGS_DIR.glob("*.txt")):
         try:
-            count = len(load_entities(path))
+            count = entity_count(load_entities(path))
         except ValueError:
             count = -1
         available.append({"name": path.stem, "path": str(path), "entries": count})
@@ -851,11 +869,8 @@ def near_misses(
 def resolve_entities(args: argparse.Namespace) -> list[Entity]:
     """The custom dictionary plus the selected catalogs, as one list."""
     paths: list[Path] = [Path(args.entities).expanduser() if args.entities else DEFAULT_ENTITIES]
-    requested = getattr(args, "catalogs", None)
-    if requested:
-        for name in (item.strip() for item in requested.split(",")):
-            if not name:
-                continue
+    for name in _as_list(getattr(args, "catalogs", None)):
+        if True:
             path = catalog_path(name)
             if not path.is_file():
                 available = ", ".join(item["name"] for item in list_catalogs()) or "(none installed)"
@@ -866,10 +881,10 @@ def resolve_entities(args: argparse.Namespace) -> list[Entity]:
 
 def resolve_families(args: argparse.Namespace) -> set[str] | None:
     """`--patterns identity,network` restricts the built-in pattern groups (default: all)."""
-    requested = getattr(args, "patterns", None)
+    requested = _as_list(getattr(args, "patterns", None))
     if not requested:
         return None
-    families = {item.strip().lower() for item in requested.split(",") if item.strip()}
+    families = {item.lower() for item in requested}
     unknown = families - set(PATTERN_FAMILIES)
     if unknown:
         raise ValueError(
@@ -1037,7 +1052,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         if placeholders:
             print(f"anon: {placeholders} placeholder(s) present — consistent with an already-redacted document")
         if not found and not candidates:
-            print(f"anon: CLEAN — no sensitive content, no near miss ({len(entities)} rules applied)")
+            print(f"anon: CLEAN — no sensitive content, no near miss ({entity_count(entities)} rules applied)")
         print(f"anon: verdict: {verdict}")
 
     if found:

@@ -203,12 +203,14 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
             unknown += unknown_count
 
     return {
+        "schema": anon.SCHEMA,
         "format": "container",
         "parts": parts,
         "replaced": sum(parts.values()),
         "remaining": remaining,
         "remaining_parts": remaining_parts,
         "unknown_placeholders": unknown,
+        "complete": remaining == 0,
     }
 
 
@@ -226,12 +228,14 @@ def deanon_text(source: Path, output: Path, entries: dict[str, dict[str, str]]) 
         temporary.unlink(missing_ok=True)
         raise
     return {
+        "schema": anon.SCHEMA,
         "format": "text",
         "parts": {source.name: replaced},
         "replaced": replaced,
         "remaining": remaining,
         "remaining_parts": [source.name] if remaining else [],
         "unknown_placeholders": unknown,
+        "complete": remaining == 0,
     }
 
 
@@ -296,7 +300,6 @@ def main(argv: list[str] | None = None) -> int:
     report["output"] = str(out)
     report["map"] = str(map_path)
     remaining = int(report["remaining"])
-    report["complete"] = remaining == 0
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False))

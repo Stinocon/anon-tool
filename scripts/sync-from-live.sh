@@ -38,13 +38,14 @@ for d in tests catalogs web; do
 done
 
 # --- deterministic gate: refuse to commit a red suite --------------------
-if [ -f "$REPO/tests/test_anon.py" ]; then
-  if ! python3 "$REPO/tests/test_anon.py" >/tmp/anon-sync-tests.log 2>&1; then
-    echo "[anon-sync] TEST FAILURE — not committing. Output:" >&2
+for suite in tests/test_anon.py tests/test_web.py; do
+  [ -f "$REPO/$suite" ] || continue
+  if ! python3 "$REPO/$suite" >/tmp/anon-sync-tests.log 2>&1; then
+    echo "[anon-sync] TEST FAILURE in $suite — not committing. Output:" >&2
     tail -20 /tmp/anon-sync-tests.log >&2
     exit 1
   fi
-fi
+done
 
 # --- commit + push if anything changed -----------------------------------
 cd "$REPO" || exit 0
