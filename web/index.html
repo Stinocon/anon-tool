@@ -5,10 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>anon-tool — anonimizzazione locale</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<script nonce="__ANON_NONCE__">
+  window.ANON_TOKEN = "__ANON_TOKEN__";
+  // Theme BEFORE the first paint, so the chosen theme never flashes the other one.
+  // Dark is the default: no saved preference means dark, regardless of the system setting.
+  try {
+    document.documentElement.dataset.theme = localStorage.getItem("anon-theme") || "dark";
+  } catch (error) {
+    document.documentElement.dataset.theme = "dark";
+  }
+</script>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<script nonce="__ANON_NONCE__">window.ANON_TOKEN = "__ANON_TOKEN__";</script>
 
 <header class="topbar">
   <div class="brand">
@@ -18,6 +28,8 @@
   <div class="badges">
     <span class="badge badge-ok" title="Il server ascolta solo su 127.0.0.1: nessun altro dispositivo può raggiungerlo.">solo locale</span>
     <span class="badge" id="converter-badge">…</span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false"
+            title="Passa al tema chiaro">Tema: scuro</button>
   </div>
 </header>
 
@@ -35,7 +47,7 @@
       <label class="drop" id="drop-anon">
         <input type="file" id="file-anon" hidden>
         <span class="drop-title">Trascina qui il documento</span>
-        <span class="muted small">doc · docx · pdf · txt · md · json · yaml · csv — oppure incolla il testo qui sotto</span>
+        <span class="muted small">doc · docx · pdf · txt · md · json · yaml · csv — fino a 160 MB, oppure incolla il testo qui sotto</span>
       </label>
       <textarea id="text-anon" rows="6" placeholder="…incolla qui il testo da anonimizzare" spellcheck="false" aria-label="Testo da anonimizzare"></textarea>
 
@@ -144,7 +156,14 @@
 </main>
 
 <footer class="foot muted small">
-  Motore deterministico e locale · il tool non fa chiamate di rete · i valori reali restano in <code>~/.anon/maps/</code>
+  <p>Motore deterministico e locale · il tool non fa chiamate di rete · i valori reali restano in <code>~/.anon/maps/</code></p>
+  <p class="links">
+    <a href="https://github.com/Stinocon/anon-tool" target="_blank" rel="noreferrer noopener">anon-tool</a>
+    <span aria-hidden="true">·</span>
+    <a href="https://github.com/Stinocon/pi-workbench" target="_blank" rel="noreferrer noopener">pi-workbench</a>
+    <span aria-hidden="true">·</span>
+    <span>skill <code>anon</code> di Pi: <code>/anon &lt;file&gt;</code></span>
+  </p>
 </footer>
 
 <script src="/app.js"></script>

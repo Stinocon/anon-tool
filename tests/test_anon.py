@@ -228,6 +228,26 @@ class RoundTripTest(unittest.TestCase):
             for text in negatives:
                 self.assertFalse(anon.detect(text, entities), f"{line!r}: false positive on {text!r}")
 
+    def test_longest_match_wins_over_a_dictionary_hit(self) -> None:
+        """A curated name inside a hostname must not fragment the hostname.
+
+        `srv-crm01.contoso.local` must be redacted as a whole: claiming only the company part would
+        leave `srv-crm01.` and `.local` readable, i.e. a partially redacted host.
+        """
+        self.tmp_entities.write_text("AZIENDA|Contoso\n", encoding="utf-8")
+        entities = anon.load_entities(self.tmp_entities)
+        text = "server srv-crm01.contoso.local qui"
+        found = anon.detect(text, entities)
+        self.assertEqual([text[start:end] for start, end, _type in found], ["srv-crm01.contoso.local"])
+
+    def test_dictionary_wins_when_the_span_is_identical(self) -> None:
+        """Same span from the dictionary and a heuristic: the operator's intent wins (and it is typed)."""
+        self.tmp_entities.write_text("AZIENDA|Acme.local\n", encoding="utf-8")
+        entities = anon.load_entities(self.tmp_entities)
+        text = "il server Acme.local risponde"
+        found = anon.detect(text, entities)
+        self.assertEqual([(text[start:end], ptype) for start, end, ptype in found], [("Acme.local", "AZIENDA")])
+
     def test_entity_that_is_only_a_legal_form_stays_declarable(self) -> None:
         """A firm literally named `SA`/`AG`/`AB` must not be stripped into nothing."""
         for line, text in (("AZIENDA|SA", "SA"), ("AZIENDA|AG", "AG"), ("AZIENDA|AB", "AB")):

@@ -414,6 +414,11 @@ HEURISTIC_RULES: tuple[Rule, ...] = (
 
 PATTERN_FAMILIES = ("identity", "network", "legal")
 
+# Tie-break priorities, used only when two candidates cover the SAME span: the strong patterns
+# win, then the curated dictionary (operator intent), then the heuristics.
+ENTITY_PRIORITY = 500
+HEURISTIC_PRIORITY = 1000
+
 
 # Legal forms are stripped from the dictionary value and tolerated as an optional suffix, so a
 # single entry matches the whole family: `Contoso` covers `Contoso S.r.l.`, `Contoso srl`, `Contoso`.
@@ -654,30 +659,25 @@ def detect(
     applied: it is the operator's own list, not a default.
     """
     claimed = bytearray(len(text))
-    found: list[tuple[int, int, str]] = []
+    candidates: list[tuple[int, int, int, str, str]] = []
 
     # Protect existing placeholders so anonymizing twice is a no-op.
-    for m in PLACEHOLDER_RE.finditer(text):
-        claimed[m.start():m.end()] = b"\x01" * (m.end() - m.start())
+    for match in PLACEHOLDER_RE.finditer(text):
+        claimed[match.start():match.end()] = b"\x01" * (match.end() - match.start())
 
-    def claim(start: int, end: int, ptype: str, value: str) -> None:
-        if end <= start:
+    def collect(start: int, end: int, priority: int, ptype: str, value: str) -> None:
+        if end <= start or any(claimed[start:end]) or _is_safe(value):
             return
-        if any(claimed[start:end]):
-            return
-        if _is_safe(value):
-            return
-        claimed[start:end] = b"\x01" * (end - start)
-        found.append((start, end, ptype))
+        candidates.append((start, end, priority, ptype, value))
 
-    def apply(rule: Rule) -> None:
+    def apply(rule: Rule, priority: int) -> None:
         if families is not None and rule.family not in families:
             return
-        for m in rule.regex.finditer(text):
+        for match in rule.regex.finditer(text):
             group = rule.capture
-            if group and m.group(group) is None:
+            if group and match.group(group) is None:
                 continue
-            start, end = (m.start(group), m.end(group)) if group else (m.start(), m.end())
+            start, end = (match.start(group), match.end(group)) if group else (match.start(), match.end())
             if rule.trim_trailing:
                 while end > start and text[end - 1] in rule.trim_trailing:
                     end -= 1
@@ -694,17 +694,27 @@ def detect(
                         break
                 else:
                     continue
-            claim(start, end, rule.type, value)
+            collect(start, end, priority, rule.type, value)
 
-    for rule in RULES:
-        apply(rule)
+    for index, rule in enumerate(RULES):
+        apply(rule, index)
     for entity in entities:
         for start, end, value in entity.spans(text):
-            claim(start, end, entity.type, value)
+            collect(start, end, ENTITY_PRIORITY, entity.type, value)
     if include_heuristics:
-        for rule in HEURISTIC_RULES:
-            apply(rule)
-    found.sort()
+        for index, rule in enumerate(HEURISTIC_RULES):
+            apply(rule, HEURISTIC_PRIORITY + index)
+
+    # Resolve overlaps by LONGEST match, not by evaluation order: a curated name inside a hostname
+    # (`srv-crm01.contoso.local`) must give way to the hostname, or the redaction would be partial
+    # (`srv-crm01.[AZIENDA-1].local`) and leave the host readable.
+    candidates.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
+    found: list[tuple[int, int, str]] = []
+    for start, end, _priority, ptype, _value in candidates:
+        if any(claimed[start:end]):
+            continue
+        claimed[start:end] = b"\x01" * (end - start)
+        found.append((start, end, ptype))
     return found
 
 

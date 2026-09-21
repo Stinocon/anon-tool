@@ -1,9 +1,11 @@
-/* anon-tool — design tokens first.
+/* anon-tool — design tokens first. Dark is the default; `[data-theme="light"]` is the explicit
+   alternative, chosen by the toggle in the header and remembered in localStorage.
    Design read: workbench locale per un singolo operatore tecnico, offline, nessun marketing.
    Dials: VARIANCE 3 (simmetrico) · MOTION 2 (solo feedback di stato) · DENSITY 6 (denso ma leggibile).
    Regola di questa passata: una sola azione primaria per scheda, le opzioni chiuse in un <details>. */
 
 :root {
+  color-scheme: dark;
   --fs-micro: 11px; --fs-xs: 12px; --fs-sm: 13px; --fs-base: 14px; --fs-md: 16px;
   --fs-lg: 19px; --fs-xl: 24px;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
@@ -11,6 +13,20 @@
   --radius: 10px; --radius-sm: 6px;
   --measure: 76ch;
 
+  --bg: #13171a; --bg-card: #1a1f23; --bg-soft: #222930; --bg-code: #1e2428; --bg-inset: #202629;
+  --text: #dde3e7; --text-strong: #f3f7f9; --text-muted: #98a3ab; --text-subtle: #717d86;
+  --border: #2e363c; --border-strong: #3d474e;
+  --accent: #4cc9bd; --accent-bg: #0f2f2c; --accent-on: #04211f;
+  --danger: #f0a09b; --danger-bg: #321a1a; --danger-bd: #592c2c;
+  --warn: #e2ba69; --warn-bg: #302612; --warn-bd: #574620;
+  --ok: #7ecfa1; --ok-bg: #152e1e; --ok-bd: #2a563a;
+  --shadow: none;
+}
+
+
+/* Chiaro: stessi nomi di token, valori diversi. Nessun token resta senza valore nei due temi. */
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #f5f6f7; --bg-card: #ffffff; --bg-soft: #eceff1; --bg-code: #f7f8f9; --bg-inset: #f0f2f4;
   --text: #1b2024; --text-strong: #0c1013; --text-muted: #58626a; --text-subtle: #8b959c;
   --border: #d9dee2; --border-strong: #c2c9cf;
@@ -18,21 +34,7 @@
   --danger: #9f221e; --danger-bg: #fbeae9; --danger-bd: #eec6c3;
   --warn: #7f5405; --warn-bg: #fdf4e3; --warn-bd: #ecd8ae;
   --ok: #186139; --ok-bg: #e5f3eb; --ok-bd: #bedfcc;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --shadow: 0 1px 2px rgba(16, 24, 32, 0.05);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #13171a; --bg-card: #1a1f23; --bg-soft: #222930; --bg-code: #1e2428; --bg-inset: #202629;
-    --text: #dde3e7; --text-strong: #f3f7f9; --text-muted: #98a3ab; --text-subtle: #717d86;
-    --border: #2e363c; --border-strong: #3d474e;
-    --accent: #4cc9bd; --accent-bg: #0f2f2c; --accent-on: #04211f;
-    --danger: #f0a09b; --danger-bg: #321a1a; --danger-bd: #592c2c;
-    --warn: #e2ba69; --warn-bg: #302612; --warn-bd: #574620;
-    --ok: #7ecfa1; --ok-bg: #152e1e; --ok-bd: #2a563a;
-    --shadow: none;
-  }
 }
 
 * { box-sizing: border-box; }

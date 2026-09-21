@@ -1,94 +1,154 @@
-# anon-tool
+<p align="center">
+  <img src="docs/brand/banner.svg" alt="anon-tool — deterministic, local anonymization" width="860">
+</p>
 
-Deterministic, **local** anonymization for documents you want to hand to an AI without handing
-over *who they are about*.
+<p align="center">
+  <em>Hand a document to an AI without handing over who it is about.</em>
+</p>
 
-A vulnerability assessment that says "client X, 3 sites, the manager is Mr Y, 30 findings on
-`X-PROD-01` at 1.2.3.4" is a list of names. Strip the names and the addresses, keep the technical
-substance, and the document keeps its value while losing its identifiability. That is the whole
-point of this tool.
+---
 
-## The non-negotiable design rule
+## Why this exists
 
-**The anonymizer is not an AI.** An LLM cannot anonymize anything without first *receiving* the
-data it is supposed to protect. Detection is therefore deterministic (regex + curated
-dictionaries + checksum validators) and entirely local: no network calls, no telemetry, no
-credentials, stdlib only.
+A vulnerability assessment that reads *"client X, three sites, the manager is Mr Y, 30 findings on
+`X-PROD-01` at 1.2.3.4"* is, in practice, a list of names. Strip the names and the addresses, keep
+the technical substance, and the document keeps all of its value while losing its identifiability.
 
-The AI re-enters only *after* redaction, when you (or an agent) analyze the redacted text.
+`anon-tool` performs that substitution deterministically and locally: it replaces the identifying
+parts of a document with typed placeholders (`[EMAIL-1-a3f9]`, `[CLIENTE-2-a3f9]`), leaves a
+reversible map on your machine, and puts the real values back into the finished document at the
+end — after the AI has worked on text that never named anybody.
 
-## What it guarantees, and what it does not
+## The rule the whole design follows
 
-Guaranteed by construction:
+> The anonymizer is not an AI.
 
-- the engine has no network capability (stdlib imports only, no `socket`/`urllib`/`http`);
-- `anon → deanon` is byte-for-byte lossless: the reversible map stores the exact matched
-  substring, so the final document gets the real values back;
-- the map (which holds the real values) lives in a private directory, mode 0600, never inside a
-  working repository.
+To anonymize a text, a model would first have to receive it: an LLM-based anonymizer transmits
+exactly what it claims to protect. That is a contradiction, not a tuning problem. Detection is
+therefore deterministic — regular expressions, a curated dictionary, and checksum validators for
+Italian identifiers — and entirely local: standard library only, no network capability, no
+telemetry, no credentials.
 
-Not guaranteed (declared limits, see `docs/DESIGN.md`):
+The AI re-enters only *after* redaction, when you or an agent analyze the redacted text.
 
-- **contextual references** ("the client from Brescia") are not detected — a redacted document
-  still needs a human read;
-- the custom dictionary is curated by hand: a proper name that is not in it is not redacted;
-- images/screenshots are not scannable (pixels), and `bash`-style reads are outside the guard's
-  perimeter.
+## What it guarantees
 
-## Status
+- **No network capability.** The engine imports the Python standard library and nothing else; there
+  is no `socket`, `urllib` or `http` import anywhere in it.
+- **Lossless round trip.** `anon → deanon` restores the document byte for byte: the map stores the
+  exact matched substring, so spelling variants come back as they were written.
+- **Idempotent.** Anonymizing an already-redacted document changes nothing; placeholders present in
+  the source are protected, not re-matched.
+- **A document can only be restored with *its* map.** Every placeholder carries a per-map tag
+  (`[EMAIL-1-a3f9]`). Applying a different run's map leaves the placeholders untouched and the
+  command exits non-zero instead of substituting another client's values.
+- **Open failure modes.** A document that still contains an unresolved placeholder, an unknown
+  token, or nothing to restore at all is reported as *incomplete* — never passed through silently.
+- **Validated identifiers.** Codice fiscale, partita IVA, IBAN and plate numbers are verified
+  against their checksum, which keeps false positives near zero — the opposite of a word list.
 
-Work in progress, built in public-quality steps but kept **private** for now.
+## What it does not do
 
-| Phase | Content | State |
-|---|---|---|
-| 0 | engine: office-aware `deanon`, residual detection, stem matching, checksum validators, catalogs, `audit` | done |
-| 1 | local web UI (stdlib server + vanilla front-end, loopback only) | done |
-| 2 | Docker packaging, one-command start | done |
-| 3 | docs, `NOTICE`, CI, security policy | done (repository stays **private** for now) |
+These are declared limits, not oversights:
 
-## Quick start (engine)
+- **Contextual references** ("the client from Brescia") are not detected. A redacted document still
+  needs a human read before it leaves your hands.
+- **Images and screenshots** cannot be scanned: pixels pass through, so do not paste a screenshot
+  of a client document into a chat.
+- **The custom dictionary is curated by hand.** A proper name that is not in `entities.txt` is not
+  redacted. Keeping that file current is the one recurring maintenance task.
+- **Shell reads** (`cat`, `rg`) are outside the Pi guard's default perimeter; `--anon-guard=all`
+  extends it to shell output.
+- **It is not a legal opinion** on using a cloud provider. It reduces technical risk; it does not
+  replace a DPA or an internal assessment.
+
+## Quick start
+
+### Engine (no dependencies)
 
 ```bash
-python3 anon.py report.txt                    # -> report.redacted.txt + a map in ~/.anon/maps/
-python3 anon.py report.txt --check --json     # is it safe to read? (the Pi guard uses this)
-python3 anon.py report.txt --audit            # is an ALREADY redacted file really redacted?
-python3 deanon.py final.docx <map.json>       # put the real values back (text or .docx/.xlsx/.odt)
-python3 anon.py --list-catalogs               # what built-in lists are installed
+python3 anon.py report.txt                       # -> report.redacted.txt + a map in ~/.anon/maps/
+python3 anon.py report.txt --check --json        # is this safe to read? (exit 1 if not)
+python3 anon.py report.txt --audit               # is an ALREADY redacted file really redacted?
+python3 deanon.py final.docx <map.json>          # put the real values back (text or .docx/.xlsx/.odt)
+python3 convert.py report.docx > report.md       # docx/pdf -> Markdown, locally
+python3 anon.py --list-catalogs                  # which built-in lists are installed
 ```
 
-## Quick start (web UI)
+### Web UI
 
 ```bash
-docker compose up -d                          # -> http://127.0.0.1:1407
+docker compose up -d                             # -> http://127.0.0.1:1407
 # or, without Docker:
 python3 web/server.py
 ```
 
-`make up | down | logs | native | test | smoke` for the same thing in one word. The container
-mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard all share the same
-`entities.txt` and the same maps.
+Four tabs, one primary action each: **Anonimizza**, **Deanonimizza**, **Verifica**, **Dizionario**.
+Pattern groups and catalogs sit behind an *Opzioni* disclosure, so the default flow is: drop a
+document, anonymize, read the result. Dark theme by default, with a light alternative.
 
-The UI has **no authentication**, so it is bound to loopback only — the container publishes
-`127.0.0.1:1407:1407`, never `1407:1407`. Every request must carry the correct `Host` and a
-per-run token (delivered to the page through a CSP nonce), a foreign `Origin` is refused, and no
-client-supplied filesystem path is ever used. See `docs/DESIGN.md` §7 for the full perimeter and
-`scripts/smoke-docker.sh` for the gate that proves it end to end.
+`make up | down | logs | native | test | smoke` wraps the same operations.
 
-## The web UI
+The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard all read the same
+`entities.txt` and write to the same map directory: one source of truth.
 
-Four tabs, one primary action each — the secondary controls (pattern groups, catalogs) live behind
-an **Opzioni** disclosure so the default flow is: drop a document, anonymize, read the result.
+## How the pieces fit
 
-| Tab | What it does |
+| Piece | Role |
 |---|---|
-| **Anonimizza** | document or pasted text → redacted text + a map; counts per type; download or copy |
-| **Deanonimizza** | pick the map this run produced (it is preselected) and get the document with the real values back |
-| **Verifica** | `--audit`: residual findings and dictionary variants, with the values masked unless you reveal them |
-| **Dizionario** | read, edit, save and download `entities.txt` (validated before it is written) |
+| `anon.py` | engine: detection, redaction, map, `--check`, `--audit` |
+| `deanon.py` | inverse: restores the real values, in plain text and inside `.docx/.xlsx/.pptx/.odt` |
+| `convert.py` | document → Markdown, using a pinned [anydoc](https://github.com/firecrawl/anydoc) |
+| `web/` | local UI: stdlib HTTP server plus a vanilla front-end (no framework, no CDN, no build) |
+| `catalogs/` | built-in lists (Italian municipalities, consumer mail domains), opt-in |
+| `~/.anon/maps/` | reversible maps — the only place the real values live, mode 0600, never in a repo |
 
-The UI is deliberately plain: no framework, no CDN, no build step, CSS tokens with light and dark
-from the system preference.
+The Pi integration (a skill and a guard extension) lives in
+[pi-customization](https://github.com/Stinocon/pi-customization); the portable workbench it belongs
+to is [pi-workbench](https://github.com/Stinocon/pi-workbench).
 
-The engine lives at `~/.anon/` and is mirrored into this repository by
-`scripts/sync-from-live.sh` (code only — maps, `entities.txt` and `allow.txt` never leave the
-machine).
+## The catalog system
+
+A catalog is the same file format as the custom dictionary, with directives:
+
+```
+@type    CITTÀ
+@match   case-sensitive               # `Brescia` matches, `il prato è verde` does not
+@context (?:comune di|sede di)\s+     # only after a marker
+@stem    on                           # `Pincopallino` also covers `Pincopallino1`, `-DB01`
+Brescia
+```
+
+```bash
+python3 anon.py file.txt --catalogs it-cities,free-mail-domains
+python3 anon.py file.txt --patterns legal,identity
+```
+
+Every catalog is **off by default**. Redacting more is not automatically better: a report where
+each city has become `[CITTÀ-1]` loses its substance and protects almost nothing extra. See
+`catalogs/README.md`.
+
+## Security posture
+
+The web UI has **no authentication**, and that is acceptable *only* because it is bound to
+loopback: the container publishes `127.0.0.1:1407:1407`, never `1407:1407`, and the server refuses
+a non-loopback bind unless `--allow-lan` is passed explicitly. Requests must carry the correct
+`Host` header and a per-run token delivered through a CSP nonce; a foreign `Origin` is refused. No
+client-supplied filesystem path is ever used.
+
+The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
+[`docs/DESIGN.md`](docs/DESIGN.md).
+
+## Development
+
+```bash
+make test      # engine suite, web integration, UI load check
+make smoke     # build the container and exercise every endpoint
+```
+
+`docs/OPEN-ISSUES.md` records what is intentionally left for a later pass.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE). Third-party components and their provenance are listed in
+[`NOTICE.md`](NOTICE.md).

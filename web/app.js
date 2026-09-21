@@ -110,6 +110,24 @@ document.querySelectorAll(".tab").forEach((tab, index, all) => {
   });
 });
 
+/* ---------------------------------------------------------------- tema */
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const button = $("theme-toggle");
+  const light = theme === "light";
+  button.textContent = light ? "Tema: chiaro" : "Tema: scuro";
+  button.setAttribute("aria-pressed", String(light));
+  button.title = light ? "Passa al tema scuro" : "Passa al tema chiaro";
+  try {
+    localStorage.setItem("anon-theme", theme);
+  } catch {
+    /* private mode: the choice simply does not persist */
+  }
+}
+$("theme-toggle").addEventListener("click", () =>
+  applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"));
+applyTheme(document.documentElement.dataset.theme || "dark");
+
 /* ---------------------------------------------------------------- state */
 function optionsSummary() {
   const patterns = selected(".pattern");

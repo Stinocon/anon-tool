@@ -61,6 +61,8 @@ function makeElement(tag = "div") {
 }
 
 globalThis.document = {
+  // The real DOM always has documentElement: the theme code writes to it before first paint.
+  documentElement: makeElement("html"),
   body: makeElement("body"),
   getElementById: (id) => (declaredIds.has(id) ? makeElement(id) : null),
   querySelectorAll: () => [],
@@ -69,6 +71,7 @@ globalThis.document = {
   addEventListener() {},
 };
 globalThis.window = { ANON_TOKEN: "test-token", addEventListener() {} };
+globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
 // `navigator` is a getter-only global in modern Node: redefine, do not assign.
 Object.defineProperty(globalThis, "navigator", {
   value: { clipboard: { writeText: async () => {} } },
