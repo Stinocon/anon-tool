@@ -125,7 +125,7 @@ fiscale** (16 chars + check character), **partita IVA** (11 digits + Luhn), **IB
 license plates, addresses. A checksum-validated match has almost no false positives — the
 opposite of a word list.
 
-## 7. Trust boundary of the local web app (planned)
+## 7. Trust boundary of the local web app (implemented)
 
 The web UI is the only part with a network surface, so its perimeter is explicit:
 
@@ -136,7 +136,11 @@ The web UI is the only part with a network surface, so its perimeter is explicit
 - **no client-supplied paths**: uploads land in a per-request temp directory under generated
   names and are deleted afterwards; the server never reads or writes an arbitrary path; results
   are streamed back as a download instead of written into the filesystem.
-- size limits on uploads, no shell, no `eval`, no content or value logging;
+- size limits on uploads (32 MB), no shell, no `eval`, no content or value logging;
+- the socket has a 30 s read timeout, so a client that announces a body and stalls cannot pin a
+  worker thread; the external converter is bounded in time (300 s) and output (32 MB);
+- the container runs as a non-root user, with a read-only root filesystem, `no-new-privileges`,
+  and only the data volume (`/data`) plus a tmpfs writable.
 - `/api/maps` exposes counts only; the placeholder→real-value mapping is shown only behind an
   explicit, warned action.
 

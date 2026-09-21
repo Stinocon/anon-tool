@@ -43,7 +43,7 @@ Work in progress, built in public-quality steps but kept **private** for now.
 |---|---|---|
 | 0 | engine: office-aware `deanon`, residual detection, stem matching, checksum validators, catalogs, `audit` | done |
 | 1 | local web UI (stdlib server + vanilla front-end, loopback only) | done |
-| 2 | Docker packaging, one-command start | planned |
+| 2 | Docker packaging, one-command start | done |
 | 3 | public release: docs, license, CI, generic catalogs | planned |
 
 ## Quick start (engine)
@@ -59,13 +59,20 @@ python3 anon.py --list-catalogs               # what built-in lists are installe
 ## Quick start (web UI)
 
 ```bash
-python3 web/server.py                         # -> http://127.0.0.1:1407  (loopback only)
+docker compose up -d                          # -> http://127.0.0.1:1407
+# or, without Docker:
+python3 web/server.py
 ```
 
-The UI has **no authentication** and is therefore bound to loopback only: it refuses a
-non-loopback `--host` unless `--allow-lan` is passed, every request must carry the correct `Host`
-and a per-run token, and no client-supplied filesystem path is ever used. See
-`docs/DESIGN.md` §7 for the full perimeter.
+`make up | down | logs | native | test | smoke` for the same thing in one word. The container
+mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard all share the same
+`entities.txt` and the same maps.
+
+The UI has **no authentication**, so it is bound to loopback only — the container publishes
+`127.0.0.1:1407:1407`, never `1407:1407`. Every request must carry the correct `Host` and a
+per-run token (delivered to the page through a CSP nonce), a foreign `Origin` is refused, and no
+client-supplied filesystem path is ever used. See `docs/DESIGN.md` §7 for the full perimeter and
+`scripts/smoke-docker.sh` for the gate that proves it end to end.
 
 The engine lives at `~/.anon/` and is mirrored into this repository by
 `scripts/sync-from-live.sh` (code only — maps, `entities.txt` and `allow.txt` never leave the

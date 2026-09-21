@@ -11,7 +11,8 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${IMAGE:-anon-tool:smoke}"
-PORT="${PORT:-1407}"
+# A free port by default: the smoke gate must not collide with a running instance on 1407.
+PORT="${PORT:-$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')}"
 DATA="$(mktemp -d "${TMPDIR:-/tmp}/anon-smoke-XXXXXX")"
 mkdir -p "$DATA/maps" "$DATA/catalogs"
 printf 'AZIENDA|Contoso\n' > "$DATA/entities.txt"
@@ -66,6 +67,25 @@ pass "converter available inside the image"
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/api/state")
 [ "$STATUS" = "403" ] || fail "the API answered without a token (got $STATUS)"
 pass "the API refuses requests without the token"
+
+# End-to-end document path INSIDE the container: a real .docx must be converted by the image's
+# own converter and come back redacted. Skipped (not failed) when pandoc is unavailable to build
+# the fixture.
+if command -v pandoc >/dev/null; then
+  DOCX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/anon-smoke-doc-XXXXXX")"
+  printf 'Cliente Contoso, referente mario@contoso.it, server 10.42.7.19\n' > "$DOCX_DIR/doc.md"
+  pandoc "$DOCX_DIR/doc.md" -o "$DOCX_DIR/doc.docx"
+  DOC_RESULT=$(curl -fsS -X POST \
+    -H "X-Anon-Token: ${TOKEN}" -H 'X-Filename: doc.docx' -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$DOCX_DIR/doc.docx" "http://127.0.0.1:${PORT}/api/anonymize-document")
+  echo "$DOC_RESULT" | grep -q '"origin": "converted"' || fail "docx was not converted inside the container"
+  echo "$DOC_RESULT" | grep -qE '\[AZIENDA-1-[0-9a-f]{4}\]' || fail "docx text was not redacted"
+  echo "$DOC_RESULT" | grep -q 'contoso.it' && fail "docx conversion leaked the value"
+  pass "docx converted + redacted inside the container"
+  rm -rf "$DOCX_DIR"
+else
+  printf 'SKIP  docx end-to-end (pandoc not installed)\n'
+fi
 
 # The port must be published on loopback ONLY.
 docker port anon-tool-smoke | grep -q "^1407/tcp -> 127.0.0.1:${PORT}$" || fail "port is not loopback-only"
