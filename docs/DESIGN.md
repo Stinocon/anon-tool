@@ -61,27 +61,28 @@ records `placeholder → {type, exact original}` in a map. Because the *exact su
 Placeholder-shaped text already present in the source is *reserved*, so a literal `[EMAIL-1]` in
 the document is never mistaken for one this run produced.
 
-## 4b. Residual risk: the map is not bound to the document (declared)
+## 4b. A document can only be restored with ITS map
 
-Placeholder numbering is **per document** (`[EMAIL-1]` is the first email of *that* run). Nothing
-in the content itself can tell a document produced from run A from run B, so if the operator
-picks client B's map for client A's document, the run will happily substitute B's real values and
-report success. The tool cannot detect this, and pretending otherwise would be worse than saying
-so.
+Placeholder numbering is per document, so `[EMAIL-1]` of client A's run and `[EMAIL-1]` of client
+B's run were indistinguishable: applying the wrong map silently substituted another client's real
+values and reported success. Content alone can never tell two runs apart, so the link is carried
+in the token itself:
 
-What is done about it:
+```
+[EMAIL-1-a3f9]      # 1st email of the run tagged a3f9
+```
 
-- `complete` is now **fail-closed**: it requires `remaining == 0` **and** `unknown == 0` **and**
-  at least one replacement. A document containing `[EMAIL-9]`, or a document with no placeholder
-  at all, is reported as INCOMPLETE (exit 3) instead of success.
-- The report carries the map's provenance (`map_source`, `map_created`, `map_counts`), so an
-  operator can see which run produced it — the only available signal.
-- The web UI **preselects the map created by the current run** and shows date/source/counts in
-  the picker.
+- `anon.py` generates a fresh tag per run (4 hex chars), records it in the map, and stamps every
+  placeholder with it. `--tag` pins it when reproducibility matters.
+- `deanon.py` resolves placeholders exactly, so a foreign map leaves them untouched and the run
+  reports INCOMPLETE (exit 3) instead of substituting the wrong values.
+- The verdict is fail-closed: `complete` requires no unresolved placeholder, no unknown token,
+  and at least one replacement. A document with nothing to restore is reported, never silently
+  passed through.
+- The old untagged form still parses, so maps created before this change keep working.
 
-The structural fix (a per-map tag inside the placeholder, e.g. `[EMAIL-1-a3f9]`) would make a
-mismatch detectable, at the cost of a longer token the model has to carry through unchanged. It
-is deliberately not done yet.
+Cost: the model must copy `[EMAIL-1-a3f9]` verbatim. That is why the skill states it as a hard
+rule, and why the failure is loud: a mangled token cannot be restored, and the run says so.
 
 ## 5. Dictionary matching (what "the same entity" means)
 

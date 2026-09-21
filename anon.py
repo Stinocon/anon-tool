@@ -53,7 +53,11 @@ DEFAULT_MAPS = ANON_HOME / "maps"
 DEFAULT_ALLOW = ANON_HOME / "allow.txt"
 CATALOGS_DIR = ANON_HOME / "catalogs"
 
-PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*-\d+\]")
+# `[EMAIL-1]` is the bare form; `[EMAIL-1-a3f9]` carries a per-map tag. The tag is what makes a
+# WRONG MAP detectable: placeholders are numbered per document, so without it a document from run
+# A silently accepts run B's map whenever the numbers happen to line up. Absent tag = a map made
+# before this existed (still supported).
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*-\d+(?:-[0-9a-f]{4})?\]")
 
 # Values that are structurally sensitive-looking but are deliberately public: RFC 2606
 # reserved domains, RFC 5737 documentation networks, loopback/wildcard. Redacting them
@@ -709,8 +713,15 @@ def anonymize(
     entities: list[Entity],
     include_heuristics: bool = True,
     families: Iterable[str] | None = None,
+    tag: str | None = None,
 ) -> tuple[str, dict[str, dict[str, str]], dict[str, int]]:
-    """Replace sensitive spans with stable placeholders. Returns (redacted, entries, counts)."""
+    """Replace sensitive spans with stable placeholders. Returns (redacted, entries, counts).
+
+    Every placeholder carries a `tag` identifying the map it belongs to (`[EMAIL-1-a3f9]`), so a
+    document can only be de-anonymized with ITS map. `tag=None` generates a fresh one.
+    """
+    if tag is None:
+        tag = new_tag()
     found = detect(text, entities, include_heuristics, families)
     by_key: dict[tuple[str, str], str] = {}
     counters: dict[str, int] = {}
@@ -726,9 +737,10 @@ def anonymize(
         key = (ptype, value)
         placeholder = by_key.get(key)
         if placeholder is None:
+            suffix = f"-{tag}" if tag else ""
             while True:
                 counters[ptype] = counters.get(ptype, 0) + 1
-                candidate = f"[{ptype}-{counters[ptype]}]"
+                candidate = f"[{ptype}-{counters[ptype]}{suffix}]"
                 if candidate not in reserved:
                     placeholder = candidate
                     break
@@ -745,6 +757,24 @@ def anonymize(
     for entry in entries.values():
         counts[entry["type"]] = counts.get(entry["type"], 0) + 1
     return "".join(out), entries, counts
+
+
+TAG_RADIX = 16
+TAG_DIGITS = 4
+
+
+def new_tag() -> str:
+    """A short, per-map identifier carried inside every placeholder."""
+    return "".join(os.urandom(2).hex()[:TAG_DIGITS])
+
+
+def tag_of(entries: dict[str, dict[str, str]]) -> str | None:
+    """Recover the tag from the placeholder keys (the map writer needs it)."""
+    for placeholder in entries:
+        match = PLACEHOLDER_RE.fullmatch(placeholder)
+        if match and placeholder.count("-") >= 2:
+            return placeholder.rsplit("-", 1)[-1].rstrip("]")
+    return None
 
 
 def _default_output(path: Path) -> Path:
@@ -1119,7 +1149,11 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
     entities = resolve_entities(args)
     text = read_text(src)
     redacted, entries, counts = anonymize(
-        text, entities, include_heuristics=not args.no_hosts, families=resolve_families(args)
+        text,
+        entities,
+        include_heuristics=not args.no_hosts,
+        families=resolve_families(args),
+        tag=getattr(args, "tag", None) or None,
     )
 
     if args.stdout:
@@ -1201,6 +1235,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
     parser.add_argument("--stdout", action="store_true", help="write the redacted text to stdout")
     parser.add_argument("--no-hosts", action="store_true", help="skip hostname/phone/IP heuristics")
+    parser.add_argument(
+        "--tag",
+        help="pin the per-map placeholder tag (default: random) — mainly for reproducibility",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress informational messages")
     parser.add_argument("--version", action="version", version=f"anon.py {VERSION}")
     return parser

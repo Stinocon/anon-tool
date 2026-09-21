@@ -113,9 +113,9 @@ class RoundTripTest(unittest.TestCase):
 
     def test_dictionary_longest_match_wins(self) -> None:
         text = "Acme Italia S.r.l. ha rilevato Acme.\n"
-        redacted, entries, counts = anon.anonymize(text, self.entities)
-        self.assertIn("[AZIENDA-1]", redacted)
-        self.assertIn("[CLIENTE-1]", redacted)
+        redacted, entries, counts = anon.anonymize(text, self.entities, tag="aaaa")
+        self.assertIn("[AZIENDA-1-aaaa]", redacted)
+        self.assertIn("[CLIENTE-1-aaaa]", redacted)
         self.assertEqual(counts, {"AZIENDA": 1, "CLIENTE": 1})
 
     # --- regressions for the adversarial review (2026-09-21) -------------------------
@@ -252,10 +252,20 @@ class RoundTripTest(unittest.TestCase):
         restored, _ = deanon.deanonize(redacted, entries)
         self.assertEqual(restored, source)
 
+    def test_each_run_gets_its_own_tag(self) -> None:
+        """Two runs over the same text must not produce interchangeable placeholders."""
+        first, first_entries, _ = anon.anonymize("mail info@acme.it\n", self.entities)
+        second, second_entries, _ = anon.anonymize("mail info@acme.it\n", self.entities)
+        self.assertNotEqual(anon.tag_of(first_entries), anon.tag_of(second_entries))
+        self.assertNotEqual(first, second)
+        # a document from the first run cannot be restored with the second run's map
+        restored, _count = deanon.deanonize(first, second_entries)
+        self.assertEqual(restored, first, "a foreign map must leave the placeholders untouched")
+
     def test_same_value_reuses_one_placeholder(self) -> None:
         text = "info@cliente.it, poi di nuovo info@cliente.it.\n"
-        redacted, entries, counts = anon.anonymize(text, self.entities)
-        self.assertEqual(redacted.count("[EMAIL-1]"), 2)
+        redacted, entries, counts = anon.anonymize(text, self.entities, tag="aaaa")
+        self.assertEqual(redacted.count("[EMAIL-1-aaaa]"), 2)
         self.assertEqual(counts, {"EMAIL": 1})
 
 
@@ -365,9 +375,9 @@ class CliTest(unittest.TestCase):
     def test_plain_text_is_still_accepted(self) -> None:
         txt = self.tmp / "ok.txt"
         txt.write_text("mail: info@azienda.it\n", encoding="utf-8")
-        res = self.run_anon(str(txt), "--quiet")
+        res = self.run_anon(str(txt), "--quiet", "--tag", "aaaa")
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("[EMAIL-1]", (self.tmp / "ok.redacted.txt").read_text(encoding="utf-8"))
+        self.assertIn("[EMAIL-1-aaaa]", (self.tmp / "ok.redacted.txt").read_text(encoding="utf-8"))
 
     def test_stdin_check_reports_the_real_line(self) -> None:
         res = subprocess.run(
@@ -392,15 +402,15 @@ class CliTest(unittest.TestCase):
         self.assertIn("mycity", listing.stdout)
 
         with_catalog = self.run_anon(str(src), "--catalogs", "mycity", "--out", str(self.tmp / "a.txt"),
-                                     "--map", str(self.tmp / "a.json"), "--quiet")
+                                     "--map", str(self.tmp / "a.json"), "--quiet", "--tag", "aaaa")
         self.assertEqual(with_catalog.returncode, 0, with_catalog.stderr)
         redacted = (self.tmp / "a.txt").read_text(encoding="utf-8")
-        self.assertIn("[CITTÀ-1]", redacted)
+        self.assertIn("[CITTÀ-1-aaaa]", redacted)
         self.assertIn("il prato", redacted, "case-sensitive: the meadow is not a city")
-        self.assertIn("[CODICEFISCALE-1]", redacted)
+        self.assertIn("[CODICEFISCALE-1-aaaa]", redacted)
 
         identity_only = self.run_anon(str(src), "--patterns", "identity", "--out", str(self.tmp / "b.txt"),
-                                      "--map", str(self.tmp / "b.json"), "--quiet")
+                                      "--map", str(self.tmp / "b.json"), "--quiet", "--tag", "aaaa")
         self.assertEqual(identity_only.returncode, 0, identity_only.stderr)
         self.assertIn("RSSMRA80A01H501U", (self.tmp / "b.txt").read_text(encoding="utf-8"),
                       "--patterns identity must leave the legal group off")
@@ -606,7 +616,7 @@ class StructuredFormatTest(unittest.TestCase):
         source.write_text(original, encoding="utf-8")
         redacted = self.tmp / "data.redacted.json"
         run = self._run(str(ANON_PY), str(source), "--entities", str(self.entities),
-                        "--out", str(redacted), "--map", str(self.tmp / "m.json"), "--quiet")
+                        "--out", str(redacted), "--map", str(self.tmp / "m.json"), "--quiet", "--tag", "aaaa")
         self.assertEqual(run.returncode, 0, run.stderr)
         text = redacted.read_text(encoding="utf-8")
         json.loads(text)  # the syntax must survive redaction, keys included
@@ -624,10 +634,10 @@ class StructuredFormatTest(unittest.TestCase):
         source.write_text("Contoso S.r.l.:\n  referente: Mario Rossi\n  email: mario@contoso.it\n", encoding="utf-8")
         out = self.tmp / "data.redacted.yaml"
         run = self._run(str(ANON_PY), str(source), "--entities", str(self.entities),
-                        "--out", str(out), "--map", str(self.tmp / "y.json"), "--quiet")
+                        "--out", str(out), "--map", str(self.tmp / "y.json"), "--quiet", "--tag", "aaaa")
         self.assertEqual(run.returncode, 0, run.stderr)
         text = out.read_text(encoding="utf-8")
-        self.assertIn("[AZIENDA-1]:", text)
+        self.assertIn("[AZIENDA-1-aaaa]:", text)
         self.assertNotIn("Mario Rossi", text)
 
     def test_every_json_output_carries_the_schema(self) -> None:

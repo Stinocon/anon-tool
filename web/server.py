@@ -100,11 +100,13 @@ def _convert_to_markdown(source: Path) -> str:
 
 def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
     entities, families = _resolve(catalogs, patterns)
-    redacted, entries, counts = anon.anonymize(text, entities, families=families)
+    tag = anon.new_tag()
+    redacted, entries, counts = anon.anonymize(text, entities, families=families, tag=tag)
     map_id = None
     if save_map and entries:
         map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
         payload = {
+            "tag": tag,
             "version": anon.VERSION,
             "schema": anon.SCHEMA,
             "id": map_id,
@@ -117,6 +119,7 @@ def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
         anon._write_private(anon.DEFAULT_MAPS / f"{map_id}.map.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return {
         "redacted": redacted,
+        "tag": tag,
         "counts": counts,
         "entries": [{"placeholder": key, "type": value["type"]} for key, value in entries.items()],
         "map_id": map_id,

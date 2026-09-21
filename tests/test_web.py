@@ -184,20 +184,21 @@ class WebUiTest(unittest.TestCase):
             "patterns": ["identity", "network", "legal"],
         })
         self.assertEqual(status, 200)
-        self.assertIn("[AZIENDA-1]", result["redacted"])
-        self.assertIn("sede di [CITTÀ-1]", result["redacted"])
-        self.assertIn("[EMAIL-1]", result["redacted"])
+        tag = result["tag"]
+        self.assertIn(f"[AZIENDA-1-{tag}]", result["redacted"])
+        self.assertIn(f"sede di [CITTÀ-1-{tag}]", result["redacted"])
+        self.assertIn(f"[EMAIL-1-{tag}]", result["redacted"])
         self.assertTrue(result["map_id"])
         self.assertEqual({item["type"] for item in result["entries"]}, {"AZIENDA", "CITTÀ", "EMAIL"})
 
         status, revealed = self.call("/api/maps/reveal", {"id": result["map_id"], "confirm": True})
         self.assertEqual(status, 200)
-        self.assertEqual(revealed["entries"]["[EMAIL-1]"]["original"], "mario@contoso.it")
+        self.assertEqual(revealed["entries"][f"[EMAIL-1-{tag}]"]["original"], "mario@contoso.it")
 
         status, refused = self.call("/api/maps/reveal", {"id": result["map_id"]})
         self.assertEqual(status, 400, "revealing the real values needs an explicit confirmation")
 
-        restored = "Cliente [AZIENDA-1] e sede di [CITTÀ-1], referente [EMAIL-1]\n"
+        restored = f"Cliente [AZIENDA-1-{tag}] e sede di [CITTÀ-1-{tag}], referente [EMAIL-1-{tag}]\n"
         status, back = self.call("/api/deanonymize", None,
                                  headers={"X-Filename": "finale.txt", "X-Map-Id": result["map_id"],
                                           "Content-Type": "application/octet-stream"},
@@ -256,8 +257,8 @@ class WebUiTest(unittest.TestCase):
                                        raw=docx.read_bytes())
             self.assertEqual(status, 200, result)
             self.assertEqual(result["origin"], "converted")
-            self.assertIn("[EMAIL-1]", result["redacted"])
-            self.assertIn("[AZIENDA-1]", result["redacted"])
+            self.assertIn(f"[EMAIL-1-{result['tag']}]", result["redacted"])
+            self.assertIn(f"[AZIENDA-1-{result['tag']}]", result["redacted"])
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
