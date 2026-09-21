@@ -210,7 +210,10 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
         "remaining": remaining,
         "remaining_parts": remaining_parts,
         "unknown_placeholders": unknown,
-        "complete": remaining == 0,
+        "map_entries": len(entries),
+        # Fail CLOSED: an unresolved `[EMAIL-7]` is not deliverable even though the map has no
+        # such key — it means the document and the map do not belong together.
+        "complete": remaining == 0 and unknown == 0 and bool(parts),
     }
 
 
@@ -235,7 +238,8 @@ def deanon_text(source: Path, output: Path, entries: dict[str, dict[str, str]]) 
         "remaining": remaining,
         "remaining_parts": [source.name] if remaining else [],
         "unknown_placeholders": unknown,
-        "complete": remaining == 0,
+        "map_entries": len(entries),
+        "complete": remaining == 0 and unknown == 0 and replaced > 0,
     }
 
 
@@ -269,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         entries = load_map(map_path)
+        raw_map = json.loads(map_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"deanon: {exc}", file=sys.stderr)
         return 2
@@ -279,15 +284,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.stdout:
         original = doc.read_text(encoding="utf-8", errors="replace")
-        text, _replaced = deanonize(original, restorable(entries))
+        text, replaced = deanonize(original, restorable(entries))
         sys.stdout.write(text if text.endswith("\n") else text + "\n")
-        remaining, _unknown = count_placeholders(text, restorable(entries))
-        if remaining:
+        remaining, unknown = count_placeholders(text, restorable(entries))
+        if remaining or unknown or not replaced:
             print(
-                f"deanon: INCOMPLETE — {remaining} placeholder(s) from this map are still present.",
+                "deanon: INCOMPLETE — "
+                f"{remaining} unresolved, {unknown} unknown placeholder(s), {replaced} restored.",
                 file=sys.stderr,
             )
-        return 3 if remaining else 0
+            return 3
+        return 0
 
     out = Path(args.out).expanduser() if args.out else doc.with_name(f"{doc.stem}.deanon{doc.suffix}")
     try:
@@ -299,7 +306,14 @@ def main(argv: list[str] | None = None) -> int:
     report["document"] = str(doc)
     report["output"] = str(out)
     report["map"] = str(map_path)
+    # Provenance: five minutes later, `map_source` is the only thing that tells an operator which
+    # run produced this map. Placeholder numbering is per-document, so a wrong map cannot be
+    # detected from the content alone — it has to be visible.
+    report["map_source"] = raw_map.get("source")
+    report["map_created"] = raw_map.get("created")
+    report["map_counts"] = raw_map.get("counts")
     remaining = int(report["remaining"])
+    unknown = int(report["unknown_placeholders"])
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False))
@@ -307,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"deanon: {report['replaced']} placeholder occurrence(s) restored ({report['format']})")
         for name, count in sorted(dict(report.get("parts") or {}).items()):
             print(f"        {name}: {count}")
+        if report["map_source"]:
+            print(f"deanon: mappa del {report['map_created'] or '?'} da {report['map_source']}")
         if report["unknown_placeholders"]:
             print(f"deanon: {report['unknown_placeholders']} placeholder-shaped token(s) not in the map — left as-is")
         print(f"deanon: -> {out}")
@@ -324,8 +340,24 @@ def main(argv: list[str] | None = None) -> int:
             "        instead of editing the .docx by hand, then run deanon again.",
             file=sys.stderr,
         )
+    if not remaining and unknown:
+        print(
+            f"deanon: INCOMPLETE — {unknown} placeholder-shaped token(s) are not in this map.\n"
+            "        Either the document comes from a different run (wrong map), or it contains\n"
+            "        tokens that were never produced here. Do NOT deliver it: those values are\n"
+            "        still placeholders.",
+            file=sys.stderr,
+        )
+    if report["replaced"] == 0 and not remaining and not unknown:
+        print(
+            "deanon: NOTHING RESTORED — no placeholder from this map was found in the document.\n"
+            "        Is this the document produced from that redacted source, and is this the\n"
+            "        right map? Delivering it as-is would ship placeholders or drop the real\n"
+            "        values silently.",
+            file=sys.stderr,
+        )
 
-    return 3 if remaining else 0
+    return 0 if report["complete"] else 3
 
 
 if __name__ == "__main__":

@@ -47,7 +47,8 @@ TOKEN_HEADER = "X-Anon-Token"
 CONVERTER = Path(
     os.environ.get("ANON_CONVERTER") or (Path.home() / ".pi" / "agent" / "skills" / "docs" / "docs.py")
 )
-STATE = {"token": None, "port": 1407, "jobs": 0}
+STATE = {"token": None, "nonce": None, "port": 1407, "jobs": 0}
+CONVERT_MAX_BYTES = 32 * 1024 * 1024
 LOCK = threading.Lock()
 
 
@@ -71,16 +72,30 @@ def _map_path(map_id: str) -> Path:
 
 
 def _convert_to_markdown(source: Path) -> str:
+    """Convert with the external converter, bounding BOTH the wall time and the output size.
+
+    A deliberately hostile document (a zip bomb) could otherwise inflate a document far past
+    memory; the cap turns that into a clean error.
+    """
     if not CONVERTER.is_file():
         raise RuntimeError(
             "no document converter configured (set ANON_CONVERTER to a docs.py-compatible script)"
         )
-    process = subprocess.run(
-        [sys.executable, str(CONVERTER), str(source)], capture_output=True, text=True, timeout=300
+    process = subprocess.Popen(
+        [sys.executable, str(CONVERTER), str(source)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=300)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise RuntimeError("conversion timed out")
+    if len(stdout) > CONVERT_MAX_BYTES:
+        raise RuntimeError(f"conversion produced more than {CONVERT_MAX_BYTES // 1024 // 1024} MB")
     if process.returncode != 0:
-        raise RuntimeError((process.stderr or "conversion failed").strip()[:400])
-    return process.stdout
+        raise RuntimeError((stderr.decode("utf-8", "replace") or "conversion failed").strip()[:400])
+    return stdout.decode("utf-8", "replace")
 
 
 def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
@@ -115,6 +130,9 @@ def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = "anon-tool"
     protocol_version = "HTTP/1.1"
+    # A client that announces a Content-Length and then stalls would otherwise pin a worker
+    # thread forever; this bounds every socket read.
+    timeout = 30
 
     # --- plumbing ---------------------------------------------------------------------
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 - silence the default logger
@@ -139,14 +157,23 @@ class Handler(BaseHTTPRequestHandler):
             self._error(404, "not found")
             return
         body = path.read_bytes()
+        policy = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
         if name == "index.html":
+            # The script that carries the token is inline, so it needs a nonce: `script-src 'self'`
+            # alone would BLOCK it and leave `window.ANON_TOKEN` undefined — every API call would
+            # then fail with a 403 in a real browser.
             body = body.replace(b"__ANON_TOKEN__", STATE["token"].encode())
+            body = body.replace(b"__ANON_NONCE__", STATE["nonce"].encode())
+            policy = (
+                "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+                f"script-src 'self' 'nonce-{STATE['nonce']}'"
+            )
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'")
+        self.send_header("Content-Security-Policy", policy)
         self.end_headers()
         self.wfile.write(body)
 
@@ -236,8 +263,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(404, "not found")
         except ValueError as exc:
             self._error(400, str(exc))
-        except Exception as exc:  # noqa: BLE001
-            self._error(500, f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - never leak a traceback body
+            self._error(500, f"{type(exc).__name__}: {str(exc)[:200]}")
 
     # --- endpoints --------------------------------------------------------------------
     def _state(self) -> dict:
@@ -447,7 +474,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not loopback:
         print(f"server: WARNING binding {args.host} — the UI is reachable from the network", file=sys.stderr)
-    STATE["token"] = __import__("secrets").token_urlsafe(24)
+    import secrets
+
+    STATE["token"] = secrets.token_urlsafe(24)
+    STATE["nonce"] = secrets.token_urlsafe(16)
     STATE["port"] = args.port
     server = LocalServer((args.host, args.port), Handler)
     host_display = "127.0.0.1" if loopback else args.host

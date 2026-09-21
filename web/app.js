@@ -126,6 +126,12 @@ function showAnonymize(result, name) {
   anonPayload = { text: result.redacted, name };
   $("anon-map").textContent = result.map_id ? `mappa: ${result.map_id}` : "nessuna mappa (niente da redigere)";
   $("mapping").innerHTML = '<span class="muted small">premi «Mostra la mappa»</span>';
+  // Preselect the map this run just produced: placeholder numbering is per document, so picking
+  // the wrong map silently mixes another client's real values into the deliverable.
+  if (result.map_id) {
+    $("map-select").value = result.map_id;
+    setStatus($("deanon-status"), `mappa ${result.map_id} pronta per la deanonimizzazione`, "ok");
+  }
 }
 
 $("run-anon").addEventListener("click", async () => {
@@ -234,6 +240,8 @@ $("run-deanon").addEventListener("click", async () => {
     const rows = [
       ["sostituzioni", String(report.replaced ?? 0)],
       ["residui", String(report.remaining ?? 0)],
+      ["token ignoti", String(report.unknown_placeholders ?? 0)],
+      ["mappa di", report.map_source || "?"] ,
       ["esito", report.complete ? "completo" : "INCOMPLETO — non consegnabile"],
     ];
     for (const [key, value] of rows) {

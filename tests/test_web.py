@@ -114,11 +114,24 @@ class WebUiTest(unittest.TestCase):
     def test_page_and_state(self) -> None:
         self.assertIn("anon-tool", self.page)
         self.assertNotIn("__ANON_TOKEN__", self.page, "the token placeholder must be replaced")
+        self.assertNotIn("__ANON_NONCE__", self.page, "the nonce placeholder must be replaced")
         status, info = self.call("/api/state")
         self.assertEqual(status, 200)
         self.assertEqual(info["schema"], "anon/1")
         self.assertEqual([c["name"] for c in info["catalogs"]], ["cities"])
         self.assertEqual(info["patterns"], ["identity", "network", "legal"])
+
+    def test_csp_nonce_matches_the_inline_token_script(self) -> None:
+        """`script-src 'self'` alone BLOCKS the inline token script: the UI would be dead in a
+        browser (every API call 403) while HTTP-only tests stayed green. The nonce must match."""
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as response:
+            csp = response.headers.get("Content-Security-Policy", "")
+            page = response.read().decode()
+        match = re.search(r"'nonce-([^']+)'", csp)
+        self.assertIsNotNone(match, f"no nonce in the CSP: {csp!r}")
+        nonce = match.group(1)
+        self.assertIn(f'nonce="{nonce}"', page, "the script tag must carry the same nonce")
+        self.assertIn(f'window.ANON_TOKEN = "{self.token}"', page)
 
     def test_security_guards(self) -> None:
         without_token = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/state")

@@ -743,16 +743,35 @@ class DeanonContainerTest(unittest.TestCase):
             self.assertEqual(info.compress_type, zipfile.ZIP_STORED, "mimetype must stay uncompressed")
             self.assertIn("Contoso", archive.read("content.xml").decode())
 
-    def test_unknown_placeholder_is_left_alone(self) -> None:
+    def test_unknown_placeholder_is_reported_and_fails_closed(self) -> None:
+        """A token the map does not know is left as-is AND makes the run incomplete.
+
+        It is not "data to restore", but it IS a placeholder still visible in the document: the
+        likely cause is a map from a different run, and delivering that silently would mix one
+        client's values into another's document.
+        """
         docx = self._make_docx("unknown.docx", {
             "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
             + self._para("[EMAIL-1] e [EMAIL-9]") + "</w:body></w:document>",
         })
         res = self._deanon(docx, "unknown.deanon.docx")
-        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(res.returncode, 3, "an unresolvable placeholder must not report success")
         report = json.loads(res.stdout)
         self.assertEqual(report["replaced"], 1)
-        self.assertEqual(report["unknown_placeholders"], 1, "a hallucinated token is not data to restore")
+        self.assertEqual(report["unknown_placeholders"], 1)
+        self.assertFalse(report["complete"])
+        self.assertIn("not in this map", res.stderr)
+
+    def test_document_without_any_placeholder_is_reported(self) -> None:
+        """A silent no-op is a failure: the delivery would carry placeholders or miss values."""
+        docx = self._make_docx("clean.docx", {
+            "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+            + self._para("nessun placeholder qui") + "</w:body></w:document>",
+        })
+        res = self._deanon(docx, "clean.deanon.docx")
+        self.assertEqual(res.returncode, 3, res.stdout + res.stderr)
+        self.assertEqual(json.loads(res.stdout)["complete"], False)
+        self.assertIn("NOTHING RESTORED", res.stderr)
 
     def test_xml_metacharacters_in_a_value_do_not_corrupt_the_document(self) -> None:
         """`Acme & Soehne` must land as `Acme &amp; Soehne`, or Word refuses to open the file."""
