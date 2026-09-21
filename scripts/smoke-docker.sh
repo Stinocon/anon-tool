@@ -56,7 +56,7 @@ pass "/api/state"
 
 REDACTED=$(api -X POST -d '{"text":"Cliente Contoso e mario@contoso.it\n"}' \
   "http://127.0.0.1:${PORT}/api/anonymize")
-echo "$REDACTED" | grep -qE '\[EMAIL-1-[0-9a-f]{4}\]' || fail "anonymize (tagged placeholder missing)"
+echo "$REDACTED" | grep -qE '\[EMAIL-1-[0-9a-f]{6}\]' || fail "anonymize (tagged placeholder missing)"
 echo "$REDACTED" | grep -q 'mario@contoso.it' && fail "anonymize left the value in place"
 pass "/api/anonymize (tagged placeholder, value gone)"
 
@@ -79,7 +79,7 @@ if command -v pandoc >/dev/null; then
     -H "X-Anon-Token: ${TOKEN}" -H 'X-Filename: doc.docx' -H 'Content-Type: application/octet-stream' \
     --data-binary "@$DOCX_DIR/doc.docx" "http://127.0.0.1:${PORT}/api/anonymize-document")
   echo "$DOC_RESULT" | grep -q '"origin": "converted"' || fail "docx was not converted inside the container"
-  echo "$DOC_RESULT" | grep -qE '\[AZIENDA-1-[0-9a-f]{4}\]' || fail "docx text was not redacted"
+  echo "$DOC_RESULT" | grep -qE '\[AZIENDA-1-[0-9a-f]{6}\]' || fail "docx text was not redacted"
   echo "$DOC_RESULT" | grep -q 'contoso.it' && fail "docx conversion leaked the value"
   pass "docx converted + redacted inside the container"
   rm -rf "$DOCX_DIR"

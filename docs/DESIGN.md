@@ -132,7 +132,7 @@ The web UI is the only part with a network surface, so its perimeter is explicit
 - **bind `127.0.0.1`** only; `0.0.0.0` is refused unless an explicit `--allow-lan` flag prints a
   warning. No authentication is acceptable *because* it is loopback — that is the boundary.
 - **anti-CSRF / DNS-rebinding**: any page in the user's browser can `POST` to `127.0.0.1:1407`.
-  Mitigations: `Origin` check + a required custom header + a per-run token in the URL.
+  Mitigations: `Host` allowlist, a per-run token required as a custom header (delivered to the page through a CSP nonce, so a foreign origin can never read it), and an `Origin` check when the header is present.
 - **no client-supplied paths**: uploads land in a per-request temp directory under generated
   names and are deleted afterwards; the server never reads or writes an arbitrary path; results
   are streamed back as a download instead of written into the filesystem.

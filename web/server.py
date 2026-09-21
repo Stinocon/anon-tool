@@ -232,6 +232,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._static("app.css", "text/css; charset=utf-8")
             elif path == "/app.js":
                 self._static("app.js", "text/javascript; charset=utf-8")
+            elif path == "/favicon.ico":
+                # Answered explicitly: a 404 here shows up as a console error on every load, and
+                # "no console errors" is part of the definition of a working UI.
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
             elif path == "/api/state":
                 self._json(self._state())
             elif path == "/api/maps":

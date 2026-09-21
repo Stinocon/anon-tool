@@ -38,8 +38,9 @@ in `docs/DESIGN.md` §7:
 - **images/screenshots** — pixels are not scannable, so a screenshot of a client document passes;
 - **`bash`-style reads** in the Pi guard are outside its default perimeter (`--anon-guard=all`
   extends it to shell output);
-- a document whose **only** placeholder happens to exist in a different run's map is now
-  impossible to restore (the per-map tag makes it fail loudly), but the tag is part of the
+- a document whose only placeholder would collide with another run's map is now
+  detected and refused; the tag is 6 hex digits (16.7M values), so a collision stays negligible
+  but is not mathematically impossible (the per-map tag makes it fail loudly), but the tag is part of the
   placeholder: altering it in the document makes restoration fail, by design.
 
 ## Supported versions

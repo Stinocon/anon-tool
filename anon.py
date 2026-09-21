@@ -57,7 +57,7 @@ CATALOGS_DIR = ANON_HOME / "catalogs"
 # WRONG MAP detectable: placeholders are numbered per document, so without it a document from run
 # A silently accepts run B's map whenever the numbers happen to line up. Absent tag = a map made
 # before this existed (still supported).
-PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*-\d+(?:-[0-9a-f]{4})?\]")
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9_]*-\d+(?:-[0-9a-f]{4,8})?\]")
 
 # Values that are structurally sensitive-looking but are deliberately public: RFC 2606
 # reserved domains, RFC 5737 documentation networks, loopback/wildcard. Redacting them
@@ -759,13 +759,13 @@ def anonymize(
     return "".join(out), entries, counts
 
 
-TAG_RADIX = 16
-TAG_DIGITS = 4
+TAG_DIGITS = 6  # 16.7M values: a collision between two maps stays negligible (with 4 hex it was
+                # ~7% across 100 maps, and a collision is exactly the case this tag exists to stop)
 
 
 def new_tag() -> str:
     """A short, per-map identifier carried inside every placeholder."""
-    return "".join(os.urandom(2).hex()[:TAG_DIGITS])
+    return os.urandom(3).hex()[:TAG_DIGITS]
 
 
 def tag_of(entries: dict[str, dict[str, str]]) -> str | None:
@@ -1171,6 +1171,7 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
         map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
         map_path = Path(args.map).expanduser() if args.map else DEFAULT_MAPS / f"{map_id}.map.json"
         payload = {
+            "tag": tag_of(entries),
             "version": VERSION,
             "id": map_id,
             "source": str(src.resolve()),
