@@ -53,7 +53,7 @@ if git diff --cached --quiet; then
   echo "[anon-sync] nothing to commit"
   exit 0
 fi
-git commit -q -m "chore(sync): mirror anon engine from ${LIVE/#$HOME/\~}" \
+git commit -q -m "chore(sync): mirror anon engine from ${LIVE/#$HOME/~}" \
   --author="anon-tool sync <anon-sync@localhost>"
 if [ "${PI_ANON_SYNC_PUSH:-1}" = "1" ]; then
   git push -q "$REMOTE" "$BRANCH" 2>/dev/null || echo "[anon-sync] committed locally; push skipped/failed" >&2
