@@ -44,7 +44,7 @@ Work in progress, built in public-quality steps but kept **private** for now.
 | 0 | engine: office-aware `deanon`, residual detection, stem matching, checksum validators, catalogs, `audit` | done |
 | 1 | local web UI (stdlib server + vanilla front-end, loopback only) | done |
 | 2 | Docker packaging, one-command start | done |
-| 3 | public release: docs, license, CI, generic catalogs | planned |
+| 3 | docs, `NOTICE`, CI, security policy | done (repository stays **private** for now) |
 
 ## Quick start (engine)
 
@@ -73,6 +73,21 @@ The UI has **no authentication**, so it is bound to loopback only — the contai
 per-run token (delivered to the page through a CSP nonce), a foreign `Origin` is refused, and no
 client-supplied filesystem path is ever used. See `docs/DESIGN.md` §7 for the full perimeter and
 `scripts/smoke-docker.sh` for the gate that proves it end to end.
+
+## The web UI
+
+Four tabs, one primary action each — the secondary controls (pattern groups, catalogs) live behind
+an **Opzioni** disclosure so the default flow is: drop a document, anonymize, read the result.
+
+| Tab | What it does |
+|---|---|
+| **Anonimizza** | document or pasted text → redacted text + a map; counts per type; download or copy |
+| **Deanonimizza** | pick the map this run produced (it is preselected) and get the document with the real values back |
+| **Verifica** | `--audit`: residual findings and dictionary variants, with the values masked unless you reveal them |
+| **Dizionario** | read, edit, save and download `entities.txt` (validated before it is written) |
+
+The UI is deliberately plain: no framework, no CDN, no build step, CSS tokens with light and dark
+from the system preference.
 
 The engine lives at `~/.anon/` and is mirrored into this repository by
 `scripts/sync-from-live.sh` (code only — maps, `entities.txt` and `allow.txt` never leave the
