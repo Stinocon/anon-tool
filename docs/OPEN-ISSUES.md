@@ -253,6 +253,10 @@ Declared residuals of the sweep:
 
 - embedded binary objects (`word/embeddings/*.bin`, an xlsx `vbaProject.bin`, media) are not scanned
   — a container inside the container;
+- a part named as text that cannot be decoded degrades differently depending on the entry point: the
+  redaction REFUSES and names the part, while `--check`, `--audit` and `--batch --check` answer
+  `unscannable` / "container refused" — correct (fail-closed) but less specific. `--batch` now keeps
+  the message; the two check modes deliberately keep the shape the Pi guard reads;
 - `MARKUP_RE` (`<[^>]*>`) mis-tokenizes a tag whose ATTRIBUTE VALUE contains `>` (legal XML), and a
   CDATA block or comment containing one: the tail leaks into the visible text and shifts the offsets
   around it. The element NAME is still parsed, so the container signature stays right; what suffers is
