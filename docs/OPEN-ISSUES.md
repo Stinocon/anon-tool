@@ -173,6 +173,27 @@ four interaction checks. The same report asked for progress: the upload percenta
 a percentage, and the bar stays visible at least 700 ms. Verified by driving the running container
 through CDP with a real `.docx`, not only in the unit checks.
 
+### The container path, to finish (2026-09-22)
+
+The engine half is done and pushed (`bb45726`, DEC-0015): `anon.py verbale.docx` -> a real
+`verbale.redacted.docx`, part by part, verified on the output, restored part by part by `deanon`.
+What is left, in order, with the design decision that blocks the first one:
+
+- **UI, two downloads — BLOCKED on a design choice, not on effort.** The Anonimizza tab redacts the
+  CONVERTED MARKDOWN (`_anonymize_text`), and the container pass allocates placeholders separately.
+  Running both with one tag would recreate exactly the defect just fixed: two maps sharing a tag,
+  `[EMAIL-1-<tag>]` meaning different values in each file, and a wrong map resolving silently.
+  The correct shape is **one redaction, two artifacts**: redact the CONTAINER (one allocation, one
+  map, one tag), then derive the Markdown for the model by converting the *already redacted*
+  container. Then the `.md` and the `.docx` belong to the same map by construction.
+- **`--check` on a container**: report the real findings (they are available: the parts are
+  scannable) while KEEPING `unscannable: true`, which is what the guard's auto-remediation keys on.
+- **Fixtures for xlsx / odt / pptx**: the pass is generic, but only docx is proven. Until a fixture
+  exists those formats are handled-but-unclaimed, and that is how they must be described.
+- **Doc sweep**: README, the `anon` skill, DESIGN, and `scripts/convert-fidelity.py`'s conclusion
+  (its six lost features are covered by the in-place path now).
+- **Adversarial review** of the container pass before calling it closed.
+
 ## To-do — the whole list, in the order I would take it
 
 One ordered list. The **IDs are stable references, not an order**: 1-11 are the items closed above,
