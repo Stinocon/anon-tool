@@ -9,16 +9,17 @@
 #     * matches case-SENSITIVELY (`Brescia` yes, `il prato è verde` no);
 #     * only fires after a context marker (`comune di`, `sede di`, `stabilimento di`, ...).
 #
-# HOW TO GET THE COMPLETE LIST
-#   Download the ISTAT list of Italian municipalities (a public dataset, one name per line or a
-#   CSV) and append the names below, one per line, keeping this header. The tool never invents
-#   entries: a partial list stays partial.
+# HOW TO EXTEND IT
+#   Append more names below, one per line, keeping this header. The tool never invents entries: a
+#   partial list stays partial. Before growing this file a lot, measure what it costs — the scan
+#   gets slower with the dictionary, and the Pi guard's 12 MB / 20 s budget is sized for a few
+#   hundred entries (`scripts/bench-check.py`; at ~7 900 entries the check drops to ~0.20 MB/s).
 
 @type CITTÀ
 @match case-sensitive
 @context (?:\b(?:comune|sede|stabilimento|filiale|magazzino|deposito|ufficio|punto vendita)\s+di\s+)
 
-# --- starter set: the largest cities (extend with the ISTAT list) ---
+# --- starter set: the largest cities ---
 Roma
 Milano
 Napoli

@@ -62,8 +62,15 @@ Redacting bare calling codes (`+39`, `+44`) has no real use case here:
 If you still need it, create `catalogs/intl-prefixes.txt` with `@type PREFISSO` and one code per
 line — and expect that interaction.
 
-## Adding the complete ISTAT city list
+## Growing `it-cities.txt`
 
-`it-cities.txt` ships a starter set. Append the full ISTAT dataset (public, one name per line)
-under the same header. Never generate names: a list that *looks* complete but is not would create
-a false sense of coverage.
+`it-cities.txt` ships a starter set. Append more names under the same header — a public list, one
+name per line — and never generate names: a list that *looks* complete but is not would create a
+false sense of coverage.
+
+Growth has a measured cost, so measure before committing to a big list. The scan slows with the
+dictionary (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s, 1 000 → 0.93, 4 000 →
+0.37, 7 900 → 0.20. At 1 000 entries the Pi guard's 12 MB cap already needs ~13 s of its 20 s
+budget, and at 4 000 it exceeds it — so a list that big would make the guard refuse every large
+document. `docs/OPEN-ISSUES.md` #26 tracks the fix; until then, a starter set is not a compromise,
+it is what the budget allows.
