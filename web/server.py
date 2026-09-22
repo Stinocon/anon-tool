@@ -321,7 +321,11 @@ class Handler(BaseHTTPRequestHandler):
         raw = self._read_body()
         if not raw:
             return {}
-        return json.loads(raw.decode("utf-8"))
+        payload = json.loads(raw.decode("utf-8"))
+        # A body is client input: a JSON array or scalar is a malformed request, not a 500.
+        if not isinstance(payload, dict):
+            raise ValueError("the request body must be a JSON object")
+        return payload
 
     def _guard(self, api: bool) -> bool:
         """Host check on everything, token + Origin on the API. False = already answered."""
@@ -461,13 +465,18 @@ class Handler(BaseHTTPRequestHandler):
                 # hand-edited file cannot turn a read-only listing into a 500.
                 out.append({"id": path.stem.replace(".map", ""), "unreadable": True, "entries": 0})
                 continue
+            # Every field is validated by TYPE as well: `{"entries": 5}` is a dict, and `len(5)`
+            # would raise where the caller expects metadata.
+            entries = data.get("entries")
+            counts = data.get("counts")
+            created = data.get("created")
             out.append(
                 {
-                    "id": data.get("id", path.stem.replace(".map", "")),
-                    "created": data.get("created"),
-                    "source": Path(str(data.get("source", ""))).name,
-                    "counts": data.get("counts"),
-                    "entries": len(data.get("entries") or {}),
+                    "id": str(data.get("id") or path.stem.replace(".map", "")),
+                    "created": created if isinstance(created, str) else None,
+                    "source": Path(str(data.get("source") or "")).name,
+                    "counts": counts if isinstance(counts, dict) else None,
+                    "entries": len(entries) if isinstance(entries, dict) else 0,
                 }
             )
         return out

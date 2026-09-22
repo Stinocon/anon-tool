@@ -216,7 +216,16 @@ def count_placeholders(text: str, entries: dict[str, dict[str, str]]) -> tuple[i
 
 
 def load_map(path: Path) -> dict[str, dict[str, str]]:
+    """The placeholder → real-value mapping, validated by SHAPE.
+
+    A map is an operator-editable file, so every level is checked before use: a JSON file that is
+    not an object, or whose `entries` is not an object, is a clean `ValueError` (exit 2 at the
+    CLI, 400 over HTTP) — not an `AttributeError` that escapes as a 500 and leaks a traceback
+    name into the response.
+    """
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: not an anon map (top-level JSON is {type(data).__name__}, not an object)")
     entries = data.get("entries")
     if not isinstance(entries, dict):
         raise ValueError(f"{path}: not an anon map (missing 'entries')")
@@ -357,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         entries = load_map(map_path)
         raw_map = json.loads(map_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_map, dict):
+            raw_map = {}  # provenance only; a wrong-shaped map already failed in load_map
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"deanon: {exc}", file=sys.stderr)
         return 2

@@ -419,6 +419,8 @@ class WebUiTest(unittest.TestCase):
         broken.write_text("{ questo non e' json", encoding="utf-8")
         wrong_shape = self.tmp / "maps" / "20200102-000000-feeded.map.json"
         wrong_shape.write_text("[1, 2, 3]", encoding="utf-8")
+        wrong_types = self.tmp / "maps" / "20200103-000000-badbad.map.json"
+        wrong_types.write_text('{"entries": 5, "counts": "no", "created": 7}', encoding="utf-8")
         try:
             status, data = self.call("/api/maps")
             self.assertEqual(status, 200)
@@ -428,10 +430,45 @@ class WebUiTest(unittest.TestCase):
             odd = next((item for item in data["maps"] if item["id"].startswith("20200102")), None)
             self.assertIsNotNone(odd, "valid JSON of the wrong shape must not 500 the endpoint")
             self.assertTrue(odd["unreadable"])
+            typed = next((item for item in data["maps"] if item["id"].startswith("20200103")), None)
+            self.assertIsNotNone(typed, "a dict with wrong VALUE types must not 500 the endpoint")
+            self.assertEqual(typed["entries"], 0)
+            self.assertIsNone(typed["counts"])
+            self.assertIsNone(typed["created"])
             self.assertEqual(data["total"], len(data["maps"]), "total must match what is listed")
         finally:
             broken.unlink()
             wrong_shape.unlink()
+            wrong_types.unlink()
+
+    def test_a_wrong_shaped_request_body_is_a_400_not_a_500(self) -> None:
+        """The body is client input: a JSON array must be refused, not crash the handler."""
+        for body in (b"[1, 2, 3]", b'"solo una stringa"', b"5"):
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/audit", data=body, method="POST"
+            )
+            request.add_header(TOKEN_HEADER, self.token)
+            request.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    status, payload = response.status, response.read().decode()
+            except urllib.error.HTTPError as error:
+                status, payload = error.code, error.read().decode()
+            self.assertEqual(status, 400, f"{body!r} -> {status}: {payload}")
+            self.assertNotIn("AttributeError", payload)
+
+    def test_a_wrong_shaped_map_is_refused_on_reveal(self) -> None:
+        """`load_map` is reachable from the API too: a non-object map must be a 400, not a 500."""
+        broken = self.tmp / "maps" / "20200104-000000-cafeba.map.json"
+        broken.write_text("[1, 2, 3]", encoding="utf-8")
+        try:
+            status, payload = self.call(
+                "/api/maps/reveal", payload={"id": "20200104-000000-cafeba", "confirm": True}
+            )
+            self.assertEqual(status, 400, payload)
+            self.assertNotIn("AttributeError", str(payload))
+        finally:
+            broken.unlink()
 
     def test_audit_declares_a_truncated_findings_list(self) -> None:
         """/api/audit capped `findings` at 50 in silence, exactly like the CLI used to."""

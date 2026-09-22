@@ -49,6 +49,12 @@ A second pass over the code, hunting the *classes* of the first eleven rather th
 - **The address corpus test leaked its temp directory.**
 - **CI installed the converter by version**, not through the pinned requirements file, so CI could
   run a different wheel than the image ships. It now uses `--require-hashes -r requirements-anydoc.txt`.
+- **A map file is operator-editable input, so every JSON read is now validated by shape AND type.**
+  Closed one step further than the first report, after the same class reappeared twice: a top-level
+  non-object map 500'd the listing, then `{"entries": 5}` did it again through `len(5)`, and the
+  same shape reached `load_map` (reveal/deanonymize/CLI, where it escaped as an `AttributeError`
+  traceback instead of exit 2). All four `json.loads` call sites in the project were enumerated
+  and closed, including the request body (`[]` was a 500, now a 400).
 - Caught by a second adversarial review of the sweep itself: the truncation flag was claimed for
   `/api/audit` but only implemented in the CLI (the web endpoint has its own findings loop);
   `/api/maps` built `total` and the listing from two separate directory listings (a concurrent

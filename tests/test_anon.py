@@ -1075,6 +1075,20 @@ class DeanonContainerTest(unittest.TestCase):
         self.assertEqual(res.returncode, 2)
         self.assertFalse((self.tmp / "empty.deanon.docx").exists())
 
+    def test_a_wrong_shaped_map_is_a_clean_error(self) -> None:
+        """A hand-edited map must reach `deanon: exit 2`, never an unhandled AttributeError."""
+        document = self.tmp / "doc.txt"
+        document.write_text("Referente: [EMAIL-1]\n", encoding="utf-8")
+        for shape in ("[1, 2, 3]", '"solo una stringa"', '{"entries": 5}'):
+            broken = self.tmp / f"broken-{len(shape)}.map.json"
+            broken.write_text(shape, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(DEANON_PY), str(document), str(broken), "--json"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2, f"{shape!r}: {result.stdout} {result.stderr}")
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_output_in_place_is_atomic_and_safe(self) -> None:
         docx = self._make_docx("inplace.docx", {
             "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
