@@ -1089,6 +1089,45 @@ class DeanonContainerTest(unittest.TestCase):
             self.assertEqual(result.returncode, 2, f"{shape!r}: {result.stdout} {result.stderr}")
             self.assertNotIn("Traceback", result.stderr)
 
+    def test_a_deeply_nested_map_is_a_clean_error(self) -> None:
+        """`json.loads` raises RecursionError on a nested file: exit 2, never a traceback."""
+        document = self.tmp / "doc.md"
+        document.write_text("Referente: [EMAIL-1]\n", encoding="utf-8")
+        nested = self.tmp / "nested.map.json"
+        # ~200k deep: the depth at which `json.loads` raises RecursionError (measured), which is
+        # NOT a ValueError and used to escape as an unhandled traceback.
+        nested.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(DEANON_PY), str(document), str(nested), "--json"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr[:300])
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("malformed JSON", result.stderr)
+
+    def test_the_listing_counts_without_copying_the_entries(self) -> None:
+        """The listing needs a count, not a validated copy of every entry (O(N) allocations)."""
+        entries = {
+            f"[EMAIL-{index}-aaaaaa]": {"type": "EMAIL", "original": f"utente{index}@cliente{index}.it"}
+            for index in range(1, 5001)
+        }
+        path = self.tmp / "grande.map.json"
+        path.write_text(json.dumps({"entries": entries}), encoding="utf-8")
+        metadata = deanon.load_map_metadata(path)
+        self.assertEqual(metadata["entries"], 5000)
+        # The contract the listing depends on: a validated COUNT, with no copy of the entries.
+        self.assertIsInstance(deanon._count_entries(path, json.loads(path.read_text())["entries"]), int)
+
+    def test_a_wrong_typed_filter_field_is_a_clean_error(self) -> None:
+        """`catalogs: 5` is a malformed request, not a TypeError out of an iteration."""
+        with self.assertRaises(ValueError):
+            anon._as_list(5)
+        with self.assertRaises(ValueError):
+            anon._as_list(True)
+        self.assertEqual(anon._as_list(["a", " b "]), ["a", "b"])
+        self.assertEqual(anon._as_list("a,b"), ["a", "b"])
+        self.assertEqual(anon._as_list(None), [])
+
     def test_output_in_place_is_atomic_and_safe(self) -> None:
         docx = self._make_docx("inplace.docx", {
             "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'

@@ -321,16 +321,9 @@ class Handler(BaseHTTPRequestHandler):
         raw = self._read_body()
         if not raw:
             return {}
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, RecursionError) as exc:
-            # `json.loads` raises RecursionError on a deeply nested body, and UnicodeDecodeError on
-            # a body that is not UTF-8; neither is a ValueError, so both used to become a 500.
-            raise ValueError(f"malformed JSON body: {type(exc).__name__}") from exc
-        # A body is client input: a JSON array or scalar is a malformed request, not a 500.
-        if not isinstance(payload, dict):
-            raise ValueError("the request body must be a JSON object")
-        return payload
+        # A body is client input, and it is parsed by the SAME helper the map reader uses: a JSON
+        # array, a scalar, a deeply nested payload and invalid UTF-8 are all a clean 400.
+        return anon.read_json_object(raw.decode("utf-8", "replace"), "request body")
 
     def _guard(self, api: bool) -> bool:
         """Host check on everything, token + Origin on the API. False = already answered."""

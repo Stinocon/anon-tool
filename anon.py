@@ -727,12 +727,18 @@ def load_entities_many(paths: Iterable[Path]) -> list[Entity]:
 
 
 def _as_list(value) -> list[str]:
-    """Accept both a comma-separated CLI string and a JSON array (the web UI sends arrays)."""
+    """Accept both a comma-separated CLI string and a JSON array (the web UI sends arrays).
+
+    Anything else is a malformed REQUEST: `{"catalogs": 5}` used to raise `TypeError` out of the
+    iteration and become a 500. It is a `ValueError` now, which the API answers with a 400.
+    """
     if value is None:
         return []
     if isinstance(value, str):
         return [item.strip() for item in value.split(",") if item.strip()]
-    return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    raise ValueError(f"expected a list of names, found {type(value).__name__}")
 
 
 def entity_count(entities: Iterable[Entity]) -> int:
@@ -1239,6 +1245,23 @@ def cmd_check(args: argparse.Namespace) -> int:
     entities = resolve_entities(args)
     found = detect(text, entities, families=resolve_families(args))
     return _emit_check(args, found, target, text=text)
+
+
+def read_json_object(text: str, what: str) -> dict:
+    """Parse `text` as a JSON object, turning EVERY malformed-input failure into ValueError.
+
+    `json.loads` raises `RecursionError` on deeply nested input — not a ValueError — so a caller
+    that only catches ValueError turns a malformed file or request body into a 500 or an
+    unhandled traceback instead of a clean refusal. Both `deanon` (map files) and the web API
+    (request bodies) go through here, so the two cannot drift apart again.
+    """
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError) as exc:
+        raise ValueError(f"{what}: malformed JSON ({type(exc).__name__})") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{what}: expected a JSON object, found {type(data).__name__}")
+    return data
 
 
 def _envelope(tool: str) -> dict[str, object]:

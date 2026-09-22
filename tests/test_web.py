@@ -466,7 +466,7 @@ class WebUiTest(unittest.TestCase):
 
     def test_a_deeply_nested_body_is_a_400_not_a_500(self) -> None:
         """`json.loads` raises RecursionError (not ValueError) on a deeply nested body."""
-        body = b"[" * 5000 + b"]" * 5000
+        body = b"[" * 200_000 + b"]" * 200_000  # the depth that raises RecursionError (measured)
         request = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/api/anonymize", data=body, method="POST"
         )
@@ -478,7 +478,35 @@ class WebUiTest(unittest.TestCase):
         except urllib.error.HTTPError as error:
             status, payload = error.code, error.read().decode()
         self.assertEqual(status, 400, f"{status}: {payload[:200]}")
-        self.assertNotIn("RecursionError", payload)
+        self.assertIn("malformed JSON", payload)
+        self.assertNotIn("Traceback", payload)
+
+    def test_a_wrong_typed_filter_field_is_a_400(self) -> None:
+        """`{"catalogs": 5}` reached an iteration over an int: 500 before, 400 now."""
+        for payload in (
+            {"text": "ciao", "catalogs": 5},
+            {"text": "ciao", "patterns": True},
+        ):
+            status, body = self.call("/api/anonymize", payload=payload)
+            self.assertEqual(status, 400, f"{payload} -> {status}: {body}")
+            self.assertNotIn("TypeError", str(body))
+
+    def test_a_deeply_nested_map_is_refused_not_crashed(self) -> None:
+        nested = self.tmp / "maps" / "20200108-000000-nest00.map.json"
+        nested.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+        try:
+            status, listing = self.call("/api/maps")
+            self.assertEqual(status, 200, listing)
+            item = next((entry for entry in listing["maps"] if entry["id"].startswith("20200108")), None)
+            self.assertIsNotNone(item, "a nested map must appear as unreadable, not 500 the listing")
+            status, body = self.call(
+                "/api/maps/reveal", payload={"id": "20200108-000000-nest00", "confirm": True}
+            )
+            self.assertEqual(status, 400, body)
+            self.assertIn("malformed JSON", str(body))
+            self.assertNotIn("Traceback", str(body))
+        finally:
+            nested.unlink()
 
     def test_a_malformed_entry_value_is_refused_on_reveal(self) -> None:
         """`entries` can be a dict while its VALUES are still wrong: validated one level deeper."""

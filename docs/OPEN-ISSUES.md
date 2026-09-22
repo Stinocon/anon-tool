@@ -58,7 +58,11 @@ A second pass over the code, hunting the *classes* of the first eleven rather th
   `load_map` (CLI restore, reveal, deanonymize) and `load_map_metadata` (the UI listing) — go
   through it, with the listing turning any failure into `unreadable` so no file can 500 a read.
   `_read_json` also maps `RecursionError`/`UnicodeDecodeError` to a 400. This is the point where a
-  second round of instance patching would have been the wrong method.
+  second round of instance patching would have been the wrong method. Completing it took one more
+  pass (the first boundary validation was not applied to every entrance): the map file and the
+  request body now share `anon.read_json_object`, `catalogs: 5` is a `ValueError` instead of a
+  `TypeError` out of an iteration, and the listing validates entries WITHOUT copying them (`_count_entries`) —
+  a count is not worth O(N) allocations per map.
 - **A map file is operator-editable input, so every JSON read is now validated by shape AND type.**
   Closed one step further than the first report, after the same class reappeared twice: a top-level
   non-object map 500'd the listing, then `{"entries": 5}` did it again through `len(5)`, and the

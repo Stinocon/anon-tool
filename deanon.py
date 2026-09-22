@@ -216,11 +216,13 @@ def count_placeholders(text: str, entries: dict[str, dict[str, str]]) -> tuple[i
 
 
 def _read_map_object(path: Path) -> dict:
-    """The map file parsed and required to be a JSON object (the schema's outer level)."""
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: not an anon map (top-level JSON is {type(data).__name__}, not an object)")
-    return data
+    """The map file parsed and required to be a JSON object (the schema's outer level).
+
+    Through `anon.read_json_object`, because a deeply nested map file used to raise
+    `RecursionError` past the CLI's `except ValueError` (traceback, exit 1) and past the API's
+    400 path (500). One parser, one failure type.
+    """
+    return anon.read_json_object(path.read_text(encoding="utf-8"), str(path))
 
 
 def _validate_entries(path: Path, entries: object) -> dict[str, dict[str, str]]:
@@ -240,16 +242,34 @@ def _validate_entries(path: Path, entries: object) -> dict[str, dict[str, str]]:
         raise ValueError(f"{path}: not an anon map (missing 'entries')")
     validated: dict[str, dict[str, str]] = {}
     for key, value in entries.items():
-        if not isinstance(key, str) or not isinstance(value, dict):
-            raise ValueError(f"{path}: malformed map entry {key!r} (expected an object)")
-        original = value.get("original")
-        if original is not None and not isinstance(original, str):
-            raise ValueError(f"{path}: malformed 'original' for {key!r} (expected a string or null)")
+        _check_entry(path, key, value)
         kind = value.get("type")
         # `type` is informational (the UI shows it); a missing or odd value is normalized rather
         # than refused, because refusing a map that restores correctly would be the wrong trade.
-        validated[key] = {"type": kind if isinstance(kind, str) else "ALTRO", "original": original}
+        validated[key] = {"type": kind if isinstance(kind, str) else "ALTRO", "original": value.get("original")}
     return validated
+
+
+def _check_entry(path: Path, key: object, value: object) -> None:
+    """The per-entry rule, in ONE place: the restore path and the listing both apply it."""
+    if not isinstance(key, str) or not isinstance(value, dict):
+        raise ValueError(f"{path}: malformed map entry {key!r} (expected an object)")
+    original = value.get("original")
+    if original is not None and not isinstance(original, str):
+        raise ValueError(f"{path}: malformed 'original' for {key!r} (expected a string or null)")
+
+
+def _count_entries(path: Path, entries: object) -> int:
+    """Validate every entry and return how many there are, WITHOUT copying them.
+
+    The listing only needs the COUNT: building a validated copy of a large map just to call
+    `len()` was O(N) allocations per map, up to 100 maps per request.
+    """
+    if not isinstance(entries, dict):
+        raise ValueError(f"{path}: not an anon map (missing 'entries')")
+    for key, value in entries.items():
+        _check_entry(path, key, value)
+    return len(entries)
 
 
 def load_map(path: Path) -> dict[str, dict[str, str]]:
@@ -276,8 +296,8 @@ def load_map_metadata(path: Path) -> dict[str, object]:
         "created": created if isinstance(created, str) else None,
         "source": basename,
         "counts": counts if isinstance(counts, dict) else None,
-        # Validated with the same function the restore path uses, not with a second, weaker check.
-        "entries": len(_validate_entries(path, data.get("entries"))),
+        # Validated with the same RULE the restore path uses, without building a copy of it.
+        "entries": _count_entries(path, data.get("entries")),
     }
 
 
