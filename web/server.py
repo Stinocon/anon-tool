@@ -456,6 +456,11 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, json.JSONDecodeError):
                 out.append({"id": path.stem.replace(".map", ""), "unreadable": True, "entries": 0})
                 continue
+            if not isinstance(data, dict):
+                # Valid JSON, wrong shape (`[1,2,3]`): treated like any other unreadable map, so a
+                # hand-edited file cannot turn a read-only listing into a 500.
+                out.append({"id": path.stem.replace(".map", ""), "unreadable": True, "entries": 0})
+                continue
             out.append(
                 {
                     "id": data.get("id", path.stem.replace(".map", "")),

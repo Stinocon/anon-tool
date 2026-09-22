@@ -417,15 +417,21 @@ class WebUiTest(unittest.TestCase):
         """Skipping an unreadable map made the listing disagree with `total` and hid the file."""
         broken = self.tmp / "maps" / "20200101-000000-deadbe.map.json"
         broken.write_text("{ questo non e' json", encoding="utf-8")
+        wrong_shape = self.tmp / "maps" / "20200102-000000-feeded.map.json"
+        wrong_shape.write_text("[1, 2, 3]", encoding="utf-8")
         try:
             status, data = self.call("/api/maps")
             self.assertEqual(status, 200)
             entry = next((item for item in data["maps"] if item["id"].startswith("20200101")), None)
             self.assertIsNotNone(entry, "the corrupt map must still appear")
             self.assertTrue(entry["unreadable"])
+            odd = next((item for item in data["maps"] if item["id"].startswith("20200102")), None)
+            self.assertIsNotNone(odd, "valid JSON of the wrong shape must not 500 the endpoint")
+            self.assertTrue(odd["unreadable"])
             self.assertEqual(data["total"], len(data["maps"]), "total must match what is listed")
         finally:
             broken.unlink()
+            wrong_shape.unlink()
 
     def test_audit_declares_a_truncated_findings_list(self) -> None:
         """/api/audit capped `findings` at 50 in silence, exactly like the CLI used to."""
