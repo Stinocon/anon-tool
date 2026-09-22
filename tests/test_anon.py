@@ -1629,6 +1629,86 @@ class ContainerRedactionTest(unittest.TestCase):
         self.assertTrue(json.loads(res.stdout)["dry_run"])
         self.assertFalse((self.tmp / "nota.redacted.docx").exists())
 
+    def pack(self, name: str, parts: dict[str, str]) -> Path:
+        """A minimal package: the two structural parts every Office/ODF ZIP carries, plus yours."""
+        path = self.tmp / name
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(*self.PART_TYPES)
+            archive.writestr(*self.RELS)
+            for part, xml in parts.items():
+                archive.writestr(part, xml)
+        return path
+
+    def assert_round_trip(self, name: str, parts: dict[str, str]) -> None:
+        """Redact, then look INSIDE the output package, then restore and compare part by part.
+
+        Reading the output's parts is the assertion that matters: a test that only checked a
+        converted Markdown would pass even if the container itself were handed back untouched.
+        """
+        src = self.pack(name, parts)
+        res = self.run_anon(str(src), "--json")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        out = self.tmp / f"{Path(name).stem}.redacted{Path(name).suffix}"
+        self.assertTrue(out.is_file(), f"{name}: no redacted output")
+        self.assertTrue(zipfile.is_zipfile(out), f"{name}: the output is no longer a container")
+
+        text = self.all_text(out)
+        self.assertNotIn("Contoso", text, f"{name}: the value survived")
+        self.assertNotIn("Mario Rossi", text, f"{name}: the value survived")
+        self.assertRegex(text, r"\[(AZIENDA|PERSONA)-1-", f"{name}: no placeholder written")
+
+        report = json.loads(res.stdout)
+        self.assertTrue(report.get("map"), f"{name}: no map was written")
+        back = self.tmp / f"{Path(name).stem}.deanon{Path(name).suffix}"
+        restored = subprocess.run(
+            [sys.executable, str(DEANON_PY), str(out), report["map"], "--out", str(back), "--json"],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertTrue(json.loads(restored.stdout)["complete"], f"{name}: restore incomplete")
+        self.assertEqual(self.all_text(back), self.all_text(src), f"{name}: text not restored")
+        # And the value is back WHERE THE FORMAT KEEPS ITS TEXT, not merely somewhere in the file.
+        with zipfile.ZipFile(back) as archive:
+            for part in parts:
+                self.assertIn("Contoso", archive.read(part).decode("utf-8"), f"{name}: {part}")
+
+    def test_an_xlsx_is_redacted_where_spreadsheets_keep_strings(self) -> None:
+        self.assert_round_trip("foglio.xlsx", {"xl/sharedStrings.xml":
+            '<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            "<si><t>Cliente Contoso</t></si><si><t>Referente Mario Rossi</t></si></sst>"})
+
+    def test_an_odt_is_redacted_where_open_documents_keep_text(self) -> None:
+        self.assert_round_trip("verbale.odt", {"content.xml":
+            '<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:'
+            'xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body>'
+            "<office:text><text:p>Cliente Contoso</text:p><text:p>Referente Mario Rossi</text:p>"
+            "</office:text></office:body></office:document-content>"})
+
+    def test_a_pptx_is_redacted_where_slides_keep_text(self) -> None:
+        self.assert_round_trip("slide.pptx", {"ppt/slides/slide1.xml":
+            '<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"'
+            ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp>'
+            "<p:txBody><a:p><a:r><a:t>Cliente Contoso</a:t></a:r></a:p><a:p><a:r><a:t>Referente Mario Rossi"
+            "</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"})
+
+    def test_check_names_the_findings_and_stays_unscannable(self) -> None:
+        """`--check` on a document: the records AND the refusal, together.
+
+        `unscannable` is not a formality to drop now that the parts can be scanned: the `read` tool
+        decodes a non-image file as text (which redacts nothing), and the guard's auto-remediation
+        keys on that field. Reporting the findings is an addition, never a substitute.
+        """
+        src = self.build("esame.docx", "Referente Mario Rossi, cliente Contoso.", header="Spett.le Contoso")
+        res = self.run_anon("--check", str(src), "--json")
+        self.assertEqual(res.returncode, 1, "a document with values inside is not 'clean'")
+        report = json.loads(res.stdout)
+        self.assertTrue(report["unscannable"] and report["binary"] and report["container"])
+        self.assertEqual(report["types"], {"AZIENDA": 2, "PERSONA": 1}, "both parts are named")
+        self.assertTrue(report["findings"])
+        # The findings name TYPES and positions, never the values themselves.
+        self.assertNotIn("Contoso", res.stdout)
+        self.assertNotIn("Mario", res.stdout)
+
     def test_a_fake_container_is_refused_with_nothing_written(self) -> None:
         fake = self.tmp / "finto.docx"
         fake.write_bytes(b"PK\x03\x04" + bytes(range(256)) * 10)

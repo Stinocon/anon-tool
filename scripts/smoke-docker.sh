@@ -68,9 +68,9 @@ STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/api/st
 [ "$STATUS" = "403" ] || fail "the API answered without a token (got $STATUS)"
 pass "the API refuses requests without the token"
 
-# End-to-end document path INSIDE the container: a real .docx must be converted by the image's
-# own converter and come back redacted. Skipped (not failed) when pandoc is unavailable to build
-# the fixture.
+# End-to-end document path INSIDE the container: a real .docx must come back as a REDACTED .docx
+# (the same file type, rewritten part by part) and as the Markdown the model reads, both from ONE
+# redaction. Skipped (not failed) when pandoc is unavailable to build the fixture.
 if command -v pandoc >/dev/null; then
   DOCX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/anon-smoke-doc-XXXXXX")"
   printf 'Cliente Contoso, referente mario@contoso.it, server 10.42.7.19\n' > "$DOCX_DIR/doc.md"
@@ -78,10 +78,25 @@ if command -v pandoc >/dev/null; then
   DOC_RESULT=$(curl -fsS -X POST \
     -H "X-Anon-Token: ${TOKEN}" -H 'X-Filename: doc.docx' -H 'Content-Type: application/octet-stream' \
     --data-binary "@$DOCX_DIR/doc.docx" "http://127.0.0.1:${PORT}/api/anonymize-document")
-  echo "$DOC_RESULT" | grep -q '"origin": "converted"' || fail "docx was not converted inside the container"
+  echo "$DOC_RESULT" | grep -q '"origin": "container"' || fail "docx was not rewritten in place"
+  echo "$DOC_RESULT" | grep -q '"container_name": "doc.redacted.docx"' || fail "no redacted document offered"
   echo "$DOC_RESULT" | grep -qE '\[AZIENDA-1-[0-9a-f]{6,8}\]' || fail "docx text was not redacted"
-  echo "$DOC_RESULT" | grep -q 'contoso.it' && fail "docx conversion leaked the value"
-  pass "docx converted + redacted inside the container"
+  echo "$DOC_RESULT" | grep -q 'contoso.it' && fail "the response leaked the value"
+  # The document itself: decode it and look INSIDE the parts. A response that merely LOOKS right
+  # (a docx-shaped name with the plaintext still inside) has to fail here.
+  echo "$DOC_RESULT" | python3 -c '
+import base64, io, json, sys, zipfile
+result = json.load(sys.stdin)
+tag = result["tag"]
+blob = base64.b64decode(result["container_b64"])
+assert zipfile.is_zipfile(io.BytesIO(blob)), "the offered document is not a container"
+inside = "\n".join(zipfile.ZipFile(io.BytesIO(blob)).read(n).decode("utf-8", "replace")
+                   for n in zipfile.ZipFile(io.BytesIO(blob)).namelist())
+assert "contoso.it" not in inside, "the value survived inside the document"
+assert f"[EMAIL-1-{tag}]" in inside, "no placeholder inside the document"
+assert f"[EMAIL-1-{tag}]" in result["redacted"], "the two artifacts do not share the tag"
+' || fail "the offered document is not really redacted"
+  pass "docx rewritten in place, verified inside the output"
   rm -rf "$DOCX_DIR"
 else
   printf 'SKIP  docx end-to-end (pandoc not installed)\n'

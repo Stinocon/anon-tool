@@ -77,6 +77,7 @@ python3 anon.py report.txt --check --json        # is this safe to read? (exit 1
 python3 anon.py report.txt --dry-run             # what WOULD be redacted, and where — writes nothing
 python3 anon.py ./cliente --batch --dry-run      # the same for a whole folder, before touching it
 python3 anon.py ./cliente --batch                 # -> *.redacted.* next to each source (never over it)
+python3 anon.py verbale.docx                     # -> verbale.redacted.docx: same type, same layout
 python3 anon.py report.txt --audit               # is an ALREADY redacted file really redacted?
 python3 deanon.py final.docx <map.json>          # put the real values back (text or .docx/.xlsx/.odt)
 python3 convert.py report.docx > report.md       # docx/pdf -> Markdown, locally
@@ -103,6 +104,13 @@ The capture is of a **synthetic** document (no real values): the placeholders ar
 the tag of the map that produced them (`[AZIENDA-1-91810c]`), and that map is what restores the
 real values — it stays in `~/.anon/maps/`, never in the browser.
 
+Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
+in place (`verbale.redacted.docx` — same type, same layout, headers, footers and properties
+rewritten where they live), and the Markdown the model reads, **derived from the already redacted
+file**. They share one tag and one map, so they can never disagree; a PDF, or a package the engine
+cannot open, falls back to the Markdown alone and says so. The reason not to redact the two
+independently: the same placeholder would end up meaning two different values.
+
 `make up | down | logs | native | test | smoke` wraps the same operations.
 
 The upload cap is a default, not a wall: `ANON_MAX_UPLOAD_BYTES` (160 MB, exposed to the page
@@ -115,6 +123,10 @@ reported and skipped (never copied under a `redacted` name), files over 12 MB ar
 than half-processed, its own `*.redacted.*` outputs are skipped so a second run cannot nest
 placeholders, and a directory inside the private store is refused outright. `--batch --check` is the
 folder-shaped gate (exit 1 if anything is sensitive); `--out DIR` keeps the sources' folder clean.
+Office containers (`.docx`, `.xlsx`, `.pptx`, `.odt`) are rewritten in place, so `--batch` redacts
+them too; legacy `.doc/.xls/.ppt`, PDFs and images are still skipped, and `--check` on a container
+names the findings *and* keeps `unscannable` — the field the Pi guard's auto-remediation reads —
+because that flag describes what the `read` tool would do with the file, not what this engine can.
 
 The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard all read the same
 `entities.txt` and write to the same map directory: one source of truth.
@@ -192,7 +204,8 @@ genuinely public paths. The allowlist is still evaluated by the engine, never by
 A **binary document** read through Pi (docx, pdf, xlsx) is not a dead end: the guard converts and
 anonymizes it locally (`--anon-guard-auto=ask|on|off`, default `ask`) and only the redacted
 Markdown reaches the context. If the conversion fails, the read is blocked — the failure path is
-the fail-closed block, never "clean".
+the fail-closed block, never "clean". The guard's path is the *read*; for a document you intend to
+**deliver**, `anon.py` (or the UI) hands back the same file type with the layout intact.
 
 The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 [`docs/DESIGN.md`](docs/DESIGN.md).
@@ -209,7 +222,8 @@ make up-slim   # the text-only container variant (port 1408)
 python3 scripts/bench-check.py --mb 8 --entities 200
 # Is 6 hex digits enough for the per-map tag? Measured, not argued.
 python3 scripts/tag-collision.py
-# What does .docx -> Markdown lose? (headers, metadata, comments, tracked changes)
+# What does .docx -> Markdown lose, and why the in-place path exists? (headers, metadata,
+# comments, tracked changes — the six features the container pass now covers)
 python3 scripts/convert-fidelity.py
 # Refresh the converter's hashed pin after a version bump.
 python3 scripts/pin-converter.py > requirements-anydoc.txt

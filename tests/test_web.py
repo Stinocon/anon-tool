@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
 import json
 import os
 import re
@@ -24,6 +25,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -633,7 +635,14 @@ class WebUiTest(unittest.TestCase):
                 path.unlink()
 
     @unittest.skipUnless(DOCX_AVAILABLE, "document converter not installed")
-    def test_document_upload_is_converted_and_redacted(self) -> None:
+    def test_document_upload_offers_the_redacted_document_and_the_text(self) -> None:
+        """One redaction, two artifacts: the .docx handed back and the .md the model reads.
+
+        They must belong to the SAME allocation. If the tab redacted the Markdown while the
+        container pass redacted the file separately, the two would share a tag while meaning
+        different things — `[EMAIL-1-<tag>]` in the .docx and in the .md would be two different
+        addresses — and a restore holding the wrong map would resolve in silence.
+        """
         work = Path(tempfile.mkdtemp(prefix="anon-web-doc-"))
         try:
             markdown = work / "doc.md"
@@ -645,11 +654,47 @@ class WebUiTest(unittest.TestCase):
                                                 "X-Patterns": "identity", "Content-Type": "application/octet-stream"},
                                        raw=docx.read_bytes())
             self.assertEqual(status, 200, result)
-            self.assertEqual(result["origin"], "converted")
-            self.assertIn(f"[EMAIL-1-{result['tag']}]", result["redacted"])
-            self.assertIn(f"[AZIENDA-1-{result['tag']}]", result["redacted"])
+            self.assertEqual(result["origin"], "container", "a docx is rewritten, not converted away")
+            self.assertNotIn("container_error", result)
+            tag = result["tag"]
+            self.assertEqual(result["container_name"], "doc.redacted.docx")
+            docx_bytes = base64.b64decode(result["container_b64"])
+
+            # The document that comes back is a real container, and the value is gone from it.
+            with zipfile.ZipFile(io.BytesIO(docx_bytes)) as archive:
+                inside = "\n".join(archive.read(name).decode("utf-8", "replace")
+                                   for name in archive.namelist())
+            self.assertIn(f"[EMAIL-1-{tag}]", inside)
+            self.assertNotIn("mario@contoso.it", inside)
+            self.assertNotIn("Contoso", inside)
+
+            # Same tag, same placeholders, both artifacts: the two views of one redaction.
+            self.assertIn(f"[EMAIL-1-{tag}]", result["redacted"])
+            self.assertIn(f"[AZIENDA-1-{tag}]", result["redacted"])
+            self.assertNotIn("mario@contoso.it", result["redacted"])
+
+            # And the map on disk is the one both of them refer to.
+            map_path = self.tmp / "maps" / f"{result['map_id']}.map.json"
+            saved = json.loads(map_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["tag"], tag)
+            self.assertEqual(saved["entries"][f"[EMAIL-1-{tag}]"]["original"], "mario@contoso.it")
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    def test_an_unreadable_container_is_refused_and_writes_no_map(self) -> None:
+        """A file that claims to be a container but cannot be opened must not be guessed at.
+
+        It is handed to the converter (the PDF path), which cannot make sense of it either: the
+        answer is an error and NOTHING is written — no map, no half-redacted artifact.
+        """
+        before = {path.name for path in (self.tmp / "maps").iterdir()}
+        status, result = self.call("/api/anonymize-document", None,
+                                   headers={"X-Filename": "finto.docx", "X-Catalogs": "",
+                                            "X-Patterns": "identity", "Content-Type": "application/octet-stream"},
+                                   raw=b"PK\x03\x04" + bytes(range(256)) * 20)
+        self.assertGreaterEqual(status, 400, result)
+        self.assertEqual({path.name for path in (self.tmp / "maps").iterdir()}, before,
+                         "a refused document must not leave a map behind")
 
 
 if __name__ == "__main__":

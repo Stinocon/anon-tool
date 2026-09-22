@@ -186,15 +186,37 @@ calls it implicitly; the engine itself keeps zero network capability.
 - contextual references ("the client from Brescia") — a human read is still required;
 - proper names absent from the dictionary are not redacted;
 - images/screenshots are not scannable (pixels), so a screenshot of a client document passes;
-- office containers cannot be anonymized directly — they are converted to Markdown first, and
-  `anon.py` refuses binary input rather than producing a corrupted file *named* "redacted";
-- **what that conversion does not carry**, measured rather than assumed
-  (`scripts/convert-fidelity.py`, which proves each feature is in the fixture before looking for it
-  in the Markdown — a guessed signature is how a measurement lies): 11 of 17 features are preserved.
-  Headers and footers, comments, tracked deletions and the core properties (title, **author**) are
-  not. Those are texts the engine therefore never redacts, and they survive in the original `.docx`
-  and in any PDF exported from it. The workflow consequence is in the `anon` skill: deliver the
-  regenerated Markdown, or strip metadata and revision history from the container you deliver.
+- office containers **are** anonymized directly: `.docx/.xlsx/.pptx/.odt` are ZIP packages, so the
+  engine rewrites the text parts where they live (document, headers, footers, comments, notes,
+  properties) and hands back the same file type, layout and styles intact. The alternative — convert
+  to Markdown, redact that — is the right way to give a model a document but the wrong way to
+  deliver one: measured (`scripts/convert-fidelity.py`, which proves each feature is in the fixture
+  before looking for it in the Markdown — a guessed signature is how a measurement lies) 11 of 17
+  features survive, and headers, footers, comments, tracked deletions and the core properties
+  (title, **author**) are among those that do not. A client name in a letterhead was therefore
+  neither redacted nor delivered, and stayed in the original `.docx` and in any PDF exported from
+  it. The in-place path covers those six texts; the conversion remains the guard's path for a
+  `read`, where the point is to put something in front of a model, not to produce a deliverable;
+- **what the in-place path refuses**: legacy `.doc/.xls/.ppt`, PDF and images (formats we cannot
+  rewrite while verifying the result) and any file that claims to be a container but is not a
+  readable ZIP — refused with exit 2 and nothing written, rather than a corrupted file *named*
+  "redacted";
+- **the redaction of a container is verified on the OUTPUT, not on the intention.** The written file
+  is re-read and every text part re-scanned with the same detectors; if a detected value survives,
+  the output is deleted and the command fails. The verification must use the SAME view as the
+  detection, which is not a detail: `visible_index` concatenates fragments (right for a
+  self-delimiting token like `[EMAIL-1-tag]`) while `masked_index` puts one space where each tag was
+  (right for a real value — which the entity patterns can then find even when Word split it across
+  two runs, since they join tokens with `[\s...]+`). The first version verified with the
+  concatenating view and reported "0 leftovers" while `dc:creator` was still intact: the check
+  confirmed its own blind spot;
+- **metadata is REDACTED, never removed.** The placeholders go into `docProps/core.xml` like
+  anywhere else, so the reverse direction restores the original exactly. Stripping metadata would be
+  irreversible and is a separate, explicit choice;
+- **one redaction, two artifacts.** The UI redacts the container once (one allocation, one map, one
+  tag) and derives the Markdown from the already redacted file. Redacting the Markdown and the
+  container independently with one tag would give two maps sharing it — `[EMAIL-1-tag]` meaning a
+  different value in each artifact — and a restore holding the wrong map would resolve in silence;
 - a file too large to scan is blocked (fail-closed), and so is a file whose check does not finish
   within the guard's timeout: the guard does not know whether it is sensitive, so it refuses rather
   than guesses (12 MB / 20 s, sized from `scripts/bench-check.py`);

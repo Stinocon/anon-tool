@@ -12,6 +12,18 @@ enforces that they agree.
 
 ### Added
 
+- **The UI offers the document, not only its text**: uploading a `.docx`/`.xlsx`/`.pptx`/`.odt`
+  returns `verbale.redacted.docx` to download — same type, same layout — plus the Markdown for the
+  model. ONE redaction produces both artifacts (the Markdown is derived from the already redacted
+  file), so they share tag and map and cannot disagree; a PDF or an unreadable package falls back to
+  the Markdown alone and says why.
+- **`--check` on a container names the findings** while KEEPING `unscannable: true` — that field
+  describes what the Pi `read` tool would do with the file, and the guard's auto-remediation keys on
+  it. The findings name types and positions, never the values.
+- **xlsx / odt / pptx are now proven**, not assumed: a fixture per format asserts the value is gone
+  from the part the format keeps its text in (`xl/sharedStrings.xml`, `content.xml`,
+  `ppt/slides/slide1.xml`) and that the restore puts it back there. The tests were checked against a
+  mutated engine (`decode_part` neutered): 5 of them fail, so they bite.
 - **`anon.py verbale.docx` → `verbale.redacted.docx`**: an office container is redacted IN PLACE,
   part by part, so the document comes back as the same kind of file — layout and styles intact —
   instead of as Markdown. It also covers what the Markdown path loses (measured: 6 features of 17):

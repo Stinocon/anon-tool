@@ -355,15 +355,30 @@ $("run-anon").addEventListener("click", async () => {
       baseName = `${file ? stripExtension(file.name) : "testo"}.redacted.txt`;
     }
     state.lastMapId = result.map_id;
-    pending = { text: result.redacted, name: baseName };
+    pending = {
+      text: result.redacted,
+      name: baseName,
+      containerB64: result.container_b64 || null,
+      containerName: result.container_name || "",
+    };
 
     $("anon-result").hidden = false;
-    $("anon-result-title").textContent = `Risultato — ${baseName}`;
+    $("anon-result-title").textContent = `Risultato — ${pending.containerName || baseName}`;
     chips($("anon-counts"), result.counts);
     $("redacted").value = result.redacted;
-    $("anon-map").textContent = result.map_id ? `mappa ${result.map_id} salvata` : "niente da redigere";
+    // The document itself, when the upload was one we can rewrite. One redaction produced both
+    // artifacts and one map, so they can never disagree; the button is absent when there is
+    // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).
+    $("download-document").hidden = !pending.containerB64;
+    $("download-document").title = pending.containerB64
+      ? `${pending.containerName} — stesso tag e stessa mappa del testo qui sotto`
+      : "";
+    if (result.container_error) {
+      setStatus($("anon-status"), `documento non riscrivibile, redatto il solo testo (${result.container_error})`, "warn");
+    } else {
+      setStatus($("anon-status"), `${result.rules_applied} regole applicate`, "ok");
+    }
     $("mapping").innerHTML = '<span class="muted small">non ancora mostrata</span>';
-    setStatus($("anon-status"), `${result.rules_applied} regole applicate`, "ok");
     $("anon-result").scrollIntoView({ block: "nearest" });
     await loadMaps();
   } catch (error) {
@@ -375,12 +390,14 @@ $("run-anon").addEventListener("click", async () => {
   }
 });
 
-let pending = { text: "", name: "redatto.txt" };
+let pending = { text: "", name: "redatto.txt", containerB64: null, containerName: "" };
 
 $("clear-anon").addEventListener("click", () => {
   $("text-anon").value = "";
   $("file-anon").value = "";
   state.anonFile = null;
+  pending = { text: "", name: "redatto.txt", containerB64: null, containerName: "" };
+  $("download-document").hidden = true;
   progressStop();
   $("anon-result").hidden = true;
   setStatus($("anon-status"), "");
@@ -391,6 +408,9 @@ $("copy-redacted").addEventListener("click", async () => {
   setStatus($("anon-status"), "copiato", "ok");
 });
 $("download-redacted").addEventListener("click", () => download(pending.name, pending.text));
+$("download-document").addEventListener("click", () => {
+  if (pending.containerB64) download(pending.containerName, null, pending.containerB64);
+});
 
 /* The reveal view shows the REAL values. They must not keep living in the page because a tab
    was left open: auto-relock after REVEAL_TTL_MS, plus an explicit "hide again". */

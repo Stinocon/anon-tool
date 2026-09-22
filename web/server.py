@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import zipfile
 import json
 import os
 import signal
@@ -240,6 +241,24 @@ def _convert_to_markdown(source: Path) -> str:
     return b"".join(chunks).decode("utf-8", "replace")
 
 
+def _save_map(tag: str, source: str, output: str, counts: dict, entries: dict) -> str:
+    """Write one map and return its id. The payload shape lives here, once, for both artifacts."""
+    map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
+    payload = {
+        "tag": tag,
+        "version": anon.VERSION,
+        "schema": anon.SCHEMA,
+        "id": map_id,
+        "source": source,
+        "output": output,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "counts": counts,
+        "entries": entries,
+    }
+    anon._write_private(anon.DEFAULT_MAPS / f"{map_id}.map.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return map_id
+
+
 def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
     entities, families = _resolve(catalogs, patterns)
     with TAG_LOCK:
@@ -247,19 +266,7 @@ def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
         redacted, entries, counts = anon.anonymize(text, entities, families=families, tag=tag)
         map_id = None
         if save_map and entries:
-            map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
-            payload = {
-                "tag": tag,
-                "version": anon.VERSION,
-                "schema": anon.SCHEMA,
-                "id": map_id,
-                "source": "(web UI)",
-                "output": "(web UI)",
-                "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "counts": counts,
-                "entries": entries,
-            }
-            anon._write_private(anon.DEFAULT_MAPS / f"{map_id}.map.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            map_id = _save_map(tag, "(web UI)", "(web UI)", counts, entries)
     return {
         "redacted": redacted,
         "tag": tag,
@@ -268,6 +275,48 @@ def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
         "map_id": map_id,
         "rules_applied": anon.entity_count(entities),
     }
+
+
+def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) -> dict:
+    """Redact a DOCUMENT: one redaction, two artifacts.
+
+    The container is redacted first — one allocation, one map, one tag — and the Markdown the model
+    reads is then derived from the ALREADY redacted file. Redacting the Markdown and the container
+    as two independent passes would produce two maps sharing a tag, i.e. `[EMAIL-1-<tag>]` meaning a
+    different value in each artifact, and a restore holding the wrong map would resolve in silence.
+
+    A PDF, or a package we cannot open, cannot be rewritten in place: there the Markdown conversion
+    is the only path, and the response says so instead of pretending.
+    """
+    entities, families = _resolve(catalogs, patterns)
+    redacted_path = source.with_name(f"redacted-{filename}")
+    with TAG_LOCK:
+        tag = anon.allocate_tag([anon.DEFAULT_MAPS])
+        try:
+            entries, counts, parts = anon.anonymize_container(
+                source, redacted_path, entities, families=families, tag=tag
+            )
+        except (anon.UnreadableContainer, OSError, zipfile.BadZipFile) as exc:
+            result = _anonymize_text(_convert_to_markdown(source), catalogs, patterns, True)
+            result["origin"] = "converted"
+            result["container_error"] = str(exc)
+            return result
+        map_id = _save_map(tag, filename, f"redacted-{filename}", counts, entries) if entries else None
+    # Convert the REDACTED file: the original's text never reaches the response.
+    result = {
+        "redacted": _convert_to_markdown(redacted_path),
+        "tag": tag,
+        "counts": counts,
+        "entries": [{"placeholder": key, "type": value["type"]} for key, value in entries.items()],
+        "map_id": map_id,
+        "rules_applied": anon.entity_count(entities),
+        "origin": "container",
+        "parts": parts,
+    }
+    if entries:
+        result["container_b64"] = base64.b64encode(redacted_path.read_bytes()).decode("ascii")
+        result["container_name"] = f"{Path(filename).stem}.redacted{Path(filename).suffix}"
+    return result
 
 
 # --------------------------------------------------------------------------------------
@@ -523,15 +572,12 @@ class Handler(BaseHTTPRequestHandler):
             source.write_bytes(raw)
             kind = anon.sniff(source)
             if kind is None:
-                text = source.read_text(encoding="utf-8", errors="replace")
-                origin = "text"
+                result = _anonymize_text(source.read_text(encoding="utf-8", errors="replace"), catalogs, patterns, True)
+                result["origin"] = "text"
+            elif kind == "image":
+                raise ValueError("an image cannot be anonymized: its pixels are not scannable")
             else:
-                if kind == "image":
-                    raise ValueError("an image cannot be anonymized: its pixels are not scannable")
-                text = _convert_to_markdown(source)
-                origin = "converted"
-            result = _anonymize_text(text, catalogs, patterns, True)
-            result["origin"] = origin
+                result = _anonymize_document_file(source, filename, catalogs, patterns)
             with LOCK:
                 STATE["jobs"] += 1
             self._json(result)

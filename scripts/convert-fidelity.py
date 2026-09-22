@@ -276,6 +276,15 @@ def main(argv: list[str] | None = None) -> int:
         f"\n{len(FEATURES) - len(lost)} of {len(FEATURES)} features measured as preserved"
         + (f"; not carried over: {', '.join(lost)}" if lost else "")
     )
+    if lost:
+        # The measurement is what motivated the in-place path, so it must point at the answer:
+        # those features are not lost any more, they are rewritten where they live.
+        print(
+            "\nThose features are not redacted by converting — which is the point: the container\n"
+            "pass rewrites them inside the file (`anon.py verbale.docx` -> `verbale.redacted.docx`,\n"
+            "verified on the output), and the guard keeps using the conversion because its path is\n"
+            "a `read`, not a delivery."
+        )
     if not args.keep:
         shutil.rmtree(work, ignore_errors=True)
     else:

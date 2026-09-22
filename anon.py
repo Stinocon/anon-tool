@@ -1611,17 +1611,29 @@ def cmd_check(args: argparse.Namespace) -> int:
         else:
             print(f"anon: not a file: {target}", file=sys.stderr)
         return 0
+    entities = resolve_entities(args)
     kind = sniff(target)
     if kind == "image":
         # Not scannable (it is sent as an image attachment, not as text), but reading an image
         # is a legitimate feature. Declared gap: a screenshot of a client document leaks.
         return _emit_check(args, [], target, binary=True)
     if kind is not None:
-        # A document container / unknown binary: un-scannable and readable as text by the read
-        # tool, so it must NOT be reported as clean. Fail closed.
-        return _emit_check(args, [], target, binary=True, unscannable=True)
+        # A container's parts ARE scannable, and now that we rewrite them in place we must be able
+        # to name what would come out. `unscannable` stays, and not as a formality: it describes
+        # what the `read` tool does with this file (decode it as text, which this is not), and the
+        # guard's auto-remediation keys on that exact field.
+        inside = ""
+        found_inside: list[tuple[int, int, str]] = []
+        if kind == "container":
+            try:
+                inside = container_text(target)
+                found_inside = detect(inside, entities, families=resolve_families(args))
+            except (UnreadableContainer, OSError, zipfile.BadZipFile):
+                # A PDF, or a package we cannot open: the honest answer stays "unscannable".
+                found_inside = []
+        return _emit_check(args, found_inside, target, text=inside, binary=True, unscannable=True,
+                           container=kind == "container")
     text = read_text(target)
-    entities = resolve_entities(args)
     found = detect(text, entities, families=resolve_families(args))
     return _emit_check(args, found, target, text=text)
 
@@ -1719,6 +1731,7 @@ def _emit_check(
     allowed: bool = False,
     binary: bool = False,
     unscannable: bool = False,
+    container: bool = False,
 ) -> int:
     by_type: dict[str, int] = {}
     findings: list[dict[str, object]] = []
@@ -1744,6 +1757,10 @@ def _emit_check(
         result["binary"] = True
     if unscannable:
         result["unscannable"] = True
+    if container:
+        # The line numbers refer to the parts as a reader would concatenate them, not to a file
+        # with lines: say which of the two views this is, instead of leaving it to be guessed.
+        result["container"] = True
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
     elif found:
