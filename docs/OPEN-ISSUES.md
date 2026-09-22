@@ -189,7 +189,8 @@ The fix for the MEDIUM finding below refused a real document on the first try: a
 company name is split by a `<w:tab/>` between the name and its legal form. The rule had been stated
 as "only run-level tags may be crossed", which is wrong in the other direction — a tab, a line break,
 a bookmark, a hyperlink or a content control are all INSIDE one text container, and an ordinary
-letterhead uses them. `INLINE_TAGS` now lists what a word processor actually splits a value with,
+letterhead uses them. An inline set (then called `INLINE_TAGS`, now `INLINE_ELEMENTS`) listed what a
+word processor actually splits a value with,
 ANY other tag is structural, and the refusal names the tag (`w:p`, `dc:title`) so the operator has
 something to act on. Four fixtures (tab, break, bookmark, content control) fail if the list is
 narrowed back to the run-level set.
