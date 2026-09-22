@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))

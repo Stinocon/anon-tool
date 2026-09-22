@@ -10,6 +10,8 @@ enforces that they agree.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-22
+
 ### Added
 
 - `@context off` in a dictionary/catalog: a directive applies to the entries that follow it and a

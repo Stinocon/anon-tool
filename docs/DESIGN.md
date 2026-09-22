@@ -115,8 +115,13 @@ than an explicit alias the operator adds once.
 A 200-entry dictionary compiles to 400 patterns (one per normalization form). Scanning each one over
 the whole text was the entire cost of `--check`: 13.7 s for 2 MB, measured, which is what made the
 guard time out. The engine now locates candidates with ONE case-insensitive pass over the first
-token of every entry and verifies each entry anchored at those positions — the same match, ~1.8-2.0
-MB/s (`scripts/bench-check.py`). Entries with a `@context` cannot be found that way, so they are
+token of every entry and verifies each entry anchored at those positions — the same match. The
+cost is now a function of the DICTIONARY, not only of the file: measured on a 2 MB corpus
+(`scripts/bench-check.py`), 1.60 MB/s with 200 entries, 0.93 with 1 000, 0.20 with 7 900 (the
+full-municipality size), and ~2.0 MB/s at 16 MB with a few hundred entries, where the per-run
+overhead is amortised. The guard's 12 MB cap is sized for a few hundred entries: against the full
+list it would need 60 s of a 20 s budget (OPEN-ISSUES 26). Entries with a `@context` cannot be
+found that way, so they are
 grouped by context and the group pattern is used as a locator, again with anchored verification, so
 `Roma` is still found next to `Roma Nord`.
 

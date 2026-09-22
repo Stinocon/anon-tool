@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>v1.6.0</strong> — <a href="CHANGELOG.md">changelog</a>
+  <strong>v1.7.0</strong> — <a href="CHANGELOG.md">changelog</a>
 </p>
 
 ---
