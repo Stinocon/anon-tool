@@ -183,6 +183,35 @@ proving docx/xlsx/odt/pptx in place, and the doc sweep. Commit `bb45726` and aft
 Left: the adversarial review of the container pass (mandatory, different model). Legacy
 `.doc/.xls/.ppt`, PDF and images remain refused by design.
 
+### Adversarial review of the container pass (2026-09-22) — every finding accounted for
+
+Review by a different model on the engine + UI of the container pass. Four real defects, all fixed
+in the same change, each with a test that FAILS against the old code (checked by re-injecting the
+defect, not by assertion):
+
+- **HIGH — deadlock on the PDF fallback.** `_anonymize_document_file` held `TAG_LOCK` and called
+  `_anonymize_text`, which takes it again; `threading.Lock` is not reentrant, so one PDF hung that
+  request and left the lock held for every later one. The fallback now runs outside the block; the
+  test is a watchdog (mutated code fails it after 10 s).
+- **HIGH — a UTF-16/32 part without a BOM was treated as binary**, so it was neither scanned nor
+  verified and the check reported "0 leftovers" while the value was intact. Wide encodings are now
+  recognised by byte pattern.
+- **HIGH — no bound on decompression.** `zipfile` inflates a part before anyone can inspect it, and
+  the per-character index multiplies it further; `--check` (the guard's `read` path) was exposed.
+  Caps on part size, expansion ratio and total, plus the 12 MB scan budget for `--check`.
+- **MEDIUM — a match spanning a structural boundary destroyed the other element's text** and stored
+  the separator spaces in the map. Now classified and refused.
+- MEDIUM — response amplification (base64 inside JSON, ~2.5x the file): the document is withheld
+  beyond the upload cap and said to be. Residual, declared: below the cap the response is still
+  built in memory.
+- LOW — the `if not raw` guard sat after the allocation (unreachable, but the ordering was wrong);
+  LOW — the map was written before the conversion, so a failed conversion left a map holding real
+  values behind (now deleted with it); LOW — a doc comment claimed detection and verification used
+  the same view: true per part, and the joined re-scan is deliberately stricter.
+
+Residual, declared and not fixed: the per-character index costs tens of bytes per character (a
+document near the cap is still a large in-memory object).
+
 ## To-do — the whole list, in the order I would take it
 
 One ordered list. The **IDs are stable references, not an order**: 1-11 are the items closed above,

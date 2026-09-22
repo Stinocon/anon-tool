@@ -21,8 +21,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 import zipfile
@@ -695,6 +697,51 @@ class WebUiTest(unittest.TestCase):
         self.assertGreaterEqual(status, 400, result)
         self.assertEqual({path.name for path in (self.tmp / "maps").iterdir()}, before,
                          "a refused document must not leave a map behind")
+
+
+class DocumentFallbackTest(unittest.TestCase):
+    """The PDF path: a container the engine cannot open falls back to the Markdown conversion.
+
+    Regression test for a deadlock found in adversarial review. `_anonymize_document_file` took
+    TAG_LOCK and then called `_anonymize_text`, which takes it again; `threading.Lock` is not
+    reentrant, so the request hung forever and left the lock held — one PDF froze every later
+    request too. The watchdog below is the assertion: a deadlocked call never finishes.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-web-fallback-"))
+        (self.tmp / "maps").mkdir()
+        self.env = {**os.environ, "ANON_HOME": str(self.tmp)}
+        spec = importlib.util.spec_from_file_location("anon_web_fallback", SERVER)
+        assert spec and spec.loader
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_an_unopenable_container_falls_back_instead_of_deadlocking(self) -> None:
+        source = self.tmp / "doc.pdf"
+        source.write_bytes(b"%PDF-1.4\n" + b"x" * 64)
+        outcome: dict = {}
+
+        def run() -> None:
+            with mock.patch.object(self.module.anon, "anonymize_container",
+                                   side_effect=self.module.anon.UnreadableContainer("REFUSED — not a ZIP")), \
+                 mock.patch.object(self.module, "_convert_to_markdown",
+                                   return_value="Cliente Contoso, mario@contoso.it"):
+                outcome["result"] = self.module._anonymize_document_file(source, "doc.pdf", None, None)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+        self.assertFalse(worker.is_alive(),
+                         "the fallback deadlocked: it re-took TAG_LOCK inside the block that holds it")
+        self.assertEqual(outcome["result"]["origin"], "converted")
+        self.assertIn("container_error", outcome["result"])
+        self.assertNotIn("container_b64", outcome["result"], "nothing is handed back for a PDF")
+        self.assertIn("CONTOSO", outcome["result"]["redacted"].upper())
+        self.assertNotIn("mario@contoso.it", outcome["result"]["redacted"])
 
 
 if __name__ == "__main__":

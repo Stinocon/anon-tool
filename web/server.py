@@ -287,6 +287,10 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
 
     A PDF, or a package we cannot open, cannot be rewritten in place: there the Markdown conversion
     is the only path, and the response says so instead of pretending.
+
+    TAG_LOCK is a plain Lock, NOT reentrant: the fallback calls `_anonymize_text`, which takes it
+    again. It must therefore run OUTSIDE the block below — taking it twice in one thread deadlocks
+    that request and then every later one, and a PDF is enough to trigger it.
     """
     entities, families = _resolve(catalogs, patterns)
     redacted_path = source.with_name(f"redacted-{filename}")
@@ -297,14 +301,27 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
                 source, redacted_path, entities, families=families, tag=tag
             )
         except (anon.UnreadableContainer, OSError, zipfile.BadZipFile) as exc:
-            result = _anonymize_text(_convert_to_markdown(source), catalogs, patterns, True)
-            result["origin"] = "converted"
-            result["container_error"] = str(exc)
-            return result
-        map_id = _save_map(tag, filename, f"redacted-{filename}", counts, entries) if entries else None
-    # Convert the REDACTED file: the original's text never reaches the response.
+            unreadable: Exception | None = exc
+        else:
+            unreadable = None
+            map_id = _save_map(tag, filename, f"redacted-{filename}", counts, entries) if entries else None
+
+    if unreadable is not None:
+        result = _anonymize_text(_convert_to_markdown(source), catalogs, patterns, True)
+        result["origin"] = "converted"
+        result["container_error"] = str(unreadable)
+        return result
+
+    try:
+        markdown = _convert_to_markdown(redacted_path)
+    except Exception:
+        # The map holds the REAL values: if there is no artifact to go with it, it must not stay.
+        if map_id:
+            (anon.DEFAULT_MAPS / f"{map_id}.map.json").unlink(missing_ok=True)
+        raise
+
     result = {
-        "redacted": _convert_to_markdown(redacted_path),
+        "redacted": markdown,
         "tag": tag,
         "counts": counts,
         "entries": [{"placeholder": key, "type": value["type"]} for key, value in entries.items()],
@@ -314,14 +331,21 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
         "parts": parts,
     }
     if entries:
-        result["container_b64"] = base64.b64encode(redacted_path.read_bytes()).decode("ascii")
-        result["container_name"] = f"{Path(filename).stem}.redacted{Path(filename).suffix}"
+        # The container goes back inside JSON, base64: about 4/3 of the file, on top of the file,
+        # the Markdown and the decoded copies. Past the upload cap this is no longer a response a
+        # loopback UI should be building in memory, so the document is withheld and said to be.
+        blob = redacted_path.read_bytes()
+        if len(blob) <= MAX_BODY_BYTES:
+            result["container_b64"] = base64.b64encode(blob).decode("ascii")
+            result["container_name"] = f"{Path(filename).stem}.redacted{Path(filename).suffix}"
+        else:
+            result["container_error"] = (
+                f"the redacted document is {len(blob)} bytes: too large to hand back in this "
+                "response. The Markdown above is redacted and the map is saved."
+            )
     return result
 
 
-# --------------------------------------------------------------------------------------
-# request handler
-# --------------------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     server_version = "anon-tool"
     protocol_version = "HTTP/1.1"

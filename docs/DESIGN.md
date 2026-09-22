@@ -210,6 +210,28 @@ calls it implicitly; the engine itself keeps zero network capability.
   two runs, since they join tokens with `[\s...]+`). The first version verified with the
   concatenating view and reported "0 leftovers" while `dc:creator` was still intact: the check
   confirmed its own blind spot;
+- **a value that only matches by joining two elements is REFUSED, not rewritten.** The detection
+  view puts one space where a tag was, so a match can reach across a boundary: `</w:t></w:r><w:r><w:t>`
+  is Word splitting a run, and that one is fine to cross; `</w:p><w:p>` or
+  `</dc:title><dc:creator>` is not — the rewrite would put the placeholder in the first fragment and
+  EMPTY the others, destroying text that belongs to another element, and the map would store the
+  separator spaces as part of the value. Boundaries are classified (`RUN_LEVEL_TAGS`) and a match
+  reaching across a structural one is refused with nothing written (found in adversarial review,
+  with a two-paragraph fixture that used to lose its second paragraph);
+- **bounds on what a container may expand to**: a part over 64 MB, a part expanding more than 200x
+  its compressed size, or parts totalling over 256 MB are refused before decompression, and
+  `--check` (the guard's path on a `read`) uses the 12 MB `SCAN_MAX_BYTES` budget instead. Without a
+  cap, `zipfile` inflates a part into memory before anyone looks at it — and the per-character index
+  costs one int and one 1-char str per character, tens of times the text: a 61 KB file can ask for
+  gigabytes. Over the cap the answer is the fail-closed one;
+- **a text part that cannot be decoded is refused, never passed through.** A NUL byte is not proof
+  of binary: a UTF-16/32 part *without* a BOM was classified binary, never scanned, and — because
+  the verification used the same classification — reported as "0 leftovers" while the value sat
+  there. Wide encodings are now recognised by byte pattern (strict decode, so an undecodable XML
+  part is refused instead of being rewritten lossily);
+- **detection is per part, verification is joined, and the asymmetry is deliberate**: a value split
+  ACROSS two parts is invisible to the per-part detectors but visible to the joined re-scan, which
+  refuses the output. Stricter than the detection, never looser — the one direction that is safe;
 - **metadata is REDACTED, never removed.** The placeholders go into `docProps/core.xml` like
   anywhere else, so the reverse direction restores the original exactly. Stripping metadata would be
   irreversible and is a separate, explicit choice;

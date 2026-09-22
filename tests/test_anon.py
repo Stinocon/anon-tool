@@ -1619,6 +1619,17 @@ class ContainerRedactionTest(unittest.TestCase):
         text = self.all_text(self.tmp / "spezzato.redacted.docx")
         self.assertNotIn("Mario", text)
         self.assertNotIn("Rossi", text)
+        # And the map must hold the REAL text, not the detection view's separator spaces: a
+        # mangled value would be written straight back into the document on restore.
+        res = self.run_anon(str(src), "--json")
+        back = self.tmp / "spezzato.deanon.docx"
+        restored = subprocess.run(
+            [sys.executable, str(DEANON_PY), str(self.tmp / "spezzato.redacted.docx"),
+             json.loads(res.stdout)["map"], "--out", str(back), "--json"],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertIn("Mario Rossi", self.all_text(back), "the restored text is mangled by the view")
 
     def test_dry_run_on_a_container_writes_nothing(self) -> None:
         src = self.build("nota.docx", "Cliente Contoso.")
@@ -1690,6 +1701,51 @@ class ContainerRedactionTest(unittest.TestCase):
             ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp>'
             "<p:txBody><a:p><a:r><a:t>Cliente Contoso</a:t></a:r></a:p><a:p><a:r><a:t>Referente Mario Rossi"
             "</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"})
+
+    def test_a_utf16_part_without_a_bom_is_still_redacted(self) -> None:
+        """Text without a BOM is text. Judging "binary" from a NUL byte skips the part in BOTH the
+        rewrite and its verification, so the value survives and the check reports zero leftovers:
+        one mistake, two views, and the report agrees with itself."""
+        src = self.tmp / "wide.docx"
+        props = ('<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/'
+                 'package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                 "<dc:creator>Mario Rossi</dc:creator></cp:coreProperties>")
+        with zipfile.ZipFile(src, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(*self.PART_TYPES)
+            archive.writestr(*self.RELS)
+            archive.writestr("docProps/core.xml", props.encode("utf-16-le"))  # no BOM on purpose
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        with zipfile.ZipFile(self.tmp / "wide.redacted.docx") as archive:
+            part = archive.read("docProps/core.xml").decode("utf-16-le")
+        self.assertNotIn("Mario Rossi", part, "a BOM-less UTF-16 part was passed through untouched")
+        self.assertIn("PERSONA-1-", part)
+
+    def test_a_part_that_expands_like_a_bomb_is_refused(self) -> None:
+        """A million bytes that compress to a few hundred: refused BEFORE it is inflated.
+
+        `zipfile` inflates a part into memory before anyone can look at it, and the per-character
+        index costs tens of bytes per character, so the cap has to be applied to the declared size.
+        """
+        src = self.pack("bomba.docx", {"word/document.xml": "<w:t>" + "A" * 1_000_000 + "</w:t>"})
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("REFUSED", res.stderr)
+        self.assertFalse((self.tmp / "bomba.redacted.docx").exists(), "nothing is written")
+
+    def test_a_match_reaching_across_a_paragraph_is_refused_not_rewritten(self) -> None:
+        """A value that only matches by joining TWO elements must be refused.
+
+        Rewriting it puts the placeholder in the first fragment and EMPTIES the others, so the
+        second paragraph's text would be destroyed — and the map would hold the separator spaces as
+        part of the value. Refusing is the fail-closed answer; silently losing a paragraph is not.
+        """
+        src = self.pack("due.docx", {"word/document.xml":
+            '<w:p><w:r><w:t>Mario</w:t></w:r></w:p><w:p><w:r><w:t>Rossi</w:t></w:r></w:p>'})
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("REFUSED", res.stderr)
+        self.assertFalse((self.tmp / "due.redacted.docx").exists(), "nothing is written")
 
     def test_check_names_the_findings_and_stays_unscannable(self) -> None:
         """`--check` on a document: the records AND the refusal, together.

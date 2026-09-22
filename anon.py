@@ -1052,9 +1052,19 @@ class UnreadableContainer(ValueError):
     """
 
 
-def masked_index(xml: str) -> tuple[str, list[int]]:
+# Tags a value may be split ACROSS. Word fragments a run for formatting reasons, and that split is
+# internal to one text container: `</w:t></w:r><w:r><w:t>` is the same sentence. `</w:p><w:p>` or
+# `</dc:title><dc:creator>` is not: joining across it would take text from a DIFFERENT element, so a
+# match that needs such a boundary is refused instead of rewritten.
+RUN_LEVEL_TAGS = re.compile(
+    r"^</?(?:w:r|w:t|w:rPr|w:proofErr|w:noProof|w:lastRenderedPageBreak|"
+    r"a:r|a:t|a:rPr|a:endParaRPr|text:span|text:s)\b"
+)
+
+
+def masked_index(xml: str) -> tuple[str, list[int], set[int]]:
     """(the text a reader sees, with ONE SPACE where each tag was; source offset per character, -1
-    for the inserted separator).
+    for the inserted separator; the indices of separators that are NOT a run-level boundary).
 
     `visible_index` CONCATENATES fragments, which is what a self-delimiting token (`[EMAIL-1]`)
     needs, and it stays that way for the restore direction. Detecting a real VALUE needs the
@@ -1062,19 +1072,65 @@ def masked_index(xml: str) -> tuple[str, list[int]]:
     exactly how a document property escaped redaction), while a value split inside a paragraph must
     still be found — and it is, because the entity patterns join their tokens with `[\\s...]+`, so a
     single space between two run fragments matches.
+
+    A match reaching across one of the reported boundaries takes text from ANOTHER element, so the
+    caller must refuse it instead of rewriting: that is the difference between "Word split a run"
+    and "two paragraphs happened to end and start with the right words".
     """
     visible: list[str] = []
     offsets: list[int] = []
+    structural: set[int] = set()
     position = 0
     for match in MARKUP_RE.finditer(xml):
         visible.extend(xml[position:match.start()])
         offsets.extend(range(position, match.start()))
+        if not all(RUN_LEVEL_TAGS.match(tag) for tag in MARKUP_RE.findall(match.group(0))):
+            structural.add(len(visible))
         visible.append(" ")
         offsets.append(-1)
         position = match.end()
     visible.extend(xml[position:])
     offsets.extend(range(position, len(xml)))
-    return "".join(visible), offsets
+    return "".join(visible), offsets, structural
+
+
+# Decompression caps. `zipfile` inflates a part into memory before anyone can look at it, and the
+# per-character index below costs one int and one 1-char str per character (~40-80x the text), so an
+# unbounded part is both a memory and a time hole — reachable from `--check`, which the Pi guard
+# runs on a `read`. These are the boundaries of "a document", not a policy: over them the container
+# is REFUSED (fail-closed), never half-processed.
+CONTAINER_MAX_PART_BYTES = 64 * 1024 * 1024
+CONTAINER_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+CONTAINER_MAX_RATIO = 200
+
+
+def _guard_part(info: zipfile.ZipInfo, running_total: int, max_total: int = CONTAINER_MAX_TOTAL_BYTES) -> int:
+    """The running decompressed size, or UnreadableContainer when a part is out of bounds."""
+    if info.file_size > CONTAINER_MAX_PART_BYTES:
+        raise UnreadableContainer(
+            f"REFUSED — part {info.filename} declares {info.file_size} uncompressed bytes "
+            f"(over {CONTAINER_MAX_PART_BYTES}): binary or a bomb. Nothing was written."
+        )
+    if info.compress_size and info.file_size > max(4096, CONTAINER_MAX_RATIO * info.compress_size):
+        raise UnreadableContainer(
+            f"REFUSED — part {info.filename} expands {info.file_size // max(info.compress_size, 1)}x "
+            f"its compressed size (over {CONTAINER_MAX_RATIO}x): binary or a bomb. Nothing was written."
+        )
+    total = running_total + info.file_size
+    if total > max_total:
+        raise UnreadableContainer(
+            f"REFUSED — the parts expand past {max_total} bytes: binary or a bomb. "
+            "Nothing was written."
+        )
+    return total
+
+
+class UnreadablePart(UnreadableContainer):
+    """A part that cannot be decoded as text although its name says it is text.
+
+    Passing it through unscanned would deliver a document with a value still inside, and the
+    verification would not see it either (same view, same blind spot). Refused instead.
+    """
 
 
 def open_container(src: Path) -> zipfile.ZipFile:
@@ -1087,12 +1143,24 @@ def open_container(src: Path) -> zipfile.ZipFile:
         ) from exc
 
 
-def container_text(src: Path) -> str:
-    """The visible text of EVERY text part, joined: what a reader of the container sees."""
+def container_text(src: Path, max_total: int = CONTAINER_MAX_TOTAL_BYTES) -> str:
+    """The visible text of EVERY text part, joined: what a reader of the container sees.
+
+    `max_total` is the caller's budget. `--check` passes `SCAN_MAX_BYTES`, because that check is
+    what the Pi guard runs on a `read`: beyond its own budget the honest answer is "unscannable"
+    (fail-closed), not an unbounded scan.
+    """
     chunks: list[str] = []
     with open_container(src) as archive:
-        for name in archive.namelist():
-            text, _codec = decode_part(archive.read(name))
+        total = 0
+        for info in archive.infolist():
+            total = _guard_part(info, total, max_total)
+            text, _codec = decode_part(archive.read(info))
+            if text is None and is_xml_part(info.filename):
+                raise UnreadablePart(
+                    f"REFUSED — part {info.filename} is not decodable text: it cannot be scanned, "
+                    "so a value inside it could not be found. Nothing was written."
+                )
             if text is not None:
                 # The SAME view the rewrite detects on: verifying on a different one is how the
                 # first version reported "0 leftovers" while the document properties were intact.
@@ -1131,9 +1199,16 @@ def anonymize_container(
     blocks: list[tuple[zipfile.ZipInfo, bytes, str | None, str | None]] = []
     reserved: set[str] = set()
     with open_container(src) as archive:
+        total = 0
         for info in archive.infolist():
+            total = _guard_part(info, total)
             blob = archive.read(info)
             text, codec = decode_part(blob)
+            if text is None and is_xml_part(info.filename):
+                raise UnreadablePart(
+                    f"REFUSED — part {info.filename} is not decodable text: it cannot be scanned, "
+                    "so a value inside it could not be found. Nothing was written."
+                )
             if text is not None:
                 # Reserved tokens must be collected across the WHOLE container before allocating:
                 # a part read later could otherwise reuse a number an earlier part already shows.
@@ -1144,16 +1219,25 @@ def anonymize_container(
     chunks: list[tuple[zipfile.ZipInfo, bytes]] = []
     for info, blob, text, codec in blocks:
         if text is not None:
-            visible, offsets = masked_index(text)
+            visible, offsets, structural = masked_index(text)
             found = detect(visible, entities, include_heuristics, families)
             if found:
                 edits: list[tuple[int, int, str]] = []
                 for start, end, ptype in found:
-                    placeholder = alloc.for_value(ptype, visible[start:end])
+                    # Fix the value BEFORE using it: `for_value` must key the map on the real text,
+                    # not on the view. A split value would otherwise be stored with the separator
+                    # spaces in it, and the restore would write those spaces into the document.
                     # -1 marks an inserted separator: it has no source character to rewrite.
                     raw = [position for position in offsets[start:end] if position >= 0]
                     if not raw:
                         continue
+                    if any(index in structural for index in range(start, end)):
+                        raise UnreadablePart(
+                            f"REFUSED — a value of type {ptype} spans a structural boundary in "
+                            f"{info.filename}: rewriting it would take text from another element. "
+                            "Nothing was written."
+                        )
+                    placeholder = alloc.for_value(ptype, "".join(text[position] for position in raw))
                     runs = group_runs(raw)
                     # As in the reverse direction: the first fragment carries the whole token and
                     # the others are emptied, so no formatting moves and the part stays valid.
@@ -1290,8 +1374,47 @@ def decode_part(blob: bytes) -> tuple[str | None, str | None]:
         if blob.startswith(bom):
             return blob.decode(codec, "surrogateescape"), codec
     if b"\x00" in blob[:8192]:
-        return None, None
+        # A NUL is not proof of binary. Deciding "binary" from it means a text part WITHOUT a BOM
+        # is never scanned AND never verified — both sides use the same mistaken view, so the
+        # check reports zero leftovers while the value sits there. The byte pattern is the
+        # evidence: in UTF-16 every second byte is 0 in the ASCII range, in UTF-32 three of four.
+        wide = _guess_wide_codec(blob)
+        if wide is None:
+            return None, None
+        return blob.decode(wide), wide
     return blob.decode("utf-8", "surrogateescape"), "utf-8"
+
+
+def _guess_wide_codec(blob: bytes) -> str | None:
+    """The UTF-16/32 variant a BOM-less blob looks like, or None if it does not look like one.
+
+    Ratios rather than all-or-nothing (a CJK document has non-zero high bytes), and a STRICT
+    decode: a part we cannot decode cleanly must not be rewritten through lossy replacement —
+    it is refused instead, which is the fail-closed direction.
+    """
+    sample = blob[:4096]
+    if len(sample) < 16:
+        return None
+    for codec, stride, zero_slots in (
+        ("utf-16-le", 2, (1,)), ("utf-16-be", 2, (0,)),
+        ("utf-32-le", 4, (1, 2, 3)), ("utf-32-be", 4, (0, 1, 2)),
+    ):
+        slots = [byte for index, byte in enumerate(sample) if index % stride in zero_slots]
+        others = [byte for index, byte in enumerate(sample) if index % stride not in zero_slots]
+        if not slots or not others:
+            continue
+        if sum(1 for byte in slots if byte == 0) / len(slots) < 0.9:
+            continue
+        if sum(1 for byte in others if byte != 0) / len(others) < 0.8:
+            continue
+        try:
+            text = blob.decode(codec)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        if "\x00" in text:
+            continue
+        return codec
+    return None
 
 
 def is_xml_part(name: str) -> bool:
@@ -1374,10 +1497,11 @@ def _fold_entity(value: str) -> str:
 NEAR_MISS_WORD_LIMIT = 400
 NEAR_MISS_VOCAB_LIMIT = 200
 
-# `--batch` walks a directory, so it needs its own ceiling: the guard's 12 MB is the size the tool
-# promises to scan inside its budget (scripts/bench-check.py), and a folder is not a licence to
-# exceed it silently. A bigger file is reported as skipped, never half-processed.
-BATCH_MAX_BYTES = 12 * 1024 * 1024
+# The size the tool promises to scan inside its budget: the same 12 MB the Pi guard applies before
+# it reads a file, sized by scripts/bench-check.py. `--batch` and `--check` on a container both
+# derive from it — a folder, and a ZIP whose parts expand, are not licences to exceed it silently.
+SCAN_MAX_BYTES = 12 * 1024 * 1024
+BATCH_MAX_BYTES = SCAN_MAX_BYTES
 # Our own outputs must never be treated as input: re-anonymizing `x.redacted.md` would nest
 # placeholders and re-number them, and deleting nothing is not the fix.
 OWN_OUTPUT_SUFFIXES = (".redacted", ".deanon")
@@ -1626,7 +1750,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         found_inside: list[tuple[int, int, str]] = []
         if kind == "container":
             try:
-                inside = container_text(target)
+                inside = container_text(target, max_total=SCAN_MAX_BYTES)
                 found_inside = detect(inside, entities, families=resolve_families(args))
             except (UnreadableContainer, OSError, zipfile.BadZipFile):
                 # A PDF, or a package we cannot open: the honest answer stays "unscannable".

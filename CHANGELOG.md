@@ -10,6 +10,17 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Fixed
+
+- Adversarial review of the container pass found four real defects, all fixed here and each covered
+  by a test that fails against the old code: a **deadlock** (the PDF fallback re-took `TAG_LOCK`,
+  which is not reentrant: one PDF hung the request and every later one), a **BOM-less UTF-16/32
+  part** being treated as binary (never scanned, never verified, reported as "0 leftovers"), **no
+  bound on decompression** (a 61 KB file could ask for gigabytes, reachable from `--check`, which is
+  the guard's `read` path), and a **match spanning a structural boundary** destroying the other
+  element's text. Smaller ones: the map is no longer written before the conversion that can fail,
+  and the response withholds the document beyond the upload cap instead of building it in memory.
+
 ### Added
 
 - **The UI offers the document, not only its text**: uploading a `.docx`/`.xlsx`/`.pptx`/`.odt`
