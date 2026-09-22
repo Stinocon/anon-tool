@@ -20,8 +20,10 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
   through a CSP nonce; a foreign `Origin` is refused when the header is present. This is what
   stands between a hostile page in your own browser and the API.
 - **No client-supplied filesystem path is ever used**: uploads land in a per-request temp directory
-  under generated names and are deleted afterwards; results are streamed back as a download instead
-  of being written into the filesystem. `/api/maps` exposes counts only, and the
+  under generated names and are deleted afterwards. A redacted DOCUMENT is published in the private
+  store (`~/.anon/downloads/`, mode 0600, pruned after an hour) and streamed from a token-named URL
+  in 64 KB blocks: it is already redacted, so a leftover is not a leak, and it is never written next
+  to the original. `/api/maps` exposes counts only, and the
   placeholder→real-value mapping is shown only behind an explicit, warned action with a timeout.
 - size limits on uploads (160 MB, `ANON_MAX_UPLOAD_BYTES`) and on `/api/*` requests per minute (token bucket,
   `--rate-limit`, default 120/min, 0 disables), no shell, no `eval`, no content or value logging.

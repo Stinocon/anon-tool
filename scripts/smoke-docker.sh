@@ -75,6 +75,7 @@ if command -v pandoc >/dev/null; then
   DOCX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/anon-smoke-doc-XXXXXX")"
   printf 'Cliente Contoso, referente mario@contoso.it, server 10.42.7.19\n' > "$DOCX_DIR/doc.md"
   pandoc "$DOCX_DIR/doc.md" -o "$DOCX_DIR/doc.docx"
+  export DOC_RESULT
   DOC_RESULT=$(curl -fsS -X POST \
     -H "X-Anon-Token: ${TOKEN}" -H 'X-Filename: doc.docx' -H 'Content-Type: application/octet-stream' \
     --data-binary "@$DOCX_DIR/doc.docx" "http://127.0.0.1:${PORT}/api/anonymize-document")
@@ -82,20 +83,25 @@ if command -v pandoc >/dev/null; then
   echo "$DOC_RESULT" | grep -q '"container_name": "doc.redacted.docx"' || fail "no redacted document offered"
   echo "$DOC_RESULT" | grep -qE '\[AZIENDA-1-[0-9a-f]{6,8}\]' || fail "docx text was not redacted"
   echo "$DOC_RESULT" | grep -q 'contoso.it' && fail "the response leaked the value"
-  # The document itself: decode it and look INSIDE the parts. A response that merely LOOKS right
-  # (a docx-shaped name with the plaintext still inside) has to fail here.
-  echo "$DOC_RESULT" | python3 -c '
-import base64, io, json, sys, zipfile
-result = json.load(sys.stdin)
+  echo "$DOC_RESULT" | grep -q 'container_b64' && fail "the document must not travel inside the JSON"
+  # Download it for real, then look INSIDE the parts: a response that merely looks right (a
+  # docx-shaped name with the plaintext still inside) has to fail here.
+  DOC_URL=$(echo "$DOC_RESULT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("container_url", ""))')
+  [ -n "$DOC_URL" ] || fail "no download url for the redacted document"
+  curl -fsS -H "X-Anon-Token: ${TOKEN}" "http://127.0.0.1:${PORT}${DOC_URL}" -o "$DOCX_DIR/out.docx" \
+    || fail "the redacted document could not be downloaded"
+  DOCX_DIR="$DOCX_DIR" python3 -c '
+import io, json, os, sys, zipfile, pathlib
+result = json.loads(os.environ["DOC_RESULT"])
 tag = result["tag"]
-blob = base64.b64decode(result["container_b64"])
-assert zipfile.is_zipfile(io.BytesIO(blob)), "the offered document is not a container"
-inside = "\n".join(zipfile.ZipFile(io.BytesIO(blob)).read(n).decode("utf-8", "replace")
-                   for n in zipfile.ZipFile(io.BytesIO(blob)).namelist())
+path = pathlib.Path(os.environ["DOCX_DIR"]) / "out.docx"
+assert zipfile.is_zipfile(path), "the downloaded document is not a container"
+with zipfile.ZipFile(path) as archive:
+    inside = "\n".join(archive.read(name).decode("utf-8", "replace") for name in archive.namelist())
 assert "contoso.it" not in inside, "the value survived inside the document"
 assert f"[EMAIL-1-{tag}]" in inside, "no placeholder inside the document"
 assert f"[EMAIL-1-{tag}]" in result["redacted"], "the two artifacts do not share the tag"
-' || fail "the offered document is not really redacted"
+' || fail "the downloaded document is not really redacted"
   pass "docx rewritten in place, verified inside the output"
   rm -rf "$DOCX_DIR"
 else

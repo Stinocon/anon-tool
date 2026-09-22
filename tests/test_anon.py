@@ -1516,6 +1516,34 @@ class BatchTest(unittest.TestCase):
         self.assertTrue((out / "sub" / "verbale.redacted.txt").is_file(), "same name, different folder")
 
 
+    def test_a_symlink_out_of_the_tree_is_skipped_not_followed(self) -> None:
+        """A folder walk scans the FOLDER. `is_file()` follows symlinks, so a link inside the tree
+        used to pull in a file the operator never put in scope — including a map from the private
+        store, where the real values live. Skipping is the only answer that keeps the scope honest.
+        """
+        outside = self.tmp / "fuori" / "segreto.txt"
+        outside.parent.mkdir()
+        outside.write_text("Cliente Acme, referente Mario Rossi\n", encoding="utf-8")
+        escape = self.folder / "scorciatoia.txt"
+        escape.symlink_to(outside)
+        inside_store = self.home / "maps" / "20200101-000000-aaaaaa.map.json"
+        inside_store.parent.mkdir(exist_ok=True)
+        inside_store.write_text('{"entries": {}}', encoding="utf-8")
+        (self.folder / "mappa.txt").symlink_to(inside_store)
+
+        res = self.run_anon(str(self.folder), "--batch", "--json")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        report = json.loads(res.stdout)
+        reasons = {Path(row["file"]).name: row["reason"] for row in report["skipped"]}
+        self.assertEqual(reasons.get("scorciatoia.txt"), "symlink outside the scan root")
+        self.assertEqual(reasons.get("mappa.txt"), "symlink into the private store")
+        # Nothing was written next to a symlink that points elsewhere.
+        self.assertFalse((self.folder / "scorciatoia.redacted.txt").exists())
+        self.assertFalse((self.folder / "mappa.redacted.txt").exists())
+        # And the real file outside the tree is untouched: the walk did not reach it.
+        self.assertIn("Mario Rossi", outside.read_text(encoding="utf-8"))
+
+
 class ContainerRedactionTest(unittest.TestCase):
     """`anon.py verbale.docx` -> `verbale.redacted.docx`: the document comes back, not Markdown.
 

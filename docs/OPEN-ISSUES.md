@@ -209,8 +209,18 @@ defect, not by assertion):
   values behind (now deleted with it); LOW — a doc comment claimed detection and verification used
   the same view: true per part, and the joined re-scan is deliberately stricter.
 
-Residual, declared and not fixed: the per-character index costs tens of bytes per character (a
-document near the cap is still a large in-memory object).
+Both residuals are closed:
+
+- the index no longer costs tens of bytes per character: the visible text is built from chunks and
+  joined once, and the offsets live in an `array('i')`. Measured on a 16.2 MB XML part (12.6 MB of
+  visible text): **peak RSS 470 MB -> 121 MB**, i.e. ~37 -> ~9.6 bytes per character, at ~20% more
+  time. The offsets are still linear in the text — that is what a mapping is — but the multiplier
+  is no longer the problem;
+- the document no longer travels inside the JSON response: it is published under
+  `~/.anon/downloads/` (0600, pruned after an hour) and **streamed** from `GET /api/download/...` in
+  64 KB blocks, so the server holds one block at a time instead of ~1.33x the file as a string on
+  top of the file, the Markdown and the decoded copies. The docker smoke now downloads the document
+  through that endpoint and inspects its parts.
 
 ## To-do — the whole list, in the order I would take it
 
@@ -226,7 +236,6 @@ old reference can never point at a different item.
 | 3 | 21 | **`@context off`** in the dictionary, plus a line documenting the ordering rule — CLOSED in the fourth pass (see below). | | — |
 | 4 | 24 | **Tag collision**: verify empirically over N maps that 6 hex digits are enough, or derive the tag from the map id — CLOSED in the fourth pass (see below). | | — |
 | 5 | 17 | **Optional local-model detector** (DESIGN §7): a localhost endpoint that *suggests* candidates which a human approves. | The structural answer to contextual references — the biggest declared hole. The engine stays the only writer, so determinism is untouched. | large |
-| 6 | 14 | **Complete ISTAT municipality list** — **blocked on a scan-cost decision, and now measurable.** A 7 900-entry catalog drops the engine from 1.60 MB/s to **0.20 MB/s**, so the guard's 12 MB cap would need 60 s against a 20 s timeout: every large document would be refused. Generate the list only after the candidate pass stops scaling with the dictionary size, or ship it against an explicitly lower cap. | The shipped catalog is a 50-city starter, and the tool must never invent the missing names. | medium |
 | 7 | 12 | **`/deanon` command in Pi**, symmetric to `/anon` — CLOSED in the fourth pass (see below). | | — |
 | 8 | 18 | **Ship the `anon` skill and `anon-guard.ts` into `pi-workbench`** (with a sync script + a sha256 check, so the copies cannot drift) — CLOSED in the fifth pass (see below). **Vendoring a copy into THIS repository stays rejected.** | | — |
 | 9 | 27 | **A gate on the numbers in the docs**: read the constants from the code and assert they still appear in README/DESIGN — CLOSED in the fourth pass (see below). | | — |
@@ -238,7 +247,7 @@ old reference can never point at a different item.
 | 15 | 30 | **CI**: make the converter-install skip visible in the run summary, not only in the log — CLOSED in the fifth pass (see below). | | — |
 | 16 | 22 | **`verify.py` must ignore `*.redacted.*`** when scanning decisions — CLOSED in the fifth pass (see below). | | — |
 | 17 | 26 | **Guard throughput vs dictionary size.** The cap is derived from a measurement, but that measurement assumed a small dictionary. Measured today (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s · 1 000 → 0.93 · 4 000 → 0.37 · 7 900 → 0.20. At 1 000 entries the 12 MB cap already needs 13 s of a 20 s budget; at 4 000 it exceeds it. Either measure at run time or size the cap against a declared entry count. | 12 MB / 20 s were sized on this Mac with a few hundred entries; the margin is not a property of the guard, it is a property of the dictionary. | medium |
-| 18 | 36 | **A symlinked FILE inside a `--batch` tree is followed**, even when the target is outside the tree or inside the private store: a link to `~/.anon/entities.txt` gets anonymized into the tree, and the guard that refuses `~/.anon` as a ROOT never sees it. (`rglob` does not descend directory symlinks, so this is the file case only.) Decide: refuse symlinks by default, or resolve and refuse when the target leaves the root. | Cheap to fix, and left visible rather than patched in a hurry — the two other batch findings of the same review (fail-open on an unscannable folder, `--out` collisions) are already fixed. | small |
+| 18 | 36 | ~~**A symlinked FILE inside a `--batch` tree is followed** even when the target is outside the tree or inside the private store.~~ **Fixed**: the walk resolves each candidate and skips it — saying which reason — when the target is inside the private store or leaves the scan root. A test with both kinds of link fails against the old code. The scope is the tree the operator named; a link is a way of naming something else. | `--batch` was fixed, but silently FOLLOWING a link is the same class of mistake: the tool processed a file nobody put in scope, and the private store's maps are exactly what must not leave it. | small |
 | 19 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
 
 ### Hygiene note kept from this pass

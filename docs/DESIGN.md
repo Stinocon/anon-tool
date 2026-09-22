@@ -221,9 +221,10 @@ calls it implicitly; the engine itself keeps zero network capability.
 - **bounds on what a container may expand to**: a part over 64 MB, a part expanding more than 200x
   its compressed size, or parts totalling over 256 MB are refused before decompression, and
   `--check` (the guard's path on a `read`) uses the 12 MB `SCAN_MAX_BYTES` budget instead. Without a
-  cap, `zipfile` inflates a part into memory before anyone looks at it — and the per-character index
-  costs one int and one 1-char str per character, tens of times the text: a 61 KB file can ask for
-  gigabytes. Over the cap the answer is the fail-closed one;
+  cap, `zipfile` inflates a part into memory before anyone looks at it. The index over the visible
+  text is the second half of that: built from chunks and joined once, with the offsets in an
+  `array('i')` (measured: a 16.2 MB XML part peaks at 121 MB instead of 470 MB). Over the cap the
+  answer is the fail-closed one;
 - **a text part that cannot be decoded is refused, never passed through.** A NUL byte is not proof
   of binary: a UTF-16/32 part *without* a BOM was classified binary, never scanned, and — because
   the verification used the same classification — reported as "0 leftovers" while the value sat
@@ -235,6 +236,10 @@ calls it implicitly; the engine itself keeps zero network capability.
 - **metadata is REDACTED, never removed.** The placeholders go into `docProps/core.xml` like
   anywhere else, so the reverse direction restores the original exactly. Stripping metadata would be
   irreversible and is a separate, explicit choice;
+- **the document is fetched, not carried**: the redacted container is published under
+  `~/.anon/downloads/` (0600, pruned after an hour) and streamed from `GET /api/download/...` in
+  64 KB blocks. Base64 inside the JSON response would build ~1.33x the file as a string on top of
+  the file, the Markdown and the decoded copies — several hundred MB of strings for one upload;
 - **one redaction, two artifacts.** The UI redacts the container once (one allocation, one map, one
   tag) and derives the Markdown from the already redacted file. Redacting the Markdown and the
   container independently with one tag would give two maps sharing it — `[EMAIL-1-tag]` meaning a

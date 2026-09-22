@@ -277,6 +277,38 @@ def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
     }
 
 
+DOWNLOAD_TTL_SECONDS = 3600
+
+
+def _downloads_dir() -> Path:
+    """Where a redacted document waits to be fetched, inside the private store (0600).
+
+    It holds a REDACTED document, so a leftover is not a leak; it is still pruned, because a
+    download directory that only grows is a disk leak.
+    """
+    directory = anon.DEFAULT_MAPS.parent / "downloads"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _publish_download(redacted: Path, name: str) -> str:
+    """Copy the redacted document where the client can fetch it, and return its id."""
+    token = os.urandom(8).hex()
+    target = _downloads_dir() / token
+    target.mkdir(mode=0o700, exist_ok=True)
+    published = target / Path(name).name
+    shutil.copyfile(redacted, published)
+    os.chmod(published, 0o600)
+    now = time.time()
+    for stale in _downloads_dir().glob("*"):
+        try:
+            if now - stale.stat().st_mtime > DOWNLOAD_TTL_SECONDS:
+                shutil.rmtree(stale, ignore_errors=True)
+        except OSError:
+            continue
+    return f"{token}/{published.name}"
+
+
 def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) -> dict:
     """Redact a DOCUMENT: one redaction, two artifacts.
 
@@ -331,18 +363,12 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
         "parts": parts,
     }
     if entries:
-        # The container goes back inside JSON, base64: about 4/3 of the file, on top of the file,
-        # the Markdown and the decoded copies. Past the upload cap this is no longer a response a
-        # loopback UI should be building in memory, so the document is withheld and said to be.
-        blob = redacted_path.read_bytes()
-        if len(blob) <= MAX_BODY_BYTES:
-            result["container_b64"] = base64.b64encode(blob).decode("ascii")
-            result["container_name"] = f"{Path(filename).stem}.redacted{Path(filename).suffix}"
-        else:
-            result["container_error"] = (
-                f"the redacted document is {len(blob)} bytes: too large to hand back in this "
-                "response. The Markdown above is redacted and the map is saved."
-            )
+        # Not base64 inside the JSON: that builds ~1.33x the file in one string, on top of the file,
+        # the Markdown and the decoded copies — a 160 MB upload becomes several hundred MB of
+        # strings in a single response. The document is published under the private store and
+        # STREAMED from there, so this process holds one block at a time.
+        result["container_name"] = f"{Path(filename).stem}.redacted{Path(filename).suffix}"
+        result["container_url"] = f"/api/download/{_publish_download(redacted_path, result['container_name'])}"
     return result
 
 
@@ -476,6 +502,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(204)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
+            elif path.startswith("/api/download/"):
+                self._download(path[len("/api/download/"):])
             elif path == "/api/state":
                 self._json(self._state())
             elif path == "/api/maps":
@@ -607,6 +635,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json(result)
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    def _download(self, name: str) -> None:
+        """Stream a published document, in blocks, with its length declared up front."""
+        parts = name.split("/")
+        directory = (anon.DEFAULT_MAPS.parent / "downloads").resolve()
+        if len(parts) != 2 or not all(char in "0123456789abcdef" for char in parts[0]):
+            raise ValueError("invalid download id")
+        candidate = (directory / parts[0] / Path(parts[1]).name)
+        resolved = candidate.resolve()
+        if directory not in resolved.parents or not resolved.is_file():
+            raise ValueError("unknown download")
+        size = resolved.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(size))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Disposition", f'attachment; filename="{Path(parts[1]).name}"')
+        self.end_headers()
+        with resolved.open("rb") as handle:
+            shutil.copyfileobj(handle, self.wfile, 65536)
 
     def _deanonymize(self) -> None:
         raw = self._read_body()

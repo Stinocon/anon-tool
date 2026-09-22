@@ -34,6 +34,7 @@ Design notes
 from __future__ import annotations
 
 import argparse
+import array
 import fnmatch
 import ipaddress
 import json
@@ -1005,7 +1006,7 @@ class _Placeholders:
         return counts
 
 
-def group_runs(offsets: list[int]) -> list[list[int]]:
+def group_runs(offsets: Iterable[int]) -> list[list[int]]:
     """Group raw offsets into the contiguous runs they came from.
 
     A value (or a placeholder) that a word processor split across runs arrives as offsets with
@@ -1062,7 +1063,7 @@ RUN_LEVEL_TAGS = re.compile(
 )
 
 
-def masked_index(xml: str) -> tuple[str, list[int], set[int]]:
+def masked_index(xml: str) -> tuple[str, array.array, set[int]]:
     """(the text a reader sees, with ONE SPACE where each tag was; source offset per character, -1
     for the inserted separator; the indices of separators that are NOT a run-level boundary).
 
@@ -1077,21 +1078,7 @@ def masked_index(xml: str) -> tuple[str, list[int], set[int]]:
     caller must refuse it instead of rewriting: that is the difference between "Word split a run"
     and "two paragraphs happened to end and start with the right words".
     """
-    visible: list[str] = []
-    offsets: list[int] = []
-    structural: set[int] = set()
-    position = 0
-    for match in MARKUP_RE.finditer(xml):
-        visible.extend(xml[position:match.start()])
-        offsets.extend(range(position, match.start()))
-        if not all(RUN_LEVEL_TAGS.match(tag) for tag in MARKUP_RE.findall(match.group(0))):
-            structural.add(len(visible))
-        visible.append(" ")
-        offsets.append(-1)
-        position = match.end()
-    visible.extend(xml[position:])
-    offsets.extend(range(position, len(xml)))
-    return "".join(visible), offsets, structural
+    return _walk_parts(xml, " ")
 
 
 # Decompression caps. `zipfile` inflates a part into memory before anyone can look at it, and the
@@ -1431,22 +1418,46 @@ def xml_protect(value: str) -> str:
     return _sax_escape(value, {'"': "&quot;", "'": "&apos;"})
 
 
-def visible_index(xml: str) -> tuple[str, list[int]]:
+def _walk_parts(xml: str, separator: str) -> tuple[str, array.array, set[int]]:
+    """(visible text, the source offset of every one of its characters, the structural separators).
+
+    One implementation for both directions. Two details are about NOT spending the text over again:
+    the visible text is built from chunks and joined ONCE (a list of single characters is a pointer
+    per character), and the offsets live in an `array('i')` — a Python list of ints costs tens of
+    bytes each, which is how a 64 MB part used to ask for gigabytes. `-1` marks a character that
+    has no source position because it IS the separator standing for a tag.
+    """
+    chunks: list[str] = []
+    offsets = array.array("i")
+    structural: set[int] = set()
+    position = 0
+    length = 0
+    for match in MARKUP_RE.finditer(xml):
+        chunk = xml[position:match.start()]
+        chunks.append(chunk)
+        offsets.extend(range(position, match.start()))
+        length += len(chunk)
+        if separator:
+            if not all(RUN_LEVEL_TAGS.match(tag) for tag in MARKUP_RE.findall(match.group(0))):
+                structural.add(length)
+            chunks.append(separator)
+            offsets.append(-1)
+            length += 1
+        position = match.end()
+    chunk = xml[position:]
+    chunks.append(chunk)
+    offsets.extend(range(position, len(xml)))
+    return "".join(chunks), offsets, structural
+
+
+def visible_index(xml: str) -> tuple[str, array.array]:
     """(the text a reader sees, the offset in `xml` of every one of its characters).
 
     This is what makes a value (or a placeholder) that a word processor split across runs findable
     as one string, and repairable without touching a single tag.
     """
-    visible: list[str] = []
-    offsets: list[int] = []
-    position = 0
-    for match in MARKUP_RE.finditer(xml):
-        visible.extend(xml[position:match.start()])
-        offsets.extend(range(position, match.start()))
-        position = match.end()
-    visible.extend(xml[position:])
-    offsets.extend(range(position, len(xml)))
-    return "".join(visible), offsets
+    visible, offsets, _structural = _walk_parts(xml, "")
+    return visible, offsets
 
 
 def write_container_atomic(output: Path, chunks) -> None:
@@ -2051,7 +2062,18 @@ def cmd_batch(args: argparse.Namespace) -> int:
     rows: list[dict[str, object]] = []
     skipped: list[tuple[Path, str]] = []
     for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
-        if out_dir is not None and out_dir.resolve() in path.resolve().parents:
+        # `is_file()` FOLLOWS a symlink, so a link inside the tree can point anywhere: at a file
+        # outside the scan root, or at the private store, whose maps hold the real values. Scanning
+        # it would process — and copy under a `redacted` name — something the operator never put in
+        # scope. The tree is the scope, so a target outside it is skipped and said to be.
+        target = path.resolve()
+        if target == private or private in target.parents:
+            skipped.append((path, "symlink into the private store"))
+            continue
+        if resolved not in target.parents and target != resolved:
+            skipped.append((path, "symlink outside the scan root"))
+            continue
+        if out_dir is not None and out_dir.resolve() in target.parents:
             continue  # never re-scan what we just wrote
         if _is_own_output(path.name):
             skipped.append((path, "own output"))

@@ -138,16 +138,29 @@ function chips(container, counts) {
   }
 }
 
-function download(name, text, base64) {
-  const blob = base64
-    ? new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: "application/octet-stream" })
-    : new Blob([text], { type: "text/plain;charset=utf-8" });
+function saveBlob(name, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = name;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function download(name, text, base64) {
+  const blob = base64
+    ? new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: "application/octet-stream" })
+    : new Blob([text], { type: "text/plain;charset=utf-8" });
+  saveBlob(name, blob);
+}
+
+/* The redacted document is fetched from its own URL instead of being carried inside the JSON: the
+   server streams it in blocks and holds one of them at a time, where base64 in the response body
+   would build more than the file itself as a string. The fetch still carries the per-run token. */
+async function downloadFromServer(url, name) {
+  const response = await api(url);
+  if (!response.ok) throw new Error(`scarico del documento fallito (${response.status})`);
+  saveBlob(name, await response.blob());
 }
 
 function dropzone(zone, input, onFile) {
@@ -358,7 +371,7 @@ $("run-anon").addEventListener("click", async () => {
     pending = {
       text: result.redacted,
       name: baseName,
-      containerB64: result.container_b64 || null,
+      containerUrl: result.container_url || null,
       containerName: result.container_name || "",
     };
 
@@ -369,8 +382,8 @@ $("run-anon").addEventListener("click", async () => {
     // The document itself, when the upload was one we can rewrite. One redaction produced both
     // artifacts and one map, so they can never disagree; the button is absent when there is
     // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).
-    $("download-document").hidden = !pending.containerB64;
-    $("download-document").title = pending.containerB64
+    $("download-document").hidden = !pending.containerUrl;
+    $("download-document").title = pending.containerUrl
       ? `${pending.containerName} — stesso tag e stessa mappa del testo qui sotto`
       : "";
     if (result.container_error) {
@@ -390,13 +403,13 @@ $("run-anon").addEventListener("click", async () => {
   }
 });
 
-let pending = { text: "", name: "redatto.txt", containerB64: null, containerName: "" };
+let pending = { text: "", name: "redatto.txt", containerUrl: null, containerName: "" };
 
 $("clear-anon").addEventListener("click", () => {
   $("text-anon").value = "";
   $("file-anon").value = "";
   state.anonFile = null;
-  pending = { text: "", name: "redatto.txt", containerB64: null, containerName: "" };
+  pending = { text: "", name: "redatto.txt", containerUrl: null, containerName: "" };
   $("download-document").hidden = true;
   progressStop();
   $("anon-result").hidden = true;
@@ -408,8 +421,15 @@ $("copy-redacted").addEventListener("click", async () => {
   setStatus($("anon-status"), "copiato", "ok");
 });
 $("download-redacted").addEventListener("click", () => download(pending.name, pending.text));
-$("download-document").addEventListener("click", () => {
-  if (pending.containerB64) download(pending.containerName, null, pending.containerB64);
+$("download-document").addEventListener("click", async () => {
+  if (!pending.containerUrl) return;
+  setStatus($("anon-status"), "scarico del documento…");
+  try {
+    await downloadFromServer(pending.containerUrl, pending.containerName);
+    setStatus($("anon-status"), "documento scaricato", "ok");
+  } catch (error) {
+    setStatus($("anon-status"), String(error.message || error), "error");
+  }
 });
 
 /* The reveal view shows the REAL values. They must not keep living in the page because a tab

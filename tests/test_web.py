@@ -324,6 +324,16 @@ class WebUiTest(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     # --- helpers -----------------------------------------------------------------
+    def call_bytes(self, path: str) -> tuple[int, bytes]:
+        """GET a binary response (the streamed document) without trying to read it as JSON."""
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        request.add_header(TOKEN_HEADER, self.token)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()
+
     def call(self, path: str, payload: dict | None = None, headers: dict | None = None,
              method: str | None = None, raw: bytes | None = None):
         data = raw if raw is not None else (json.dumps(payload).encode() if payload is not None else None)
@@ -660,7 +670,10 @@ class WebUiTest(unittest.TestCase):
             self.assertNotIn("container_error", result)
             tag = result["tag"]
             self.assertEqual(result["container_name"], "doc.redacted.docx")
-            docx_bytes = base64.b64decode(result["container_b64"])
+            # Fetched, not carried: the response names a URL and the document streams from it.
+            self.assertNotIn("container_b64", result, "the document must not travel inside the JSON")
+            status_doc, docx_bytes = self.call_bytes(result["container_url"])
+            self.assertEqual(status_doc, 200)
 
             # The document that comes back is a real container, and the value is gone from it.
             with zipfile.ZipFile(io.BytesIO(docx_bytes)) as archive:

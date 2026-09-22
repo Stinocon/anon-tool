@@ -10,8 +10,23 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Changed
+
+- **The redacted document is streamed instead of base64-encoded into the JSON response.** It is
+  published under `~/.anon/downloads/` (0600, pruned after an hour) and fetched from
+  `GET /api/download/<id>` in 64 KB blocks, so the server holds one block at a time instead of
+  building ~1.33x the file as a string on top of the file, the Markdown and the decoded copies.
+- **The index over the visible text no longer costs tens of bytes per character**: the text is built
+  from chunks and joined once, the offsets live in an `array('i')`. Measured on a 16.2 MB XML part:
+  peak RSS 470 MB -> 121 MB (about 37 -> 9.6 bytes per character), ~20% more time.
+
 ### Fixed
 
+- **`--batch` no longer follows a symlink out of the tree it was pointed at.** `is_file()` follows
+  links, so a link inside the folder could pull in a file nobody put in scope — including a map from
+  the private store, where the real values live. A candidate whose target is inside `~/.anon` or
+  leaves the scan root is skipped, with its reason in the report; a test with both kinds of link
+  fails against the old code (`docs/OPEN-ISSUES.md` #36).
 - Adversarial review of the container pass found four real defects, all fixed here and each covered
   by a test that fails against the old code: a **deadlock** (the PDF fallback re-took `TAG_LOCK`,
   which is not reentrant: one PDF hung the request and every later one), a **BOM-less UTF-16/32
