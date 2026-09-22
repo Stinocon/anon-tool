@@ -35,6 +35,26 @@ that produces the claim — not with "looks right".
   13.7 s against a 15 s timeout. The next dictionary entry would have made every read time out —
   and a timeout used to disable the guard for the session.
 
+### Found in the post-fix sweep (and closed)
+
+A second pass over the code, hunting the *classes* of the first eleven rather than the items:
+
+- **Silent truncation, twice more.** `findings` in `--check`/`--audit`/`/api/audit` was capped
+  (20/50) with no flag, and `/api/maps` capped the list at 100 while `/api/state` counted through
+  that capped list — 300 maps were reported as 100. The listings are still capped, the totals are
+  not, and the truncation is declared (`findings_truncated`, `truncated`) and shown in the UI.
+- **Dead code**: `looks_binary()` (a one-line wrapper over `sniff`, no callers) and `import json`
+  in `convert.py`.
+- **`anon.py`'s exit codes docstring never listed 4** (`--audit`: near-miss candidates).
+- **The address corpus test leaked its temp directory.**
+- **CI installed the converter by version**, not through the pinned requirements file, so CI could
+  run a different wheel than the image ships. It now uses `--require-hashes -r requirements-anydoc.txt`.
+- Caught by a second adversarial review of the sweep itself: the truncation flag was claimed for
+  `/api/audit` but only implemented in the CLI (the web endpoint has its own findings loop);
+  `/api/maps` built `total` and the listing from two separate directory listings (a concurrent
+  write could make `truncated` false while the list was capped); and an unreadable map was skipped
+  from the listing while still counted in `total`. All three fixed, with tests.
+
 ## Open issues — for the next pass
 
 ### Bugs and correctness

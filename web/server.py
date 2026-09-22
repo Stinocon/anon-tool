@@ -377,12 +377,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/state":
                 self._json(self._state())
             elif path == "/api/maps":
-                total = len(self._map_files())
+                paths = self._map_files()  # ONE listing: `total` and the page describe the same set
                 self._json(
                     {
-                        "maps": self._list_maps(),
-                        "total": total,
-                        "truncated": total > MAP_LIST_LIMIT,
+                        "maps": self._list_maps(paths),
+                        "total": len(paths),
+                        "truncated": len(paths) > MAP_LIST_LIMIT,
                     }
                 )
             elif path == "/api/entities":
@@ -441,19 +441,20 @@ class Handler(BaseHTTPRequestHandler):
             return []
         return sorted(anon.DEFAULT_MAPS.glob("*.map.json"), reverse=True)
 
-    def _list_maps(self, limit: int | None = MAP_LIST_LIMIT) -> list[dict]:
+    def _list_maps(self, paths: list[Path], limit: int | None = MAP_LIST_LIMIT) -> list[dict]:
         """Metadata only: the map holds the REAL values and must not travel on a list call.
 
-        The listing is capped (`MAP_LIST_LIMIT`); `/api/state` counts through `_map_files()` with
-        `limit=None`. A capped listing must never make the total look smaller than it is — the
-        truncation is reported (`/api/maps` returns `truncated`) instead of being silent.
+        The caller passes the file list it counted, so `total` and the listing always describe the
+        same set (two independent globs could disagree — the server is threaded and the CLI writes
+        maps concurrently). The listing is capped (`MAP_LIST_LIMIT`); a truncated list is declared,
+        and an unreadable map is REPORTED rather than skipped, for the same reason.
         """
         out = []
-        paths = self._map_files()
         for path in paths[:limit] if limit is not None else paths:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                out.append({"id": path.stem.replace(".map", ""), "unreadable": True, "entries": 0})
                 continue
             out.append(
                 {
@@ -566,6 +567,7 @@ class Handler(BaseHTTPRequestHandler):
                 "revealed": reveal,
                 "candidates_capped": capped,
                 "placeholders_present": sum(1 for _ in anon.PLACEHOLDER_RE.finditer(text)),
+                "findings_truncated": len(found) > len(findings),
             }
         )
 

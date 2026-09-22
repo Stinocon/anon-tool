@@ -20,9 +20,11 @@ jobs:
 
       # The converter is optional for the engine and required for the docx/pdf tests.
       # A failure to install must not silence the suite: those tests skip themselves when it is
-      # missing, and the run stays honest about what it did not exercise.
+      # missing, and the run stays honest about what it did not exercise. Installed through the
+      # hashed pin, exactly like the image and the native venv (a version pin alone would let the
+      # CI run a different wheel than the one the container ships).
       - name: Install the document converter
-        run: pip install "firecrawl-anydoc==0.2.3" || echo "converter unavailable — its tests will skip"
+        run: pip install --require-hashes -r requirements-anydoc.txt || echo "converter unavailable — its tests will skip"
 
       - name: Engine suite
         run: python3 tests/test_anon.py

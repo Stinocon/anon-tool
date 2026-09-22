@@ -413,6 +413,37 @@ class WebUiTest(unittest.TestCase):
         self.assertEqual(data["total"], len(data["maps"]))
         self.assertFalse(data["truncated"])
 
+    def test_a_corrupt_map_is_listed_not_skipped(self) -> None:
+        """Skipping an unreadable map made the listing disagree with `total` and hid the file."""
+        broken = self.tmp / "maps" / "20200101-000000-deadbe.map.json"
+        broken.write_text("{ questo non e' json", encoding="utf-8")
+        try:
+            status, data = self.call("/api/maps")
+            self.assertEqual(status, 200)
+            entry = next((item for item in data["maps"] if item["id"].startswith("20200101")), None)
+            self.assertIsNotNone(entry, "the corrupt map must still appear")
+            self.assertTrue(entry["unreadable"])
+            self.assertEqual(data["total"], len(data["maps"]), "total must match what is listed")
+        finally:
+            broken.unlink()
+
+    def test_audit_declares_a_truncated_findings_list(self) -> None:
+        """/api/audit capped `findings` at 50 in silence, exactly like the CLI used to."""
+        text = "\n".join(f"utente{index}@cliente{index}.it" for index in range(1, 61))
+        status, data = self.call(
+            "/api/audit", payload={"text": text}, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["total"], 60)
+        self.assertLess(len(data["findings"]), 60)
+        self.assertTrue(data["findings_truncated"])
+
+        status, small = self.call(
+            "/api/audit", payload={"text": "solo utente9@cliente9.it\n"}, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(status, 200, small)
+        self.assertFalse(small["findings_truncated"], "the flag must be false, not merely absent")
+
     def test_the_map_count_is_not_capped_by_the_listing(self) -> None:
         """`/api/state` counted through the capped list: 300 maps would have reported 100."""
         before = len(list((self.tmp / "maps").glob("*.map.json")))

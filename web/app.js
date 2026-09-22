@@ -198,6 +198,15 @@ async function loadMaps() {
     return;
   }
   for (const map of maps) {
+    if (map.unreadable) {
+      // A corrupt map is shown, not hidden: skipping it silently was why the list disagreed
+      // with the total. It cannot be selected — restoring from it would fail anyway.
+      const broken = document.createElement("p");
+      broken.className = "map-empty";
+      broken.textContent = `${map.id} — mappa illeggibile (file corrotto o scrittura interrotta)`;
+      list.append(broken);
+      continue;
+    }
     const card = document.createElement("label");
     card.className = "map-card";
     const counts = Object.entries(map.counts || {}).map(([type, n]) => `${type}×${n}`).join(" ") || "—";
