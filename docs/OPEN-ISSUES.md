@@ -12,7 +12,7 @@ that produces the claim — not with "looks right".
 |---|---|---|---|
 | 1 | The Pi guard scanned at most 2 MB while the UI accepts 160 MB, so a large redacted Markdown was blocked when the agent tried to read it. | The engine's entity scan was rewritten (one literal pass + anchored verification per entry instead of one full-text pass per entry), the cap and the timeout are now derived from a measurement, and a timeout **blocks** the file instead of switching the guard off (it used to fail OPEN: one slow file and every later read went unchecked). | `scripts/bench-check.py`: 0.15 MB/s -> **1.8-2.0 MB/s** (16 MB in 8.1 s, 200-entry dictionary). Cap 2 MB -> **12 MB**, timeout 15 s -> 20 s (~3x margin). Verified end-to-end in a fresh Pi process: a 14.4 MB file is blocked with the new message, a clean file is still readable. |
 | 2 | `@stem` could over-match on short stems, redacting unrelated words. | The dictionary loader warns (once per stem, on stderr) when a stem body is shorter than 5 characters. It deliberately does **not** refuse: a dictionary that fails to load makes the engine unreachable, which the guard reads as "engine broken" and turns into a disabled guard. | `tests/test_anon.py::CliTest::test_short_stem_warns_and_a_long_one_does_not` |
-| 3 | Address detection was noisy and blind at the edges: prose was redacted and common address forms were missed. Under the hood, three alternatives (`v.le`, `p.zza`, `n.`) were escaped twice in the pattern, so they matched a literal backslash and never fired; `G.` was not accepted in a name; `3/A` was cut off. | The rule was rebuilt with a shared source (one regex, `ADDRESS_RE`), abbreviations fixed, dots allowed inside names, the civic suffix part of the span — plus a validator that requires one capitalized name token, which is what separates `Via Roma 12` from `in via del tutto eccezionale, 3 volte`. | `tests/test_anon.py::AddressCorpusTest` (12 positive, 6 negative). Before: 6 misses and 3 false positives on that corpus. After: 0 and 0, with `via roma 12` declared as a deliberate miss (precision over recall). |
+| 3 | Address detection was noisy and blind at the edges: prose was redacted and common address forms were missed. Under the hood, three abbreviated markers were escaped twice in the pattern (so they matched a literal backslash and never fired), a dotted initial in a street name was rejected, and the civic suffix was cut off. | The rule was rebuilt from one shared source, with a validator that requires a capitalized name token — the signal that separates a real address from prose (`in via del tutto eccezionale, 3 volte` used to be redacted). | `tests/test_anon.py::AddressCorpusTest` (12 positive, 6 negative). Before: 6 misses and 3 false positives on that corpus. After: 0 and 0, with an all-lowercase address declared as a deliberate miss. |
 | 4 | A placeholder split across two Word runs was detected but not repaired (`deanon` exited 3 and asked for a regenerated document). | Repaired by **distribution**: the real value goes in the first fragment, the other fragments are emptied. No markup is added, removed or merged, so formatting does not move and the part stays well-formed. A split across two different parts is still reported and still exits 3. | `tests/test_anon.py::DeanonContainerTest::test_split_placeholder_is_repaired_without_touching_the_markup` (asserts the paragraph count is unchanged and the XML still parses) + `::test_fragment_across_two_parts_is_still_reported` |
 | 5 | The audit's near-miss search is bounded and truncates silently; `candidates_capped` was returned by the API but never shown. | The UI states it explicitly, in the audit panel, before the candidate list: "elenco parziale: la ricerca … si è fermata ai limiti (400 parole / 200 entità)". | `tests/test_web.py::StaticUiTest::test_a_capped_candidate_scan_is_stated_out_loud` |
 | 6 | The reveal view kept the real values in the DOM with no timeout and no way to put them away. | A "Nascondi i valori" button plus an automatic relock after 60 s (`REVEAL_TTL_MS`); the relock empties `#mapping` and hides the button. | `tests/test_web.py::StaticUiTest::test_reveal_view_can_be_relocked` |
@@ -75,69 +75,54 @@ A second pass over the code, hunting the *classes* of the first eleven rather th
   write could make `truncated` false while the list was capped); and an unreadable map was skipped
   from the listing while still counted in `total`. All three fixed, with tests.
 
-## Open issues — for the next pass
+## To-do — the whole list, in the order I would take it
 
-### Bugs and correctness
+One ordered list. The **IDs are stable references, not an order**: 1-11 are the items closed above,
+12-22 were the original open list, 23+ were added by the post-fix sweeps. **13 is withdrawn**
+(per-client profiles: not interesting at the moment) and its number is left unused on purpose, so an
+old reference can never point at a different item.
 
-| # | Issue | Severity | Note |
-|---|---|---|---|
-| 20 | **The KEY heuristic redacts ordinary code.** `token\s*[:=]\s*VALUE` matches `const TOKEN = window.ANON_TOKEN` and `cls.token = match.group(1)`, which is why the guard blocks this repository's own `app.js`, `tests/test_web.py` and (partly) `anon.py`. | medium | Needs a tighter rule that keeps real secrets: reject a value that is immediately followed by `(`/`[`, or a dotted attribute chain. Any loosening has to be measured against the false-positive corpus in `tests/test_anon.py` — the failure mode of getting this wrong is a missed secret, not a blocked read. |
-| 21 | **A `@context` cannot be switched off.** It applies to every following entry, so a dictionary that mixes context-gated entries (a city catalog) with plain ones has to keep them in the right order — there is no `@context off`. | low | A dictionary is the operator's file: an invisible ordering constraint is the kind of thing that silently under-redacts. Proposal: `@context off` (and document the ordering rule). |
-| 22 | The old structural issue is still open: `verify.py` maps `id -> file` and keeps the last match alphabetically, so a `DEC-XXXX.redacted.md` can shadow the real decision. Tamped down with `.gitignore` entries in the decisions store, not fixed in the scanner. | low | Lives in the memory/decisions tooling, not in this repo: the fix is to ignore `*.redacted.*` when scanning decisions. |
+| Order | # | Next action | Why now | Size |
+|---|---|---|---|---|
+| 1 | 20 | **Tighten the KEY rule**: reject a value that is a dotted expression or a call when the left side mentions token/secret/key/password (`git log -p docs/OPEN-ISSUES.md` has the two shapes that tripped it — they are kept out of this file on purpose). | It is why the guard blocks this repository's own source and tests: every session here pays the redacted-copy tax. Over-loosening risks a missed secret, so it must be driven by the corpus in item 23. | medium |
+| 2 | 23 | **False-positive sweep over a real corpus**: measure, per pattern and per catalog, what gets redacted and what gets wrongly redacted. | The prerequisite of 20, and the only honest way to tune host and near-miss thresholds, which are still chosen by reasoning. `scripts/bench-check.py` already gives the timing harness; the corpus is what is missing. | large |
+| 3 | 21 | **`@context off`** in the dictionary, plus a line documenting the ordering rule. | A `@context` applies to every following entry: an invisible ordering constraint that can silently under-redact. | small |
+| 4 | 24 | **Tag collision**: verify empirically over N maps that 6 hex digits are enough, or derive the tag from the map id. | The tag is what makes a wrong map fail loudly; it is random today and only reasoned about. | small |
+| 5 | 17 | **Optional local-model detector** (DESIGN §8): a localhost endpoint that *suggests* candidates which a human approves. | The structural answer to contextual references — the biggest declared hole. The engine stays the only writer, so determinism is untouched. | large |
+| 6 | 14 | **Complete ISTAT municipality list**, generated from the published dataset. | The shipped catalog is a 50-city starter, and the tool must never invent the missing names. | medium |
+| 7 | 12 | **`/deanon` command in Pi**, symmetric to `/anon`. | Cheap, and it matches the gesture the skill already documents. | small |
+| 8 | 18 | **Port the `anon` skill and `anon-guard.ts` to `pi-workbench`**, or vendor the guard into this repository. | The guard's own history is not versioned anywhere, and the portable workbench does not carry the integration. | medium |
+| 9 | 27 | **A gate on the numbers in the docs**: read the constants from the code and assert they still appear in README/DESIGN. | Two files disagreed (8 MB vs 2 MB) for a whole pass: that drift is checkable, and it has already cost two rounds of hand-fixing. | small |
+| 10 | 15 | **Batch mode**: anonymize a directory in one command. | Fits the "client folder" workflow. | medium |
+| 11 | 16 | **`--dry-run`**: list what *would* be redacted, per type, writing nothing. | `--check` is close but has no preview. | small |
+| 12 | 28 | **Split `docs/DESIGN.md`** (engine vs UI). | It has grown to cover both. | small |
+| 13 | 25 | **Converter fidelity**: measure what `.docx → Markdown` loses (tables, headers, tracked changes, metadata). | Today the answer is "unknown", and it bounds everything downstream. | medium |
+| 14 | 29 | **A screenshot of the UI in the README**, from an asset safe to publish. | The working capture command is in this file's history (`--dump-dom` hangs here, `--screenshot` does not). | small |
+| 15 | 30 | **CI**: make the converter-install skip visible in the run summary, not only in the log. | A silent skip reads as "everything ran". | small |
+| 16 | 22 | **`verify.py` must ignore `*.redacted.*`** when scanning decisions. | A redacted copy of a decision can shadow the real one. Lives in the memory tooling, not in this repo. | small |
+| 17 | 26 | **Guard throughput on other machines**: derive the cap from a measured sample at runtime instead of a constant. | 12 MB / 20 s were sized on this Mac; a slower machine or a 1000-entry dictionary shrinks the margin. | medium |
+| 18 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
 
-### Documentation and polish
+### Hygiene note kept from this pass
 
-- **The docs' numbers are not checked by any gate**, which is how "8 MB" and "2 MB" coexisted in
-  two files. A small test that reads the constants out of `anon.py` / `web/server.py` /
-  `anon-guard.ts` and asserts they still appear in the docs would catch the next drift. Not
-  implemented: worth it only if the numbers keep moving.
-- The guard's own file (`~/.pi/agent/extensions/anon-guard.ts`) is still not carried by this
-  repository, so its history is invisible here (see feature 18).
-- A screenshot of the UI in the README (needs an asset that is safe to publish). A working
-  capture command on this machine — note that `--dump-dom` hangs here, `--screenshot` does not:
+`docs/OPEN-ISSUES.md` itself used to be guard-blocked (it quoted an address and a name/literal pair),
+so a session on this repository needed a redacted copy to read its own to-do list. The examples are
+now written so the file stays readable by the agent, and the concrete shapes live in the git history.
 
-  ```bash
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \
-    --user-data-dir=/tmp/prof --hide-scrollbars --force-device-scale-factor=2 \
-    --window-size=1100,900 --virtual-time-budget=3000 \
-    --screenshot=/tmp/ui.png http://127.0.0.1:1407/
-  ```
-- `docs/DESIGN.md` is getting long; it now covers both engine and UI and could be split.
-- The CI job installs the converter and skips its tests if that fails — the skip should be visible
-  in the run summary rather than only in the log.
-
-### Features worth considering
-
-| # | Feature | Why |
-|---|---|---|
-| 12 | **`/deanon` command in Pi**, symmetric to `/anon`. | The skill documents the CLI; a command would match the existing gesture. |
-| 13 | **Per-client profiles** (`profiles/`, one dictionary each) and a selector. | One growing `entities.txt` becomes unwieldy; today the UI only edits the global one. |
-| 14 | **The complete ISTAT municipality list.** The shipped catalog is a 50-city starter. | Must come from the published dataset — the tool must never invent the missing names. |
-| 15 | **Batch mode**: anonymize a directory in one command. | Fits the "client folder" workflow. |
-| 16 | **`--dry-run`** listing what *would* be redacted, per type, writing nothing. | `--check` is close but has no preview. |
-| 17 | **Optional local-model detector** (DESIGN §8): a localhost endpoint that *suggests* candidates which a human approves. | The structural answer to contextual references. The engine stays the only writer. |
-| 18 | **Port the `anon` skill and `anon-guard` extension to `pi-workbench`** — or vendor the guard into this repository. | The portable workbench does not carry them yet, and the guard's own history is not versioned here either. |
-| 19 | **A phone-prefix catalog.** Deliberately not shipped. | It would compete with the phone rule and fragment numbers: worse than not having it. Revisit only with a real use case. |
-
-### Deeper dives
-
-- **False-positive sweep over a real corpus**: the shipped defaults are now measured against a
-  synthetic address corpus, but the rest (hostnames, KEY, near-miss thresholds) is still chosen by
-  reasoning. `scripts/bench-check.py` gives the harness for timing; the corpus is still missing.
-- **Tag collision probability**: verify empirically over N maps that 6 hex digits is enough, and
-  decide whether the tag should be derived from the map id instead of random.
-- **Converter fidelity**: how much does the `.docx → Markdown` step lose (tables, headers, tracked
-  changes, metadata)? Today the answer is "unknown", and it bounds everything downstream.
-- **Guard throughput on other machines**: 12 MB / 20 s was sized on this Mac. A slower machine
-  (or a 1000-entry dictionary) shrinks the margin; the cap should eventually be derived at
-  runtime from a measured sample instead of being a constant.
 
 ## Verified today (not open)
 
 - The new guard, end to end, in a fresh Pi process: a clean file is readable, a sensitive file is
-  blocked with its type summary, a 14.4 MB file is blocked with the new cap.
-- The container: image builds through `--require-hashes`, the converter works inside it, the docx
-  path is redacted end to end, the port is published on loopback only, the `slim` profile exists —
-  and the slim image honestly reports `converter: false`.
+  blocked with its type summary, a 14.4 MB file is blocked with the new cap. **The guard change takes
+  effect at the next Pi start**: the session that made it still ran the old 2 MB guard.
+- The container is rebuilt and running the current code: `/api/maps` now answers `total` and
+  `truncated` (the shape added in this pass), `/api/state` reports `converter: true`, the API still
+  refuses a request without the token (403), and the image was built through `--require-hashes`.
+- The slim image (`make up-slim`) is verified separately: no `/app/convert.py`, no `anydoc`, and
+  `/api/state` honestly answers `converter: false`.
 - `deanon` cannot restore a document with another run's map (CLI and browser DOM).
-- The engine suite (74 tests), the web suite (15 tests) and the UI load check are green.
+- Suites: **79 engine tests, 24 web tests**, the UI load check, and the docker smoke — green, on the
+  live tree (`~/.anon`), on the repository tree, and inside the container.
+- Every JSON entrance (map files, request bodies, filter fields) was enumerated and validated at one
+  boundary after the fourth round of the same defect class; the last adversarial pass returned
+  "class closed at every entrance: yes".
