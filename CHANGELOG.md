@@ -28,6 +28,7 @@ enforces that they agree.
   model. ONE redaction produces both artifacts (the Markdown is derived from the already redacted
   file), so they share tag and map and cannot disagree; a PDF or an unreadable package falls back to
   the Markdown alone and says why.
+- **`--audit` answers on a container too** (verdict, surviving values, and the placeholder count inside the parts)
 - **`--check` on a container names the findings** while KEEPING `unscannable: true` — that field
   describes what the Pi `read` tool would do with the file, and the guard's auto-remediation keys on
   it. The findings name types and positions, never the values.

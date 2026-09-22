@@ -1702,6 +1702,27 @@ class ContainerRedactionTest(unittest.TestCase):
             "<p:txBody><a:p><a:r><a:t>Cliente Contoso</a:t></a:r></a:p><a:p><a:r><a:t>Referente Mario Rossi"
             "</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>"})
 
+    def test_audit_verifies_the_placeholders_inside_the_parts(self) -> None:
+        """`--audit` on a container: is this file really redacted, and is it really the same map?
+
+        Without this, the only answer for a document was "convert it to Markdown first" — which is
+        not an answer about the file the operator is holding.
+        """
+        src = self.build("controllo.docx", "Referente Mario Rossi, cliente Contoso.",
+                         header="Spett.le Contoso", author="Mario Rossi")
+        before = json.loads(self.run_anon("--audit", str(src), "--json").stdout)
+        self.assertEqual(before["verdict"], "sensitive")
+        self.assertTrue(before["container"])
+        self.assertEqual(before["placeholders_present"], 0)
+
+        res = self.run_anon(str(src), "--json")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        after = json.loads(self.run_anon("--audit", str(self.tmp / "controllo.redacted.docx"), "--json").stdout)
+        self.assertEqual(after["verdict"], "clean", after)
+        self.assertEqual(after["total"], 0, "a real value survived the redaction")
+        self.assertEqual(after["placeholders_present"], before["total"],
+                         "the redacted document must carry one placeholder per value it replaced")
+
     def test_a_utf16_part_without_a_bom_is_still_redacted(self) -> None:
         """Text without a BOM is text. Judging "binary" from a NUL byte skips the part in BOTH the
         rewrite and its verification, so the value survives and the check reports zero leftovers:

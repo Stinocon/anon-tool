@@ -1789,10 +1789,27 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if not target.is_file():
         print(f"anon: not a file: {target}", file=sys.stderr)
         return 2
-    if sniff(target) is not None:
+    kind = sniff(target)
+    inside_container = False
+    if kind == "container":
+        # A container is auditable now that its parts are scanned elsewhere: the same view the
+        # rewrite uses, so "clean" here means the same thing it means there. A PDF or a legacy
+        # .doc still cannot be checked without rewriting it, and saying so is the honest answer.
+        try:
+            text = container_text(target, max_total=SCAN_MAX_BYTES)
+            inside_container = True
+        except (UnreadableContainer, OSError, zipfile.BadZipFile):
+            print(
+                f"anon: {target.name} is binary, or a container that cannot be read as a package "
+                "— convert it to Markdown first",
+                file=sys.stderr,
+            )
+            return 2
+    elif kind is not None:
         print(f"anon: {target.name} is binary — convert it to Markdown first", file=sys.stderr)
         return 2
-    text = read_text(target)
+    else:
+        text = read_text(target)
     entities = resolve_entities(args)
     found = detect(text, entities, families=resolve_families(args))
     candidates, capped = near_misses(text, entities, found)
@@ -1808,6 +1825,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     verdict = "sensitive" if found else ("suspicious" if candidates else "clean")
     report: dict[str, object] = {
         **_envelope("anon.py audit"),
+        **({"container": True} if inside_container else {}),
         "file": str(target),
         "verdict": verdict,
         "total": len(found),

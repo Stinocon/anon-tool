@@ -79,6 +79,7 @@ python3 anon.py ./cliente --batch --dry-run      # the same for a whole folder, 
 python3 anon.py ./cliente --batch                 # -> *.redacted.* next to each source (never over it)
 python3 anon.py verbale.docx                     # -> verbale.redacted.docx: same type, same layout
 python3 anon.py report.txt --audit               # is an ALREADY redacted file really redacted?
+python3 anon.py verbale.redacted.docx --audit    # the same question, answered inside the package
 python3 deanon.py final.docx <map.json>          # put the real values back (text or .docx/.xlsx/.odt)
 python3 convert.py report.docx > report.md       # docx/pdf -> Markdown, locally
 python3 anon.py --list-catalogs                  # which built-in lists are installed
