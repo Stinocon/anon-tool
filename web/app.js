@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, deanonFile: null, entitiesLoaded: "", lastMapId: null };
+const state = { maps: [], selectedMap: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -173,10 +173,7 @@ async function boot() {
   }
   optionsSummary();
   await loadMaps();
-  const entities = await request("/api/entities");
-  $("entities-text").value = entities.text || "";
-  state.entitiesLoaded = $("entities-text").value;
-  refreshButtons();
+  await loadEntities();
 }
 
 /* ---------------------------------------------------------------- mappe */
@@ -456,11 +453,40 @@ $("audit-reveal").addEventListener("change", () => {
 });
 
 /* --------------------------------------------------------------- dizionario */
+async function loadEntities() {
+  const entities = await request(`/api/entities?file=${encodeURIComponent(state.entitiesFile)}`);
+  $("entities-text").value = entities.text || "";
+  state.entitiesLoaded = $("entities-text").value;
+  $("entities-path").textContent = entities.path;
+  refreshButtons();
+}
+
+$("entities-file").addEventListener("change", async (event) => {
+  const next = event.target.value;
+  if ($("entities-text").value !== state.entitiesLoaded) {
+    const go = confirm("Ci sono modifiche non salvate: cambiare file le perde. Continuare?");
+    if (!go) {
+      event.target.value = state.entitiesFile;
+      return;
+    }
+  }
+  const previous = state.entitiesFile;
+  state.entitiesFile = next;
+  try {
+    await loadEntities();
+  } catch (error) {
+    // Revert on failure, or the download name would describe a file that is not on screen.
+    state.entitiesFile = previous;
+    event.target.value = previous;
+    setStatus($("entities-status"), String(error.message || error), "error");
+  }
+});
+
 $("save-entities").addEventListener("click", async () => {
   const button = $("save-entities");
   show(button, true, "Salvo…");
   try {
-    const result = await request("/api/entities", {
+    const result = await request(`/api/entities?file=${encodeURIComponent(state.entitiesFile)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: $("entities-text").value }),
@@ -475,7 +501,7 @@ $("save-entities").addEventListener("click", async () => {
   }
 });
 $("download-entities").addEventListener("click", () =>
-  download("entities.txt", $("entities-text").value));
+  download(`${state.entitiesFile}.txt`, $("entities-text").value));
 
 /* ---------------------------------------------------------------- inputs */
 dropzone($("drop-anon"), $("file-anon"), async (file) => {

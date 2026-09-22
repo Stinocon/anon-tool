@@ -253,7 +253,9 @@ class WebUiTest(unittest.TestCase):
         cls.port = free_port()
         cls.env = {**os.environ, "ANON_HOME": str(cls.tmp)}
         cls.process = subprocess.Popen(
-            [sys.executable, str(SERVER), "--port", str(cls.port)],
+            # --rate-limit 0: the functional tests must not depend on the token bucket (RateLimitTest
+            # owns that); without it, adding one more request tipped the suite over 120/min.
+            [sys.executable, str(SERVER), "--port", str(cls.port), "--rate-limit", "0"],
             env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         deadline = time.time() + 15
@@ -402,6 +404,31 @@ class WebUiTest(unittest.TestCase):
         self.assertEqual(bad[0], 400, "a broken dictionary must be rejected, not written")
         status, after = self.call("/api/entities")
         self.assertIn("Mario Rossi", after["text"], "the previous dictionary must still be intact")
+
+    def test_named_dictionaries_are_addressable_and_unknown_ones_are_refused(self) -> None:
+        # Each dictionary has its own file; `file` selects it, and an unknown name is a 400 (never a
+        # silent fallback that would write into the wrong file).
+        status, people = self.call("/api/entities?file=people")
+        self.assertEqual(status, 200)
+        self.assertEqual(people["name"], "people")
+        self.assertIn("people.txt", people["path"])
+        self.assertEqual(sorted(people["files"]), ["clients", "entities", "people"])
+
+        status, saved = self.call(
+            "/api/entities?file=clients", {"text": "@type AZIENDA\nContoso S.p.A.\n"}, method="PUT"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["name"], "clients")
+        self.assertIn("clients.txt", saved["path"])
+        status, again = self.call("/api/entities?file=clients")
+        self.assertIn("Contoso S.p.A.", again["text"])
+        # The generic file must be untouched by a save into clients.
+        status, generic = self.call("/api/entities")
+        self.assertNotIn("Contoso S.p.A.", generic["text"])
+
+        for bad in ("/api/entities?file=nope", "/api/entities?file=../../etc/passwd"):
+            status, _ = self.call(bad)
+            self.assertEqual(status, 400, bad)
 
     def test_map_list_exposes_metadata_only(self) -> None:
         status, data = self.call("/api/maps")

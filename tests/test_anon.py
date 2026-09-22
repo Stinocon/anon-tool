@@ -620,6 +620,57 @@ class CliTest(unittest.TestCase):
         self.assertIsNotNone(deanon_v, deanon_res.stdout)
         self.assertEqual(anon_v.group(0), deanon_v.group(0))
 
+    def test_default_dictionaries_are_merged(self) -> None:
+        # entities.txt (generic) + people.txt + clients.txt are all read when --entities is absent.
+        (self.tmp / "people.txt").write_text("@type PERSONA\nGiulia Bianchi\n", encoding="utf-8")
+        (self.tmp / "clients.txt").write_text("@type AZIENDA\nContoso S.p.A.\n", encoding="utf-8")
+        src = self.tmp / "nota.txt"
+        src.write_text("Giulia Bianchi per Contoso S.p.A.\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--check", "--json")
+        self.assertIn('"sensitive": true', res.stdout)
+        self.assertIn("PERSONA", res.stdout)
+        self.assertIn("AZIENDA", res.stdout)
+
+    def test_entities_flag_is_repeatable(self) -> None:
+        first = self.tmp / "a.txt"
+        first.write_text("PERSONA|Alfa Persona\n", encoding="utf-8")
+        second = self.tmp / "b.txt"
+        second.write_text("AZIENDA|Beta Azienda\n", encoding="utf-8")
+        src = self.tmp / "nota.txt"
+        src.write_text("Alfa Persona e Beta Azienda\n", encoding="utf-8")
+        res = self.run_anon(
+            str(src), "--check", "--json", "--entities", str(first), "--entities", str(second)
+        )
+        self.assertIn('"sensitive": true', res.stdout)
+        self.assertIn("PERSONA", res.stdout)
+        self.assertIn("AZIENDA", res.stdout)
+
+    def test_a_missing_explicit_dictionary_is_an_error(self) -> None:
+        # A typo in --entities must fail loudly, not silently drop a dictionary.
+        src = self.tmp / "nota.txt"
+        src.write_text("x\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--check", "--json", "--entities", str(self.tmp / "nope.txt"))
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("not found", res.stderr)
+
+    def test_no_dictionary_at_all_still_works(self) -> None:
+        # A fresh install has no curated dictionary: the engine must keep working with the pattern
+        # rules, and `--check --json` must still emit valid JSON — the Pi guard reads "no JSON" as a
+        # broken engine and fails OPEN, which is a leak.
+        for name in ("entities.txt", "people.txt", "clients.txt"):
+            (self.tmp / name).unlink(missing_ok=True)
+        src = self.tmp / "nota.txt"
+        src.write_text("email: mario@acme.it\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--check", "--json")
+        self.assertIn('"sensitive": true', res.stdout)
+        self.assertIn("EMAIL", res.stdout)
+
+    def test_an_empty_entities_flag_is_an_error(self) -> None:
+        src = self.tmp / "nota.txt"
+        src.write_text("x\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--check", "--json", "--entities", "")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+
 
 class AddressCorpusTest(unittest.TestCase):
     """The address rule, measured on a corpus instead of reasoned about.

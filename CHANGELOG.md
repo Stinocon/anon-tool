@@ -10,6 +10,18 @@ enforces that they agree.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-22
+
+### Added
+
+- The curated dictionary is split by kind, all optional and read together: `~/.anon/entities.txt`
+  (the generic fallback), `people.txt` (`@type PERSONA`; a name, or a name plus an email alias) and
+  `clients.txt` (`@type AZIENDA`; a company name and its sites). `--entities PATH` is now
+  repeatable and overrides them.
+- The web UI's **Dizionario** tab selects and edits the three files through the engine
+  (`/api/entities?file=entities|people|clients`); an unknown name is a `400`, never a silent
+  fallback. `/api/state` reports `entities_paths`.
+
 ## [1.5.0] - 2026-09-22
 
 ### Added

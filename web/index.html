@@ -145,6 +145,12 @@
     <div class="card">
       <h2>Dizionario custom</h2>
       <p class="muted">Una riga per entità: <code>TIPO|valore</code>, oppure solo <code>valore</code>. Alias: <code>TIPO|valore|alias</code>. Direttive: <code>@type</code>, <code>@stem</code>, <code>@match case-sensitive</code>, <code>@context regex</code>.</p>
+      <label for="entities-file" class="muted small">File</label>
+      <select id="entities-file" aria-label="File del dizionario">
+        <option value="entities">entities.txt — generico</option>
+        <option value="people">people.txt — persone</option>
+        <option value="clients">clients.txt — aziende e sedi</option>
+      </select>
       <textarea id="entities-text" rows="16" spellcheck="false" aria-label="Dizionario"></textarea>
       <div class="actions">
         <button id="save-entities" class="primary" disabled>Salva</button>

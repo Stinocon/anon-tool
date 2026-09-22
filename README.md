@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>v1.5.0</strong> — <a href="CHANGELOG.md">changelog</a>
+  <strong>v1.6.0</strong> — <a href="CHANGELOG.md">changelog</a>
 </p>
 
 ---
@@ -112,6 +112,22 @@ The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard a
 The Pi integration (a skill and a guard extension) lives in
 [pi-customization](https://github.com/Stinocon/pi-customization); the portable workbench it belongs
 to is [pi-workbench](https://github.com/Stinocon/pi-workbench).
+
+## The dictionary
+
+The curated dictionary lives in `~/.anon`, split by kind so each file stays small — and it never
+enters a repository:
+
+- `entities.txt` — the generic fallback: anything that is not a person or a company (`TIPO|valore`).
+- `people.txt` — people. Open it with `@type PERSONA` and then one value per line (`Mario Rossi`);
+  an entry can carry an email as an alias (`Mario Rossi|m.rossi@x.it`).
+- `clients.txt` — companies and their sites. Open it with `@type AZIENDA` and list the company name
+  (and, if you want, an address, which is redacted like any other entry).
+
+All three are optional and read together; `--entities PATH` (repeatable) overrides them. A line
+without a `TIPO|` prefix takes the `@type` declared above it. Case (`Spa` = `SPA`) and legal forms
+(`srl` = `S.r.l.`) are already folded, so one entry covers the whole family. The web UI's
+**Dizionario** tab edits the three files through the same engine.
 
 ## The catalog system
 

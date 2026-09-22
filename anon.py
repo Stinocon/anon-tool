@@ -12,7 +12,7 @@ and recorded in a JSON map. `deanon.py` re-applies the real values to the finish
 document, so "client document -> work in Pi -> final report" loses nothing.
 
 Modes
-  anon.py FILE [--out PATH] [--map PATH] [--entities PATH] [--stdout] [--quiet]
+  anon.py FILE [--out PATH] [--map PATH] [--entities PATH ...] [--stdout] [--quiet]
   anon.py FILE --check [--json]      # no output written; report only (used by anon-guard)
   anon.py --prune-maps DAYS [--yes]  # list (or delete) the maps older than DAYS
 
@@ -46,11 +46,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
 DEFAULT_ENTITIES = ANON_HOME / "entities.txt"
+# The dictionary is split by kind so each file stays small and precise. All three are optional, and
+# each may open with `@type X` and then list bare values. `entities.txt` stays the generic one.
+DEFAULT_PEOPLE = ANON_HOME / "people.txt"  # `@type PERSONA`
+DEFAULT_CLIENTS = ANON_HOME / "clients.txt"  # `@type AZIENDA` — companies and their addresses
+DEFAULT_DICTIONARIES = (DEFAULT_ENTITIES, DEFAULT_PEOPLE, DEFAULT_CLIENTS)
+# Named access for the front-ends (the web UI's Dizionario tab, the query parameter `file`).
+DICTIONARIES = {"entities": DEFAULT_ENTITIES, "people": DEFAULT_PEOPLE, "clients": DEFAULT_CLIENTS}
 DEFAULT_MAPS = ANON_HOME / "maps"
 DEFAULT_ALLOW = ANON_HOME / "allow.txt"
 CATALOGS_DIR = ANON_HOME / "catalogs"
@@ -1129,8 +1136,33 @@ def near_misses(
 
 
 def resolve_entities(args: argparse.Namespace) -> list[Entity]:
-    """The custom dictionary plus the selected catalogs, as one list."""
-    paths: list[Path] = [Path(args.entities).expanduser() if args.entities else DEFAULT_ENTITIES]
+    """The custom dictionaries plus the selected catalogs, as one list.
+
+    `--entities` is repeatable. When it is given, every path must exist (a typo must fail loudly,
+    not silently drop a dictionary). When it is not, the default dictionaries that exist are used:
+    `entities.txt` (generic), `people.txt` (people) and `clients.txt` (companies).
+    """
+    requested = getattr(args, "entities", None)
+    if requested:
+        paths = [Path(item).expanduser() for item in _as_list(requested)]
+        if not paths:
+            raise ValueError("--entities needs a path")
+        missing = [str(path) for path in paths if not path.is_file()]
+        if missing:
+            raise ValueError("dictionary file not found: " + ", ".join(missing))
+    else:
+        paths = [path for path in DEFAULT_DICTIONARIES if path.is_file()]
+        if not paths:
+            # NOT fatal. A fresh install has no curated dictionary, and the engine must keep working
+            # with the pattern rules alone. A hard error here would make `--check --json` print
+            # nothing, and the Pi guard reads "no JSON" as "engine broken" and fails OPEN for the
+            # session — a leak, and worse than having no dictionary.
+            print(
+                "anon: no dictionary file found; using the built-in patterns only (expected one of "
+                + ", ".join(str(path) for path in DEFAULT_DICTIONARIES)
+                + ")",
+                file=sys.stderr,
+            )
     for name in _as_list(getattr(args, "catalogs", None)):
         if True:
             path = catalog_path(name)
@@ -1529,7 +1561,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("file", nargs="?", help="text file to anonymize ('-' with --check reads stdin)")
     parser.add_argument("--out", help="write the redacted copy here (default: <name>.redacted.<ext>)")
     parser.add_argument("--map", help="write the map here (default: ~/.anon/maps/<id>.map.json)")
-    parser.add_argument("--entities", help="dictionary file (default: ~/.anon/entities.txt)")
+    parser.add_argument(
+        "--entities",
+        action="append",
+        metavar="PATH",
+        help="dictionary file (repeatable; default: ~/.anon/entities.txt + people.txt + clients.txt, "
+        "whichever exist)",
+    )
     parser.add_argument("--catalogs", help="comma-separated catalog names from ~/.anon/catalogs/")
     parser.add_argument("--patterns", help=f"pattern groups to apply: {', '.join(PATTERN_FAMILIES)}")
     parser.add_argument("--list-catalogs", action="store_true", help="list the installed catalogs and exit")

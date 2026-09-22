@@ -87,6 +87,11 @@ rule, and why the failure is loud: a mangled token cannot be restored, and the r
 
 ## 5. Dictionary matching (what "the same entity" means)
 
+The dictionary is split by kind, all optional and merged: `~/.anon/entities.txt` (the generic
+fallback), `~/.anon/people.txt` (`@type PERSONA`) and `~/.anon/clients.txt` (`@type AZIENDA`).
+`--entities PATH` is repeatable and overrides the defaults. The files are operator data: they live
+in `~/.anon`, never in a repository.
+
 One entry covers a family of spellings, deterministically:
 
 | Mechanism | Example |

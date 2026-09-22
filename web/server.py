@@ -39,11 +39,25 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 WEB_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(WEB_DIR.parent))
 import anon  # noqa: E402
 import deanon as deanon_engine  # noqa: E402
+
+
+def _dictionary_path(raw: object) -> tuple[str, Path]:
+    """Resolve the `file` query parameter to a named dictionary (default: entities).
+
+    An unknown name is a 400, never a fallback: silently saving to the wrong dictionary would
+    corrupt an operator's curated data.
+    """
+    name = (str(raw) if raw is not None else "entities").strip().lower() or "entities"
+    path = anon.DICTIONARIES.get(name)
+    if path is None:
+        raise ValueError(f"unknown dictionary '{name}' — expected one of {', '.join(anon.DICTIONARIES)}")
+    return name, path
 
 MAX_BODY_BYTES = 160 * 1024 * 1024
 TOKEN_HEADER = "X-Anon-Token"
@@ -317,6 +331,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(f"body too large (limit {MAX_BODY_BYTES // 1024 // 1024} MB)")
         return self.rfile.read(length) if length else b""
 
+    def _query(self) -> dict:
+        return {key: values[0] for key, values in parse_qs(urlparse(self.path).query).items()}
+
     def _read_json(self) -> dict:
         raw = self._read_body()
         if not raw:
@@ -388,10 +405,15 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
             elif path == "/api/entities":
-                text = anon.DEFAULT_ENTITIES.read_text(encoding="utf-8") if anon.DEFAULT_ENTITIES.is_file() else ""
-                self._json({"text": text, "path": str(anon.DEFAULT_ENTITIES)})
+                name, target = _dictionary_path(self._query().get("file"))
+                text = target.read_text(encoding="utf-8") if target.is_file() else ""
+                self._json(
+                    {"text": text, "path": str(target), "name": name, "files": list(anon.DICTIONARIES)}
+                )
             else:
                 self._error(404, "not found")
+        except ValueError as exc:
+            self._error(400, str(exc))
         except Exception as exc:  # noqa: BLE001 - a 500 must never leak a traceback body
             self._error(500, f"{type(exc).__name__}: {exc}")
 
@@ -436,6 +458,7 @@ class Handler(BaseHTTPRequestHandler):
             "converter": CONVERTER.is_file(),
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),
+            "entities_paths": {name: str(path) for name, path in anon.DICTIONARIES.items()},
         }
 
     def _map_files(self) -> list[Path]:
@@ -567,20 +590,23 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _save_entities(self) -> None:
+        name, target = _dictionary_path(self._query().get("file"))
         payload = self._read_json()
         text = payload.get("text")
         if not isinstance(text, str):
             raise ValueError("no text")
         work = Path(tempfile.mkdtemp(prefix="anon-web-"))
         try:
-            probe = work / "entities.txt"
+            probe = work / f"{name}.txt"
             probe.write_text(text, encoding="utf-8")
             try:
                 entries = anon.load_entities(probe)  # validates BEFORE touching the real file
             except ValueError as exc:
                 raise ValueError(f"dictionary rejected: {exc}") from exc
-            anon._write_private(anon.DEFAULT_ENTITIES, text if text.endswith("\n") else text + "\n")
-            self._json({"saved": True, "entries": anon.entity_count(entries), "path": str(anon.DEFAULT_ENTITIES)})
+            anon._write_private(target, text if text.endswith("\n") else text + "\n")
+            self._json(
+                {"saved": True, "entries": anon.entity_count(entries), "path": str(target), "name": name}
+            )
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
