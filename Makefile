@@ -42,10 +42,11 @@ build: ## build the image only
 native: ## run the server directly, without Docker
 	python3 web/server.py --port $(PORT)
 
-test: ## engine + web + UI load check (no Docker needed)
+test: ## engine + web + UI load check + doc numbers (no Docker needed)
 	python3 tests/test_anon.py
 	python3 tests/test_web.py
 	node tests/ui_load_check.mjs
+	python3 scripts/check-doc-numbers.py
 
 smoke: ## build the container and exercise every endpoint
 	bash scripts/smoke-docker.sh

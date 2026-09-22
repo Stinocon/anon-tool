@@ -647,6 +647,12 @@ def load_entities(path: Path) -> list[Entity]:
         @stem on|off              `Pincopallino` also matches `Pincopallino1`
         @match case-sensitive     do not case-fold (proper nouns: `Brescia`, not `prato`)
         @context <regex>          only match when preceded by this context
+        @context off              stop requiring a context for the entries that follow (the exact
+                                  token `off`; any other value is a regex, `no` included)
+
+    ORDERING RULE: every directive applies to the ENTRIES THAT FOLLOW IT, and a later directive
+    replaces the earlier one — the file is read top to bottom. So a `@context` is not a property of
+    the file: it is a property of the block it opens, and `@context off` is how you close it.
 
     An unknown directive is a hard ERROR, never ignored: a typo in `@stem`/`@context` would
     silently change what gets redacted, and silent under-redaction is a leak.
@@ -679,15 +685,21 @@ def load_entities(path: Path) -> list[Entity]:
                     raise ValueError(f"{path}:{lineno}: @match takes case-sensitive|insensitive")
                 case_sensitive = argument.lower() in ("case-sensitive", "sensitive")
             else:  # context
-                if not argument:
-                    raise ValueError(f"{path}:{lineno}: @context needs a regex")
-                try:
-                    re.compile(argument)  # fail loudly on a broken context, not at match time
-                except re.error as exc:
-                    # Normalized to ValueError so every bad-dictionary failure reaches the caller
-                    # as one error type (the CLI turns it into exit 2).
-                    raise ValueError(f"{path}:{lineno}: invalid @context regex: {exc}") from exc
-                context = argument
+                # ONLY the exact token `off` clears the context. Deliberately not the shared
+                # `_FALSE` list (`no`, `0`, `false`): those are legitimate @context REGEXES, and
+                # treating them as "off" would silently drop a gate the operator wrote.
+                if argument.lower() == "off":
+                    context = None
+                else:
+                    if not argument:
+                        raise ValueError(f"{path}:{lineno}: @context needs a regex (or 'off')")
+                    try:
+                        re.compile(argument)  # fail loudly on a broken context, not at match time
+                    except re.error as exc:
+                        # Normalized to ValueError so every bad-dictionary failure reaches the caller
+                        # as one error type (the CLI turns it into exit 2).
+                        raise ValueError(f"{path}:{lineno}: invalid @context regex: {exc}") from exc
+                    context = argument
             continue
 
         fields = [field.strip() for field in line.split("|")]
@@ -1000,13 +1012,70 @@ def anonymize(
     return "".join(out), entries, counts
 
 
-TAG_DIGITS = 6  # 16.7M values: a collision between two maps stays negligible (with 4 hex it was
-                # ~7% across 100 maps, and a collision is exactly the case this tag exists to stop)
+TAG_DIGITS = 6  # a width, NOT a guarantee: uniqueness comes from new_tag(existing_tags(...))
 
 
-def new_tag() -> str:
-    """A short, per-map identifier carried inside every placeholder."""
-    return os.urandom(3).hex()[:TAG_DIGITS]
+def new_tag(taken: Iterable[str] = ()) -> str:
+    """A short, per-map identifier carried inside every placeholder.
+
+    `taken` is the set of tags already in use (see `existing_tags`). Uniqueness is CHECKED against
+    the maps that exist, not argued from the birthday bound: with 6 hex (16.7M values) the chance of
+    a collision is ~3% at 1 000 maps and ~53% at 5 000 (`scripts/tag-collision.py` measures the
+    curve), which a tool used daily reaches in a few years — and a collision is exactly the failure
+    the tag exists to prevent, because a wrong map would then resolve the placeholders silently.
+
+    The check is per-directory and NOT atomic: two runs that allocate at the same instant, against
+    the same directory, can still draw the same tag (a declared residual race, ~1/16.7M per pair).
+    Raises RuntimeError only if 128 candidates are all taken, which needs a directory holding a
+    large fraction of both 16^6 and 16^8 values — unreachable in practice.
+    """
+    blocked = set(taken)
+    for digits in (TAG_DIGITS, 8):
+        # 8 is the widest the placeholder syntax accepts (`PLACEHOLDER_RE`: 4-8 hex digits), so the
+        # fallback widens within what every reader already understands.
+        for _ in range(64):
+            candidate = os.urandom(4).hex()[:digits]
+            if candidate not in blocked:
+                return candidate
+    raise RuntimeError("could not allocate a free placeholder tag")
+
+
+def existing_tags(maps_dir: Path) -> set[str]:
+    """Tags already used by the maps in `maps_dir`; unreadable ones are skipped.
+
+    One pass over the given directory per anonymize run — a few hundred files in normal use (a
+    measured 0.17 ms per map), which is the price of checking uniqueness instead of hoping for it.
+    Callers that may write OUTSIDE `DEFAULT_MAPS` must pass the union of both directories, or the
+    guarantee is only as wide as the scan.
+    """
+    tags: set[str] = set()
+    try:
+        paths = sorted(maps_dir.glob("*.map.json"))
+    except OSError:
+        return tags
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("tag"), str):
+            tags.add(payload["tag"])
+    return tags
+
+
+def allocate_tag(destinations: Iterable[Path], pinned: str | None = None) -> str:
+    """A tag no map in ANY of `destinations` uses. A `pinned` tag wins, unchecked.
+
+    Every directory that could hold a map the next restore might confuse must be passed in: the
+    caller that may write outside `DEFAULT_MAPS` (via `--map`) passes both, because a guarantee is
+    only as wide as the scan behind it.
+    """
+    if pinned:
+        return pinned
+    taken: set[str] = set()
+    for directory in dict.fromkeys(destinations):  # the same directory twice = one scan
+        taken |= existing_tags(directory)
+    return new_tag(taken)
 
 
 def tag_of(entries: dict[str, dict[str, str]]) -> str | None:
@@ -1432,12 +1501,18 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
         return 2
     entities = resolve_entities(args)
     text = read_text(src)
+    # The tag must be unique among the maps that EXIST — and a map may be redirected with --map, so
+    # both the default directory and the destination are scanned: scanning only one would let a
+    # --map run draw a tag that an existing ~/.anon/maps map already uses, which is the silent
+    # substitution the tag exists to prevent.
+    destination = Path(args.map).expanduser().parent if args.map else DEFAULT_MAPS
+    tag = allocate_tag([DEFAULT_MAPS, destination], getattr(args, "tag", None))
     redacted, entries, counts = anonymize(
         text,
         entities,
         include_heuristics=not args.no_hosts,
         families=resolve_families(args),
-        tag=getattr(args, "tag", None) or None,
+        tag=tag,
     )
 
     if args.stdout:
@@ -1603,7 +1678,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-hosts", action="store_true", help="skip hostname/phone/IP heuristics")
     parser.add_argument(
         "--tag",
-        help="pin the per-map placeholder tag (default: random) — mainly for reproducibility",
+        help="pin the per-map placeholder tag, used verbatim (default: random, checked against the existing maps)",
     )
     parser.add_argument("--quiet", action="store_true", help="suppress informational messages")
     parser.add_argument("--version", action="version", version=f"anon.py {VERSION}")

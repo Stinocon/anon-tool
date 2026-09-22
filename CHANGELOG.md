@@ -12,6 +12,24 @@ enforces that they agree.
 
 ### Added
 
+- `@context off` in a dictionary/catalog: a directive applies to the entries that follow it and a
+  later one replaces it, so `@context` opens a block and `@context off` closes it — only the exact
+  token `off`, because `@context no` and `@context 0` are legitimate regexes and must keep working.
+  Before this, narrowing a context meant reordering the file. The ordering rule is now stated in
+  `catalogs/README.md`, `docs/DESIGN.md` and the parser's own docstring.
+- The per-map placeholder tag is allocated against the tags **already in use** by the maps on disk,
+  in both the default directory and the destination of `--map`: a guarantee is only as wide as the
+  scan behind it. `scripts/tag-collision.py` measured what the code comment used to assert: with
+  6 hex alone the collision probability is ~3% at 1 000 maps, ~53% at 5 000. `SECURITY.md`'s "a
+  collision stays negligible" was the same guess in prose, and is corrected. Two runs allocating in
+  the same instant, and maps under a different `ANON_HOME`, are declared residual gaps.
+- `scripts/check-doc-numbers.py`, wired into `make test`: the numbers in `README.md`,
+  `docs/DESIGN.md`, `SECURITY.md` and the UI copy are read from the constants (version, tag width,
+  every placeholder example, the collision percentages, upload cap, converter cap and timeout, rate
+  limit, the near-miss bounds, the guard's cap). Each claim is anchored to the sentence that reports
+  it — a bare number would be satisfied by the same number for a different constant, which is how two
+  160 MB caps in one file slipped past a substring check. On its first run it caught five
+  placeholder examples written with four hex digits while the engine writes six.
 - `OfflineContractTest`: an AST **canary** — no engine script (`anon.py`, `deanon.py`,
   `convert.py`) may gain a *static* import of a network stack, and the two document paths may not
   import `subprocess`. It is a canary, not a proof: a dynamic or transitive import slips past, and

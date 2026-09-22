@@ -80,6 +80,10 @@ def _default_converter() -> Path:
 CONVERTER = Path(os.environ.get("ANON_CONVERTER") or _default_converter())
 STATE = {"token": None, "nonce": None, "port": 1407, "jobs": 0, "limiter": None}
 LOCK = threading.Lock()
+# The placeholder tag is allocated against the tags on disk, so the scan and the map write must not
+# interleave with another request: this is a THREADED server, and two requests would otherwise read
+# the same set and draw the same tag — the collision the allocation exists to prevent.
+TAG_LOCK = threading.Lock()
 
 
 class RateLimiter:
@@ -233,23 +237,24 @@ def _convert_to_markdown(source: Path) -> str:
 
 def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
     entities, families = _resolve(catalogs, patterns)
-    tag = anon.new_tag()
-    redacted, entries, counts = anon.anonymize(text, entities, families=families, tag=tag)
-    map_id = None
-    if save_map and entries:
-        map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
-        payload = {
-            "tag": tag,
-            "version": anon.VERSION,
-            "schema": anon.SCHEMA,
-            "id": map_id,
-            "source": "(web UI)",
-            "output": "(web UI)",
-            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "counts": counts,
-            "entries": entries,
-        }
-        anon._write_private(anon.DEFAULT_MAPS / f"{map_id}.map.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    with TAG_LOCK:
+        tag = anon.allocate_tag([anon.DEFAULT_MAPS])
+        redacted, entries, counts = anon.anonymize(text, entities, families=families, tag=tag)
+        map_id = None
+        if save_map and entries:
+            map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
+            payload = {
+                "tag": tag,
+                "version": anon.VERSION,
+                "schema": anon.SCHEMA,
+                "id": map_id,
+                "source": "(web UI)",
+                "output": "(web UI)",
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "counts": counts,
+                "entries": entries,
+            }
+            anon._write_private(anon.DEFAULT_MAPS / f"{map_id}.map.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return {
         "redacted": redacted,
         "tag": tag,

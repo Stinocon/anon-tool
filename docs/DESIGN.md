@@ -69,12 +69,15 @@ values and reported success. Content alone can never tell two runs apart, so the
 in the token itself:
 
 ```
-[EMAIL-1-a3f9]      # 1st email of the run tagged a3f9
+[EMAIL-1-a3f9d1]      # 1st email of the run tagged a3f9d1
 ```
 
-- `anon.py` generates a fresh tag per run (6 hex digits: 4 made a collision likely enough to be
-  worth fixing), records it in the map, and stamps every
-  placeholder with it. `--tag` pins it when reproducibility matters.
+- `anon.py` allocates a tag per run — 6 hex digits, checked against the tags the existing maps
+  use. The check covers both the default maps directory and the destination of `--map`; it is not
+  atomic, so two runs allocating in the same instant are a declared residual race. The width alone
+  is not enough: ~3% at 1 000 maps, ~53% at 5 000 (`scripts/tag-collision.py` measures the curve),
+  so uniqueness is checked, not argued from the birthday bound. `--tag` pins the tag verbatim,
+  without the check — an explicit override.
 - `deanon.py` resolves placeholders exactly, so a foreign map leaves them untouched and the run
   reports INCOMPLETE (exit 3) instead of substituting the wrong values.
 - The verdict is fail-closed: `complete` requires no unresolved placeholder, no unknown token,
@@ -82,7 +85,7 @@ in the token itself:
   passed through.
 - The old untagged form still parses, so maps created before this change keep working.
 
-Cost: the model must copy `[EMAIL-1-a3f9]` verbatim. That is why the skill states it as a hard
+Cost: the model must copy `[EMAIL-1-a3f9d1]` verbatim. That is why the skill states it as a hard
 rule, and why the failure is loud: a mangled token cannot be restored, and the run says so.
 
 ## 5. Dictionary matching (what "the same entity" means)
@@ -138,10 +141,15 @@ there is one parser and one mental model:
 @match  case-sensitive
 @context (?:comune|sede|stabilimento|filiale|magazzino|via|piazza|presso)\s+
 Brescia
+@context off
+Prato
 ```
 
 - `@match case-sensitive` + `@context` are what keep a low-signal catalog from shredding the text
   (`"the prato is green"` stays intact; `"sede di Brescia"` becomes `sede di [CITTÀ-1]`).
+- **Ordering rule:** every directive applies to the entries that FOLLOW it and a later one replaces
+  it, so `@context` is a property of a block, not of the file. `@context off` closes the block —
+  otherwise narrowing a context would mean reordering the file.
 - Catalogs are **off by default** and ticked on demand ("anonimizza: …").
 - Pattern groups (regex rules) are tagged (`identity`, `network`, `fintech`, `it-legal`) and
   toggled the same way.

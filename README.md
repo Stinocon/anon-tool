@@ -19,7 +19,7 @@ A vulnerability assessment that reads *"client X, three sites, the manager is Mr
 the technical substance, and the document keeps all of its value while losing its identifiability.
 
 `anon-tool` performs that substitution deterministically and locally: it replaces the identifying
-parts of a document with typed placeholders (`[EMAIL-1-a3f9]`, `[CLIENTE-2-a3f9]`), leaves a
+parts of a document with typed placeholders (`[EMAIL-1-a3f9d1]`, `[CLIENTE-2-a3f9d1]`), leaves a
 reversible map on your machine, and puts the real values back into the finished document at the
 end — after the AI has worked on text that never named anybody.
 
@@ -44,7 +44,7 @@ The AI re-enters only *after* redaction, when you or an agent analyze the redact
 - **Idempotent.** Anonymizing an already-redacted document changes nothing; placeholders present in
   the source are protected, not re-matched.
 - **A document can only be restored with *its* map.** Every placeholder carries a per-map tag
-  (`[EMAIL-1-a3f9]`). Applying a different run's map leaves the placeholders untouched and the
+  (`[EMAIL-1-a3f9d1]`). Applying a different run's map leaves the placeholders untouched and the
   command exits non-zero instead of substituting another client's values.
 - **Open failure modes.** A document that still contains an unresolved placeholder, an unknown
   token, or nothing to restore at all is reported as *incomplete* — never passed through silently.
@@ -138,6 +138,7 @@ A catalog is the same file format as the custom dictionary, with directives:
 @type    CITTÀ
 @match   case-sensitive               # `Brescia` matches, `il prato è verde` does not
 @context (?:comune di|sede di)\s+     # only after a marker
+@context off                          # stop requiring one for the entries that follow
 @stem    on                           # `Pincopallino` also covers `Pincopallino1`, `-DB01`
 Brescia
 ```

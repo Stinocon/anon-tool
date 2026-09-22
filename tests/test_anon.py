@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # keep ~/.anon free of __pycache__ from the importlib loads below
@@ -818,6 +819,32 @@ class DirectivesTest(unittest.TestCase):
         found = anon.detect("comune di Brescia", entities)
         self.assertEqual(["comune di Brescia"[s:e] for s, e, _t in found], ["Brescia"])
 
+    def test_context_off_closes_the_block(self) -> None:
+        entities = self.entities(
+            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nBrescia\n@context off\nPrato\n"
+        )
+        # The gated entry keeps its context...
+        self.assertFalse(anon.detect("Brescia", entities), "the gated entry keeps its context")
+        self.assertTrue(anon.detect("sede di Brescia", entities))
+        # ...while an entry declared after `@context off` matches bare.
+        self.assertTrue(anon.detect("Prato", entities), "`@context off` must clear the context")
+
+    def test_a_later_context_replaces_the_earlier_one(self) -> None:
+        entities = self.entities(
+            "@type CITTÀ\n@match case-sensitive\n@context (?:comune di)\\s+\nBrescia\n"
+            "@context (?:sede di)\\s+\nPrato\n"
+        )
+        self.assertTrue(anon.detect("comune di Brescia", entities))
+        self.assertFalse(anon.detect("comune di Prato", entities), "the first context no longer applies")
+        self.assertTrue(anon.detect("sede di Prato", entities))
+
+    def test_only_exactly_off_clears_the_context(self) -> None:
+        # `no` and `0` are legitimate @context REGEXES: reading them as "off" (the shared _FALSE
+        # list, used by @stem) would silently drop a gate the operator wrote.
+        entities = self.entities("@type CITTÀ\n@match case-sensitive\n@context no\\s+\nBrescia\n")
+        self.assertTrue(anon.detect("no Brescia", entities), "`no` is a regex, not an off switch")
+        self.assertFalse(anon.detect("Brescia", entities), "the gate must still apply")
+
     def test_unknown_directive_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
             self.entities("@contxt x\nCITTÀ|Brescia\n")
@@ -1308,6 +1335,56 @@ class DeanonContainerTest(unittest.TestCase):
         ).stdout
         for value in ("Contoso S.r.l.", "mario.rossi@contoso.it", "10.42.7.19"):
             self.assertIn(value, back, "the real value must be back in the delivered document")
+
+
+class TagAllocatorTest(unittest.TestCase):
+    """The per-map tag must be unique among the maps that EXIST, not merely "probably unique".
+
+    A collision makes a wrong map resolve the placeholders silently — the exact failure the tag
+    was introduced to prevent (DEC-0012 §4).
+    """
+
+    def test_the_allocator_retries_a_taken_tag_and_stays_inside_the_placeholder_syntax(self) -> None:
+        # Deterministic: with urandom pinned to zeros the only candidate it can produce is "000000".
+        with mock.patch.object(anon.os, "urandom", lambda n: b"\x00" * n):
+            self.assertEqual(anon.new_tag(), "000000")
+            widened = anon.new_tag({"000000"})
+        self.assertNotEqual(widened, "000000", "a taken tag must not be reused")
+        self.assertLessEqual(len(widened), 8, "the widening must stay inside the placeholder syntax")
+
+    def test_existing_tags_reads_the_directory_and_skips_unreadable_maps(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="anon-tags-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "a.map.json").write_text('{"tag": "aaaaaa"}\n', encoding="utf-8")
+        (tmp / "b.map.json").write_text('{"tag": "bbbbbb"}\n', encoding="utf-8")
+        (tmp / "no-tag.map.json").write_text('{"entries": {}}\n', encoding="utf-8")
+        (tmp / "broken.map.json").write_text("{not json", encoding="utf-8")
+        self.assertEqual(anon.existing_tags(tmp), {"aaaaaa", "bbbbbb"})
+        self.assertEqual(anon.existing_tags(tmp / "missing"), set(), "a missing dir is not an error")
+
+    def test_a_generated_tag_is_never_one_of_the_existing_ones(self) -> None:
+        taken = {anon.new_tag() for _ in range(200)}
+        self.assertNotIn(anon.new_tag(taken), taken)
+
+    def test_allocate_tag_scans_every_directory_it_is_given(self) -> None:
+        # Deterministic: with urandom pinned, the only 6-hex candidate is "abc123", so a map that
+        # already holds it forces the allocator to widen — and it only sees the maps in the dirs it
+        # was given, which is exactly why main() passes both the default and the destination.
+        tmp = Path(tempfile.mkdtemp(prefix="anon-alloc-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        default, elsewhere = tmp / "default", tmp / "elsewhere"
+        for directory in (default, elsewhere):
+            directory.mkdir()
+        (elsewhere / "m.map.json").write_text('{"tag": "abc123"}\n', encoding="utf-8")
+        pinned_urandom = lambda n: (b"\xab\xc1\x23" + b"\x00" * n)[:n]  # noqa: E731
+        with mock.patch.object(anon.os, "urandom", pinned_urandom):
+            self.assertEqual(anon.allocate_tag([default]), "abc123", "invisible in the other dir")
+            widened = anon.allocate_tag([default, elsewhere])
+        self.assertNotEqual(widened, "abc123", "a tag used in EITHER directory must be avoided")
+        self.assertEqual(len(widened), 8, "the fallback widens within the placeholder syntax")
+
+    def test_a_pinned_tag_is_used_verbatim(self) -> None:
+        self.assertEqual(anon.allocate_tag([Path("/nonexistent")], "pinned"), "pinned")
 
 
 class OfflineContractTest(unittest.TestCase):

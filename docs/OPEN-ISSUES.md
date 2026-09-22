@@ -93,6 +93,43 @@ The pass that made the guard usable instead of merely correct.
 | 33 | **One dictionary file for everything.** People, companies and generic entries shared `entities.txt`. | Split by kind — `entities.txt` (generic), `people.txt` (`@type PERSONA`), `clients.txt` (`@type AZIENDA`) — all optional and read together; `--entities PATH` is repeatable. The web UI's Dizionario tab addresses the three files (`/api/entities?file=…`). | Tests `test_default_dictionaries_are_merged`, `test_entities_flag_is_repeatable`, `test_a_missing_explicit_dictionary_is_an_error`, `test_named_dictionaries_are_addressable_and_unknown_ones_are_refused`; the live migration was verified **equivalent** (2 entries, same types) with a backup. |
 | 34 | **"The engine makes no network call" was a claim, not a gate.** One `import requests` would have made it false with every test still green. | `OfflineContractTest`: an AST **canary** on `anon.py`, `deanon.py` and `convert.py` — no STATIC import of a network stack (submodule-precise: `urllib.parse` and `http.cookies` stay importable), and no `subprocess` in the two document paths. | Proven to bite: injecting `import socket` into `anon.py` fails with `anon.py imports a network stack: ['socket']`; removed afterwards. `python3 tests/test_anon.py` — 92 tests. The adversarial review of the first draft cut it down to size: it had claimed to verify the *behaviour* while checking an import denylist (`__import__`, transitive imports and `convert.py --install`'s pip all pass), and its root-level `urllib`/`http` entries blocked legitimate parsing. The claim now matches the mechanism, and DEC-0012 §2 listing `convert.py` among the engine files while `--install` uses pip is left visible here instead of papered over. |
 
+| 35 | **`@context` was sticky for the rest of the file**, so narrowing a context meant reordering the entries — and the ordering rule was nowhere written down. | `@context off` closes the block; the rule ("a directive applies to the entries that FOLLOW it, and a later one replaces it") is now stated in the parser's docstring, `catalogs/README.md` and `docs/DESIGN.md`. | `DirectivesTest::test_context_off_closes_the_block`, `::test_a_later_context_replaces_the_earlier_one`. |
+| 24 | **The 6-hex tag was reasoned about, not measured** — and `SECURITY.md` promised a collision "stays negligible". | Measured (`scripts/tag-collision.py`): with 6 hex alone a collision has ~3% probability at 1 000 maps and ~55% at 5 000 (the expected collision count reaches 1 at ~5 800). The guess is gone: the tag is allocated against the tags **already in use** by the maps on disk, and the security claim is corrected. | `TagAllocatorTest` (retry + widening that stays inside the placeholder syntax, `existing_tags` skipping unreadable maps, a generated tag is never one of the existing ones); the script prints the curve. |
+| 27 | **A gate on the numbers in the docs** — the 8 MB/2 MB, 4-hex/6-hex and "negligible collision" drifts were all found by hand. | `scripts/check-doc-numbers.py`, wired into `make test`: 16 claims binding a constant to the sentence that reports it (version, tag width *and every placeholder example*, upload cap, converter cap and timeout, rate limit, the near-miss bounds in the UI copy, the guard's cap when its source is reachable). History (CHANGELOG, OPEN-ISSUES) is deliberately out of scope. | First run caught 5 real drifts (4-hex examples in README/DESIGN while the engine writes 6). A missing guard source prints a visible SKIP, never a silent pass. |
+| 12 | **`/deanon` in Pi**, symmetric to `/anon`. | `/deanon <file> [<map|map-id>]` restores into a FILE and reports the path. It does **not** paste into the editor: the symmetric behaviour would have put the real values into the model context, undoing the guard. The map is deduced from the `output` recorded in each map; when that is not exactly one, it refuses to guess. | Guard harness: `/deanon` registered, writes the file, finds the map by `output`, accepts a map id, refuses with zero and with two candidates, never calls `pasteToEditor`, and the notification carries no real value. |
+
+### Measured, and it changes a plan (not closed)
+
+The dictionary-size sweep above came out of trying to size item 14. It is worth stating plainly
+because it moves the boundary of what the guard's cap means: the candidate pass costs roughly
+**linear in the dictionary size**, so "12 MB / 20 s" is a statement about a few hundred entries,
+not about the engine. Numbers are in the to-do rows for 14 and 26; `scripts/bench-check.py`
+reproduces them offline against a synthetic dictionary (no real names).
+
+### Corrected after the adversarial review of 12 / 24 / 27 (and closed)
+
+- **The tag scan covered only one directory.** `anon.py --map /tmp/x.map.json` scanned `/tmp`, so it
+  could draw a tag an existing `~/.anon/maps` map already used — while the prose promised the check.
+  `allocate_tag` now takes the list of directories and the CLI passes both; `TagAllocatorTest` pins
+  it with a deterministic `urandom`.
+- **The web server allocated without a lock**, so two concurrent requests could draw the same tag —
+  it is a threaded server, so this is not hypothetical. Allocation and map write are now serialised.
+- **`@context no` / `@context 0` were silently read as "off"** (they shared the `_FALSE` list with
+  `@stem`), so a gate the operator wrote would have been dropped while over-redacting. Only the
+  exact token `off` clears the context now.
+- **The doc-numbers gate could pass on the WRONG number**: every claim was a bare substring, so a
+  value appearing elsewhere satisfied it — and both the upload cap and the converter cap are
+  160 MB, in the same file. Each claim is now anchored to the sentence that reports it, and the
+  quoted collision percentages are bound to the birthday formula.
+- **The smoke gate hard-coded the 6-hex width** (`grep '[0-9a-f]{6}'`), so a widened 8-hex tag would
+  have failed a check about tagging. It accepts 6-8 now, matching the placeholder syntax.
+- **A `/deanon` happy path that did not exist**: matching the map on the recorded `output` only
+  works when restoring the redacted file itself, while the documented workflow restores the
+  FINISHED document. It now reads the tag out of the document first, and falls back to `output`.
+- **Rejected, with reason:** that the `/deanon` notification leaks a name because a path can carry
+  one. `notify` is the operator's toast, not the model's context: the operator chose the file, and
+  the command has to say where the real values went. Deliberately not redacted.
+
 ### Found while closing 32 (and closed)
 
 - **A missing dictionary file made the engine exit 2 with no JSON**, which the guard reads as "engine broken" and turns into a **fail-open for the session** — a leak introduced by making "no dictionary" a hard error. Fixed: no dictionary is not fatal (`--check --json` keeps emitting valid JSON, the pattern rules still run); only an explicit `--entities` that does not exist is an error. Covered by `test_no_dictionary_at_all_still_works` and `test_an_empty_entities_flag_is_an_error`.
@@ -119,13 +156,13 @@ old reference can never point at a different item.
 |---|---|---|---|---|
 | 1 | 20 | **Tighten the KEY rule** — CLOSED in the third pass (see below). | | — |
 | 2 | 23 | **False-positive sweep over a real corpus** — CLOSED in the third pass (see below). | | — |
-| 3 | 21 | **`@context off`** in the dictionary, plus a line documenting the ordering rule. | A `@context` applies to every following entry: an invisible ordering constraint that can silently under-redact. | small |
-| 4 | 24 | **Tag collision**: verify empirically over N maps that 6 hex digits are enough, or derive the tag from the map id. | The tag is what makes a wrong map fail loudly; it is random today and only reasoned about. | small |
+| 3 | 21 | **`@context off`** in the dictionary, plus a line documenting the ordering rule — CLOSED in the fourth pass (see below). | | — |
+| 4 | 24 | **Tag collision**: verify empirically over N maps that 6 hex digits are enough, or derive the tag from the map id — CLOSED in the fourth pass (see below). | | — |
 | 5 | 17 | **Optional local-model detector** (DESIGN §8): a localhost endpoint that *suggests* candidates which a human approves. | The structural answer to contextual references — the biggest declared hole. The engine stays the only writer, so determinism is untouched. | large |
-| 6 | 14 | **Complete ISTAT municipality list**, generated from the published dataset. | The shipped catalog is a 50-city starter, and the tool must never invent the missing names. | medium |
-| 7 | 12 | **`/deanon` command in Pi**, symmetric to `/anon`. | Cheap, and it matches the gesture the skill already documents. | small |
+| 6 | 14 | **Complete ISTAT municipality list** — **blocked on a scan-cost decision, and now measurable.** A 7 900-entry catalog drops the engine from 1.60 MB/s to **0.20 MB/s**, so the guard's 12 MB cap would need 60 s against a 20 s timeout: every large document would be refused. Generate the list only after the candidate pass stops scaling with the dictionary size, or ship it against an explicitly lower cap. | The shipped catalog is a 50-city starter, and the tool must never invent the missing names. | medium |
+| 7 | 12 | **`/deanon` command in Pi**, symmetric to `/anon` — CLOSED in the fourth pass (see below). | | — |
 | 8 | 18 | **Ship the `anon` skill and `anon-guard.ts` into `pi-workbench`** (with a sync script + a sha256 check, so the copies cannot drift). **Vendoring a copy into THIS repository is rejected.** | The original reason — "the guard's own history is not versioned anywhere" — is now closed: the guard has its own history in `pi-customization` (5 commits, pushed to GitHub). What is left is distribution, not history: a fresh `pi-workbench` install carries no guard. Vendoring a third copy here (live + `pi-customization` + this repo) would create exactly the divergence the tool exists to avoid. | medium |
-| 9 | 27 | **A gate on the numbers in the docs**: read the constants from the code and assert they still appear in README/DESIGN. | Two files disagreed (8 MB vs 2 MB) for a whole pass: that drift is checkable, and it has already cost two rounds of hand-fixing. | small |
+| 9 | 27 | **A gate on the numbers in the docs**: read the constants from the code and assert they still appear in README/DESIGN — CLOSED in the fourth pass (see below). | | — |
 | 10 | 15 | **Batch mode**: anonymize a directory in one command. | Fits the "client folder" workflow. | medium |
 | 11 | 16 | **`--dry-run`**: list what *would* be redacted, per type, writing nothing. | `--check` is close but has no preview. | small |
 | 12 | 28 | **Split `docs/DESIGN.md`** (engine vs UI). | It has grown to cover both. | small |
@@ -133,7 +170,7 @@ old reference can never point at a different item.
 | 14 | 29 | **A screenshot of the UI in the README**, from an asset safe to publish. | The working capture command is in this file's history (`--dump-dom` hangs here, `--screenshot` does not). | small |
 | 15 | 30 | **CI**: make the converter-install skip visible in the run summary, not only in the log. | A silent skip reads as "everything ran". | small |
 | 16 | 22 | **`verify.py` must ignore `*.redacted.*`** when scanning decisions. | A redacted copy of a decision can shadow the real one. Lives in the memory tooling, not in this repo. | small |
-| 17 | 26 | **Guard throughput on other machines**: derive the cap from a measured sample at runtime instead of a constant. | 12 MB / 20 s were sized on this Mac; a slower machine or a 1000-entry dictionary shrinks the margin. | medium |
+| 17 | 26 | **Guard throughput vs dictionary size.** The cap is derived from a measurement, but that measurement assumed a small dictionary. Measured today (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s · 1 000 → 0.93 · 4 000 → 0.37 · 7 900 → 0.20. At 1 000 entries the 12 MB cap already needs 13 s of a 20 s budget; at 4 000 it exceeds it. Either measure at run time or size the cap against a declared entry count. | 12 MB / 20 s were sized on this Mac with a few hundred entries; the margin is not a property of the guard, it is a property of the dictionary. | medium |
 | 18 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
 
 ### Hygiene note kept from this pass

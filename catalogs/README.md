@@ -9,9 +9,23 @@ model, no new machinery.
 @type   CITTÀ                          # type of the entries that follow -> [CITTÀ-1]
 @match  case-sensitive                 # or `insensitive` (default)
 @context (?:comune di|sede di)\s+      # only match right after this context
+@context off                           # stop requiring one for the entries that follow
 @stem   on                             # `Pincopallino` also matches `Pincopallino1`, `-DB01`
 Nome Entità
 ALTRO TIPO|Nome Entità|alias|alias
+```
+
+**Ordering rule:** every directive applies to the entries that FOLLOW it, and a later directive
+replaces the earlier one — the file is read top to bottom. A `@context` therefore is not a
+property of the file but of the block it opens, and `@context off` is how you close it:
+
+```
+@type CITTÀ
+@match case-sensitive
+@context (?:sede di)\s+
+Brescia          # only after "sede di"
+@context off
+Prato            # bare: any `Prato` is a city name here
 ```
 
 An unknown `@directive` is a **hard error**, never ignored: a typo in `@stem`/`@context` would

@@ -48,10 +48,15 @@ in `docs/DESIGN.md` §7:
   docs). The remedy is `~/.anon/allow.txt`, a session-only `--anon-guard-allow '/a/*,/b/*'` (or
   `/anon-allow <path>`), or `anon.py --allow-glob GLOB` for one run — never a workaround;
 - **a check slower than the timeout or bigger than the cap** is refused, not read (fail-closed).
-- a document whose only placeholder would collide with another run's map is now
-  detected and refused; the tag is 6 hex digits (16.7M values), so a collision stays negligible
-  but is not mathematically impossible (the per-map tag makes it fail loudly), but the tag is part of the
-  placeholder: altering it in the document makes restoration fail, by design.
+- **two runs cannot be confused**: the tag is part of every placeholder (`[EMAIL-1-a3f9d1]`), so a
+  map from a different run leaves the tokens untouched and the restore fails loudly (exit 3)
+  instead of substituting another client's values. The tag is 6 hex digits and is allocated
+  against the tags **already in use** by the maps it can see (the default directory and the
+  destination of `--map`): the width alone is not enough (`scripts/tag-collision.py` measures
+  ~3% at 1 000 maps), so uniqueness is checked, not hoped for. Two runs allocating in the same
+  instant are a declared residual race, and the check is per-directory: a map written under a
+  different `ANON_HOME` is invisible to it. A mangled tag in the document makes restoration fail,
+  by design.
 
 ## Supported versions
 
