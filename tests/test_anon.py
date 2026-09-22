@@ -1066,9 +1066,14 @@ class DeanonContainerTest(unittest.TestCase):
         This supersedes `..._is_reported_not_silently_ignored`: that behavior (report and exit 3)
         was the honest workaround while a repair was risky, not the goal.
         """
+        # The split is between two RUNS of one paragraph — which is what Word does to a token when
+        # formatting changes. An earlier version of this fixture put the two halves in two
+        # PARAGRAPHS and still expected a repair: that is a different case, and repairing it moved
+        # the value into the first paragraph and emptied the second (see the test below).
         docx = self._make_docx("split.docx", {
             "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
-            + self._para("Referente: [EMAIL-") + self._para("1] fine") + "</w:body></w:document>",
+            + '<w:p><w:r><w:t>Referente: [EMAIL-</w:t></w:r><w:r><w:rPr><w:sz w:val="18"/>'
+            + "</w:rPr><w:t>1] fine</w:t></w:r></w:p></w:body></w:document>",
         })
         res = self._deanon(docx, "split.deanon.docx")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
@@ -1088,7 +1093,61 @@ class DeanonContainerTest(unittest.TestCase):
             visible = self._visible(raw)
             self.assertNotIn("[EMAIL-", visible)
             self.assertIn("fine", visible)
-            self.assertEqual(body.count("<w:p>"), 2, "the paragraph structure must be untouched")
+            # The count is compared with the INPUT, not with a number that belonged to an older
+            # fixture: "untouched" means unchanged, whatever the document had.
+            with zipfile.ZipFile(docx) as original:
+                before = original.read("word/document.xml").decode()
+            self.assertEqual(body.count("<w:p>"), before.count("<w:p>"),
+                             "the repair must not add or remove a paragraph")
+            self.assertEqual(body.count("<w:r>"), before.count("<w:r>"),
+                             "nor a run: the emptied fragment stays where it was")
+
+    def test_a_placeholder_split_across_two_paragraphs_is_not_repaired(self) -> None:
+        """The mirrored defect: emptying "the other fragments" across a CONTAINER boundary.
+
+        The repair puts the value in the first fragment and empties the rest, which is right between
+        two runs of one sentence and destructive between two paragraphs: the value would come back in
+        the wrong paragraph and the second one would lose its text. The same boundary rule as the
+        redaction decides it, from the same code — and leaving it unrepaired is loud, because the
+        verdict is computed from the output.
+        """
+        docx = self._make_docx("due-paragrafi.docx", {
+            "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+            + self._para("Prima riga [EMAIL-") + self._para("1] e qui il testo che non e' del valore")
+            + "</w:body></w:document>",
+        })
+        res = self._deanon(docx, "due-paragrafi.deanon.docx")
+        self.assertEqual(res.returncode, 3, "a cross-container split must not be repaired silently")
+        report = json.loads(res.stdout)
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["repaired"], 0)
+        self.assertGreaterEqual(report["remaining"], 1, "the placeholder is still there, and reported")
+        import zipfile
+
+        with zipfile.ZipFile(self.tmp / "due-paragrafi.deanon.docx") as archive:
+            body = archive.read("word/document.xml").decode()
+        self.assertIn("e qui il testo che non e' del valore", body,
+                      "the second paragraph's text must not be deleted")
+
+    def test_deanon_reports_a_text_part_it_could_not_read(self) -> None:
+        """The verdict is computed from the OUTPUT: a part nobody could read is not "clean".
+
+        Otherwise a document carrying a placeholder in a part we cannot decode would report
+        `complete: true` — a claim about a file we did not fully look at.
+        """
+        docx = self._make_docx("illeggibile.docx", {
+            "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+            + self._para("[EMAIL-1-bbbb] ecco") + "</w:body></w:document>",
+        })
+        import zipfile
+
+        with zipfile.ZipFile(docx, "a", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("word/legacy.vml", bytes(range(256)) * 8)
+        res = self._deanon(docx, "illeggibile.deanon.docx")
+        self.assertEqual(res.returncode, 3, res.stdout + res.stderr)
+        report = json.loads(res.stdout)
+        self.assertFalse(report["complete"])
+        self.assertIn("word/legacy.vml", report["unreadable_parts"])
 
     def test_fragment_across_two_parts_is_still_reported(self) -> None:
         """A placeholder split between two PARTS cannot be repaired, and must stay fail-closed."""
@@ -1819,6 +1878,64 @@ class ContainerRedactionTest(unittest.TestCase):
                 res = self.run_anon(str(src), "--quiet")
                 self.assertEqual(res.returncode, 0, (label, res.stderr))
                 out = self.tmp / f"footer-{label.replace(' ', '-')}.redacted.docx"
+                self.assertTrue(zipfile.is_zipfile(out), label)
+                text = self.all_text(out)
+                self.assertNotIn("Contoso", text, label)
+                self.assertIn("AZIENDA-1-", text, label)
+
+    def test_a_part_named_as_text_that_cannot_be_read_is_refused(self) -> None:
+        """A part whose NAME promises text and whose bytes cannot be read is refused, not skipped.
+
+        Skipping it is the quiet version of the same mistake the whole container pass exists to
+        avoid: the document would be delivered with a value still inside, and the verification would
+        not see it either (same view, same blind spot). Legacy VML is the realistic case — it is XML
+        by definition, so a `.vml` part that is not decodable is corrupt, not borderline.
+        """
+        src = self.pack("vml.docx", {"word/document.xml": "<w:t>Cliente Contoso</w:t>"})
+        with zipfile.ZipFile(src, "a", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("word/drawings/legacy.vml", bytes(range(256)) * 8)
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("REFUSED", res.stderr)
+        self.assertIn("legacy.vml", res.stderr, "the message must say which part")
+        self.assertFalse((self.tmp / "vml.redacted.docx").exists(), "nothing is written")
+
+    def test_the_containers_word_really_uses_all_redact(self) -> None:
+        """A corpus of the places a client name actually lives in, and of how Word splits it there.
+
+        Each of these is a boundary between two fragments of ONE value that Word produces routinely:
+        a table cell, a footnote, a comment, a text box, a tracked insertion, a tracked deletion, a
+        field in the middle, a math run, a hyperlink, a content control wrapped around the paragraph.
+        A rule that refuses any of them refuses ordinary documents — which is exactly what the two
+        corrections before this test were about.
+        """
+        two_runs = "<w:r><w:t>Contoso</w:t></w:r><w:r><w:t>S.r.l.</w:t></w:r>"
+        constructs = {
+            "table cell": f"<w:tbl><w:tr><w:tc><w:p>{two_runs}</w:p></w:tc></w:tr></w:tbl>",
+            "text box": ("<w:r><w:pict><v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\">"
+                         "<v:textbox><w:txbxContent><w:p>" + two_runs +
+                         "</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>"),
+            "tracked insertion": f'<w:ins w:id="1" w:author="a">{two_runs}</w:ins>',
+            "tracked deletion": ("<w:del w:id=\"2\" w:author=\"a\"><w:r><w:delText>Contoso</w:delText></w:r>"
+                                 "<w:r><w:delText>S.r.l.</w:delText></w:r></w:del>"),
+            "field in the middle": ("<w:r><w:t>Contoso</w:t></w:r><w:r>"
+                                    '<w:fldChar w:fldCharType="begin"/><w:instrText>PAGE</w:instrText>'
+                                    '<w:fldChar w:fldCharType="end"/></w:r>'
+                                    "<w:r><w:t>S.r.l.</w:t></w:r>"),
+            "math run": ('<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+                         "<m:r><m:t>Contoso</m:t></m:r><m:r><m:t>S.r.l.</m:t></m:r></m:oMath>"),
+            "hyperlink": ('<w:hyperlink r:id="rId9" xmlns:r="http://schemas.openxmlformats.org/'
+                          'officeDocument/2006/relationships"><w:r><w:t>Contoso</w:t></w:r></w:hyperlink>'
+                          "<w:r><w:t>S.r.l.</w:t></w:r>"),
+            "block content control": ("<w:sdt><w:sdtContent><w:p>" + two_runs + "</w:p></w:sdtContent></w:sdt>"),
+        }
+        for label, body in constructs.items():
+            with self.subTest(label):
+                name = f"contesto-{label.replace(' ', '-')}.docx"
+                src = self.pack(name, {"word/document.xml": f"<w:body>{body}</w:body>"})
+                res = self.run_anon(str(src), "--quiet")
+                self.assertEqual(res.returncode, 0, (label, res.stderr))
+                out = self.tmp / f"{name[:-5]}.redacted.docx"
                 self.assertTrue(zipfile.is_zipfile(out), label)
                 text = self.all_text(out)
                 self.assertNotIn("Contoso", text, label)

@@ -205,6 +205,33 @@ when the paths diverge only on inline elements. Instance ids are what make it wo
 two runs of one paragraph and two paragraphs look identical. Tests fail if the comparison downgrades
 to names, and if the refusal disappears.
 
+### Hunt for the same class of defect, after the second correction (2026-09-22)
+
+The operator asked whether other bugs of the same kind existed. Three were found and fixed.
+
+1. **The mirror direction had the mirror defect, and a test ENCODED it.** `deanon`'s
+   `repair_split_placeholders` distributes the value into the first fragment and empties the others
+   with no boundary check — across a paragraph boundary it would move the value into the first
+   paragraph and delete the second one's text. Its test claimed "Word splits a placeholder across
+   RUNS" and its fixture put the halves in two PARAGRAPHS, asserting the destructive behaviour as
+   correct. The classifier now runs in both directions from the same code (`boundary_offenders`), the
+   fixture is a genuine run split, and a new test pins the cross-paragraph case: not repaired, exit 3,
+   and the second paragraph's text intact. Verified by mutation.
+2. **The inline set was incomplete in exactly the way the operator's document exposed.** A value
+   split by `w:delText` (tracked deletion), a math run (`m:r`/`m:t`), a field character sequence
+   (`w:fldChar`), a legacy marker (`w:footnoteRef`, `w:pgNum`, `w:separator`, ...) or a text box
+   (`w:txbxContent`) would have refused the document. The set is now the run-level children and
+   inline wrappers of the namespaces the formats use, and a new corpus test walks 8 real constructs
+   (table cell, text box, tracked insertion, tracked deletion, field in the middle, math, hyperlink,
+   block content control) — it FAILS if the set is narrowed back.
+3. **A part named as text but undecodable was skipped silently** — only `.xml`/`.rels` were protected,
+   so a `.vml`, `.rdf` or `.txt` part that could not be decoded went through unscanned, and the
+   verification (same view) would not have seen it either. Now refused in the redaction, and reported
+   as `unreadable_parts` in the restore, where it also prevents `complete: true`.
+
+Declared residual from the same sweep: embedded binary objects (`word/embeddings/*.bin`, an xlsx
+`vbaProject.bin`, media) are not scanned — a container inside the container.
+
 ### Adversarial review of the container pass (2026-09-22) — every finding accounted for
 
 Review by a different model on the engine + UI of the container pass. Four real defects, all fixed

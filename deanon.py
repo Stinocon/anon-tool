@@ -65,9 +65,15 @@ XML_SUFFIXES = anon.XML_SUFFIXES
 visible_text = anon.visible_text
 decode_part = anon.decode_part
 is_xml_part = anon.is_xml_part
+is_text_part = anon.is_text_part
 xml_protect = anon.xml_protect
 visible_index = anon.visible_index
 write_container_atomic = anon.write_container_atomic
+# The same boundary rule the redaction uses, from the same source: what may be joined is a property
+# of the document, not of the direction it is being read in.
+masked_index = anon.masked_index
+path_at_source = anon.path_at_source
+boundary_offenders = anon.boundary_offenders
 
 def restorable(entries: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
     """Only entries that actually carry a value: a key with `original: null` cannot be restored."""
@@ -103,8 +109,13 @@ def repair_split_placeholders(
     The placeholder is written in fragments in separate text nodes, so `deanonize` found nothing
     contiguous to replace. Merging those nodes into one would move the formatting of whatever
     they carry, so instead the real value goes in the FIRST fragment and the remaining fragments
-    are emptied: text inside the same nodes is untouched, no markup is added or removed, and the
-    part stays well-formed. Only characters of the placeholder itself are ever deleted.
+    are emptied: no markup is added or removed, and the part stays well-formed. Only characters of
+    the placeholder itself are ever deleted.
+
+    A placeholder whose fragments live in DIFFERENT containers is left alone. Emptying the others
+    there would move the value into the first one and delete the second paragraph's (or table cell's)
+    text: the value would come back in the wrong place. Leaving it is not silent — the caller's
+    verdict is computed from the OUTPUT, so the placeholder is reported as unrestorable.
 
     Returns (repaired text, number of placeholders repaired).
     """
@@ -119,6 +130,7 @@ def repair_split_placeholders(
 
     edits: list[tuple[int, int, str]] = []
     repaired = 0
+    segments: list[tuple[int, int, tuple]] | None = None
     cursor = 0
     while cursor < len(visible):
         placeholder = next((item for item in known if visible.startswith(item, cursor)), None)
@@ -135,6 +147,13 @@ def repair_split_placeholders(
                 runs.append([position])
         if len(runs) == 1:
             continue  # contiguous: the normal pass already replaced it
+        if segments is None:
+            # Computed once, and only when a split actually has to be judged.
+            _visible, _offsets, segments = masked_index(text)
+        offenders = boundary_offenders(path_at_source(segments, raw[0]),
+                                       path_at_source(segments, raw[-1]))
+        if offenders:
+            continue  # two containers: leaving it is reported, not hidden — see the docstring
         value = entries[placeholder].get("original")
         if value is None:
             continue
@@ -272,10 +291,15 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
     remaining = 0
     unknown = 0
     remaining_parts: list[str] = []
+    unreadable_parts: list[str] = []
     with zipfile.ZipFile(output) as written:
         for name in written.namelist():
             text, _codec = decode_part(written.read(name))
             if text is None:
+                if is_text_part(name):
+                    # A part named as text that cannot be read is not "clean": the verdict would be
+                    # computed on a part nobody looked at. Fail closed, exactly like the redaction.
+                    unreadable_parts.append(name)
                 continue
             visible = visible_text(text)
             known_count, unknown_count = count_placeholders(visible, entries)
@@ -292,11 +316,12 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
         "repaired": repairs,
         "remaining": remaining,
         "remaining_parts": remaining_parts,
+        "unreadable_parts": unreadable_parts,
         "unknown_placeholders": unknown,
         "map_entries": len(entries),
         # Fail CLOSED: an unresolved `[EMAIL-7]` is not deliverable even though the map has no
         # such key — it means the document and the map do not belong together.
-        "complete": remaining == 0 and unknown == 0 and bool(parts),
+        "complete": remaining == 0 and unknown == 0 and not unreadable_parts and bool(parts),
     }
 
 

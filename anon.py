@@ -1057,13 +1057,20 @@ class UnreadableContainer(ValueError):
 # these — a run, a run property, a tab or a break, a bookmark, a hyperlink, a content control, a
 # proofing mark, an Office rich-text run. `xlsx` and `odt` have unprefixed equivalents (`t`, `r`).
 INLINE_ELEMENTS = frozenset({
-    "w:r", "w:t", "w:rPr", "w:proofErr", "w:noProof", "w:lastRenderedPageBreak", "w:instrText",
-    "w:fldSimple", "w:tab", "w:br", "w:cr", "w:softHyphen", "w:noBreakHyphen", "w:sym",
+    # the text nodes, one per format
+    "w:t", "w:delText", "w:instrText", "a:t", "text:s", "text:tab", "text:line-break",
+    "t", "m:t",
+    # runs and inline wrappers, i.e. everything that can sit BETWEEN two fragments of one sentence
+    "w:r", "w:rPr", "w:proofErr", "w:noProof", "w:lastRenderedPageBreak", "w:fldSimple",
+    "w:fldChar", "w:tab", "w:br", "w:cr", "w:ptab", "w:softHyphen", "w:noBreakHyphen", "w:sym",
+    "w:pgNum", "w:footnoteRef", "w:endnoteRef", "w:commentReference", "w:annotationRef",
+    "w:separator", "w:continuationSeparator", "w:drawing", "w:object", "w:ruby", "w:rt",
     "w:bookmarkStart", "w:bookmarkEnd", "w:commentRangeStart", "w:commentRangeEnd",
-    "w:hyperlink", "w:sdt", "w:sdtContent", "w:ins", "w:del", "w:smartTag",
-    "a:r", "a:t", "a:rPr", "a:endParaRPr", "a:br", "a:fld",
-    "text:span", "text:s", "text:tab", "text:line-break",
-    "t", "r", "rPr",
+    "w:permStart", "w:permEnd", "w:customXml", "w:moveFrom", "w:moveTo",
+    "w:hyperlink", "w:sdt", "w:sdtContent", "w:ins", "w:del", "w:smartTag", "w:subDoc",
+    "a:r", "a:rPr", "a:endParaRPr", "a:br", "a:tab", "a:fld",
+    "text:span", "text:a", "text:bookmark-start", "text:bookmark-end",
+    "r", "rPr", "m:r", "m:rPr", "m:oMath", "m:oMathPara",
 })
 
 
@@ -1081,19 +1088,29 @@ def _element_name(tag: str) -> tuple[str, bool, bool] | None:
     return (name, closing, self_closing) if name else None
 
 
-def _path_at(starts: list[int], paths: list[tuple[tuple[str, int], ...]], index: int):
-    """The element path a visible character lives in (the last segment that starts at or before it)."""
-    low, high = 0, len(starts) - 1
+def _segment_at(segments, column: int, key) -> tuple:
+    """The segment whose start is the last at or before `key` (the segments are sorted by it)."""
+    low, high = 0, len(segments) - 1
     while low < high:
         middle = (low + high + 1) // 2
-        if starts[middle] <= index:
+        if key(segments[middle]) <= column:
             low = middle
         else:
             high = middle - 1
-    return paths[low]
+    return segments[low]
 
 
-def _boundary_offenders(left, right) -> list[str]:
+def path_at_visible(segments, index: int) -> tuple:
+    """The element path the visible character at `index` lives in."""
+    return _segment_at(segments, index, lambda segment: segment[0])[2]
+
+
+def path_at_source(segments, offset: int) -> tuple:
+    """The element path the SOURCE character at `offset` lives in (what the restore direction has)."""
+    return _segment_at(segments, offset, lambda segment: segment[1])[2]
+
+
+def boundary_offenders(left, right) -> list[str]:
     """The elements that make joining two fragments a CROSS-CONTAINER rewrite, or [] when it is safe.
 
     This compares CONTAINERS, not tags: the boundary between two runs of the same sentence is made of
@@ -1115,9 +1132,9 @@ def _boundary_offenders(left, right) -> list[str]:
     return []
 
 
-def masked_index(xml: str) -> tuple[str, array.array, list[int], list[tuple[tuple[str, int], ...]]]:
+def masked_index(xml: str) -> tuple[str, array.array, list[tuple[int, int, tuple]]]:
     """(the text a reader sees, with ONE SPACE where each tag was; source offset per character, -1
-    for the inserted separator; the segment start of every container path, and the paths).
+    for the inserted separator; one (visible start, source start, element path) per text segment).
 
     `visible_index` CONCATENATES fragments, which is what a self-delimiting token (`[EMAIL-1]`)
     needs, and it stays that way for the restore direction. Detecting a real VALUE needs the
@@ -1128,7 +1145,9 @@ def masked_index(xml: str) -> tuple[str, array.array, list[int], list[tuple[tupl
 
     The paths are what the caller needs to tell "Word split a run" from "two paragraphs happened to
     end and start with the right words": joining the second kind takes text from ANOTHER container,
-    so it is refused instead of rewritten (`_boundary_offenders`).
+    so it is refused instead of rewritten (`boundary_offenders`). Both directions need this, which is
+    why the segments carry the source start as well: the restore path has source offsets, not visible
+    ones.
     """
     return _walk_parts(xml, " ")
 
@@ -1195,10 +1214,10 @@ def container_text(src: Path, max_total: int = CONTAINER_MAX_TOTAL_BYTES) -> str
         for info in archive.infolist():
             total = _guard_part(info, total, max_total)
             text, _codec = decode_part(archive.read(info))
-            if text is None and is_xml_part(info.filename):
+            if text is None and is_text_part(info.filename):
                 raise UnreadablePart(
-                    f"REFUSED — part {info.filename} is not decodable text: it cannot be scanned, "
-                    "so a value inside it could not be found. Nothing was written."
+                    f"REFUSED — part {info.filename} is named as text but is not decodable: it "
+                    "cannot be scanned, so a value inside it could not be found. Nothing was written."
                 )
             if text is not None:
                 # The SAME view the rewrite detects on: verifying on a different one is how the
@@ -1243,10 +1262,10 @@ def anonymize_container(
             total = _guard_part(info, total)
             blob = archive.read(info)
             text, codec = decode_part(blob)
-            if text is None and is_xml_part(info.filename):
+            if text is None and is_text_part(info.filename):
                 raise UnreadablePart(
-                    f"REFUSED — part {info.filename} is not decodable text: it cannot be scanned, "
-                    "so a value inside it could not be found. Nothing was written."
+                    f"REFUSED — part {info.filename} is named as text but is not decodable: it "
+                    "cannot be scanned, so a value inside it could not be found. Nothing was written."
                 )
             if text is not None:
                 # Reserved tokens must be collected across the WHOLE container before allocating:
@@ -1258,7 +1277,7 @@ def anonymize_container(
     chunks: list[tuple[zipfile.ZipInfo, bytes]] = []
     for info, blob, text, codec in blocks:
         if text is not None:
-            visible, offsets, starts, paths = masked_index(text)
+            visible, offsets, segments = masked_index(text)
             found = detect(visible, entities, include_heuristics, families)
             if found:
                 edits: list[tuple[int, int, str]] = []
@@ -1270,8 +1289,8 @@ def anonymize_container(
                     raw = [position for position in offsets[start:end] if position >= 0]
                     if not raw:
                         continue
-                    crossed = _boundary_offenders(_path_at(starts, paths, start),
-                                                  _path_at(starts, paths, end - 1))
+                    crossed = boundary_offenders(path_at_visible(segments, start),
+                                                 path_at_visible(segments, end - 1))
                     if crossed:
                         raise UnreadablePart(
                             f"REFUSED — a value of type {ptype} spans a structural boundary "
@@ -1462,6 +1481,18 @@ def is_xml_part(name: str) -> bool:
     return name == "[Content_Types].xml" or name.lower().endswith(XML_SUFFIXES)
 
 
+# Extensions that are TEXT by definition, whatever the bytes say. A part whose name promises text but
+# cannot be decoded is refused rather than passed through: skipping it would deliver a document with a
+# value still inside, and the verification would not see it either (same view, same blind spot). The
+# list is deliberately about NAMES, because content alone cannot distinguish a text part in an
+# encoding we do not know from a genuinely binary object.
+TEXT_SUFFIXES = XML_SUFFIXES + (".vml", ".rdf", ".txt", ".html", ".xhtml", ".svg", ".csv", ".json", ".eml")
+
+
+def is_text_part(name: str) -> bool:
+    return name == "[Content_Types].xml" or name.lower().endswith(TEXT_SUFFIXES)
+
+
 def xml_protect(value: str) -> str:
     """Escape a value before writing it into an XML part.
 
@@ -1473,7 +1504,8 @@ def xml_protect(value: str) -> str:
 
 
 def _walk_parts(xml: str, separator: str):
-    """(visible text, per-character source offsets, segment starts, per-segment element paths).
+    """(visible text, per-character source offsets, one (visible start, source start, path) per
+    text segment).
 
     One implementation for both directions. Three details are about NOT spending the text over again:
     the visible text is built from chunks and joined ONCE (a list of single characters is a pointer
@@ -1488,15 +1520,13 @@ def _walk_parts(xml: str, separator: str):
     chunks: list[str] = []
     offsets = array.array("i")
     stack: list[tuple[str, int]] = []
-    starts: list[int] = []
-    paths: list[tuple[tuple[str, int], ...]] = []
+    segments: list[tuple[int, int, tuple]] = []
     opened = 0
     position = 0
     length = 0
     for match in MARKUP_RE.finditer(xml):
         chunk = xml[position:match.start()]
-        starts.append(length)
-        paths.append(tuple(stack))
+        segments.append((length, position, tuple(stack)))
         chunks.append(chunk)
         offsets.extend(range(position, match.start()))
         length += len(chunk)
@@ -1517,11 +1547,10 @@ def _walk_parts(xml: str, separator: str):
                 stack.append((name, opened))
         position = match.end()
     chunk = xml[position:]
-    starts.append(length)
-    paths.append(tuple(stack))
+    segments.append((length, position, tuple(stack)))
     chunks.append(chunk)
     offsets.extend(range(position, len(xml)))
-    return "".join(chunks), offsets, starts, paths
+    return "".join(chunks), offsets, segments
 
 
 def visible_index(xml: str) -> tuple[str, array.array]:
@@ -1530,7 +1559,7 @@ def visible_index(xml: str) -> tuple[str, array.array]:
     This is what makes a value (or a placeholder) that a word processor split across runs findable
     as one string, and repairable without touching a single tag.
     """
-    visible, offsets, _starts, _paths = _walk_parts(xml, "")
+    visible, offsets, _segments = _walk_parts(xml, "")
     return visible, offsets
 
 

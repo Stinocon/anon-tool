@@ -242,6 +242,22 @@ calls it implicitly; the engine itself keeps zero network capability.
 - **detection is per part, verification is joined, and the asymmetry is deliberate**: a value split
   ACROSS two parts is invisible to the per-part detectors but visible to the joined re-scan, which
   refuses the output. Stricter than the detection, never looser — the one direction that is safe;
+- **the same boundary rule runs in BOTH directions.** `deanon` repairs a placeholder that a word
+  processor split by distribution (the value in the first fragment, the others emptied) — the mirror
+  of the rewrite above, with the mirror of its danger: across a container boundary it would move the
+  value into the first paragraph and delete the second one's text. It asks the same classifier
+  (`boundary_offenders`, from the same walk) and, when the fragments live in different containers, it
+  does NOT repair: the verdict is computed from the output, so the placeholder is reported and the
+  run is incomplete. Leaving it is loud by construction;
+- **a part named as text that cannot be decoded is REFUSED, not skipped** — in both directions. The
+  rule keys on the NAME (`.xml`, `.rels`, `.vml`, `.rdf`, `.txt`, `.html`, `.svg`, ...) because
+  content alone cannot separate "text in an encoding we do not know" from "a binary object"; a part
+  whose name promises text and whose bytes cannot be read is corrupt. `deanon` reports it as
+  `unreadable_parts` and refuses to call the result complete;
+- **what is NOT scanned, declared**: embedded binary objects (`word/embeddings/*.bin`, an xlsx
+  `vbaProject.bin`, `word/media/*`) are containers of their own, and images are pixels. A client name
+  inside an embedded object's own document is out of scope here — same class as the screenshot gap,
+  and it must be said rather than discovered;
 - **metadata is REDACTED, never removed.** The placeholders go into `docProps/core.xml` like
   anywhere else, so the reverse direction restores the original exactly. Stripping metadata would be
   irreversible and is a separate, explicit choice;

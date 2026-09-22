@@ -25,6 +25,16 @@ enforces that they agree.
 
 ### Fixed
 
+- **Three more defects of the same class, found by hunting for it.** (1) `deanon`'s repair had the
+  mirror of the destructive rewrite: across a container boundary it moved the value into the first
+  fragment and deleted the second paragraph's text — and its test asserted that behaviour while
+  claiming to test a run split. The boundary rule now runs in both directions from the same code, and
+  the test uses a genuine run split. (2) The inline element set was incomplete (tracked deletions via
+  `w:delText`, math runs, field characters, legacy markers, text boxes), so a value split there
+  refused an ordinary document; a corpus test over 8 real constructs protects the set. (3) A part
+  named as text that could not be decoded was SKIPPED — now refused in the redaction and reported as
+  `unreadable_parts` in the restore, which can no longer answer `complete`.
+
 - **A refusal on ordinary documents, corrected twice the same day — the mechanism, not the list.**
   The rule that refuses a match spanning a structural boundary classified TAGS one by one, so the
   run-properties block Word writes on every run (`<w:rFonts/>`, `<w:sz/>`, `<w:spacing/>`) looked
