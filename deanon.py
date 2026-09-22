@@ -56,7 +56,7 @@ from xml.sax.saxutils import escape as _sax_escape
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import anon  # noqa: E402  (path set above on purpose)
 
-VERSION = "1.2.0"
+VERSION = anon.VERSION  # single source of truth: the product version lives in anon.py
 
 # Markup stripper used by the VERIFICATION step. Verifying on the raw XML is wrong: Word splits a
 # placeholder across runs (`<w:t>[EMAIL-</w:t></w:r><w:r><w:t>1]</w:t>`), so the contiguous string

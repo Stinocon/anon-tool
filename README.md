@@ -6,6 +6,10 @@
   <em>Hand a document to an AI without handing over who it is about.</em>
 </p>
 
+<p align="center">
+  <strong>v1.4.0</strong> — <a href="CHANGELOG.md">changelog</a>
+</p>
+
 ---
 
 ## Why this exists
@@ -141,6 +145,11 @@ client-supplied filesystem path is ever used.
 The API is additionally rate limited (token bucket, `--rate-limit`, 0 disables it), so a runaway
 script cannot pin every worker thread, and the document converter's output is capped *while* it is
 produced rather than after it has been buffered.
+
+The Pi guard (and `anon.py --check`) treats a path listed in `~/.anon/allow.txt` as un-sensitive.
+For a one-off or session-scoped exemption there is `anon.py --allow-glob GLOB` (repeatable) and, in
+Pi, `--anon-guard-allow` / the `/anon-allow` command — so the permanent allowlist is reserved for
+genuinely public paths. The allowlist is still evaluated by the engine, never by the guard.
 
 The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 [`docs/DESIGN.md`](docs/DESIGN.md).

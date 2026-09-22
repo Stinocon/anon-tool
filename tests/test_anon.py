@@ -254,11 +254,11 @@ class RoundTripTest(unittest.TestCase):
 
     # --- dictionary robustness (2026-09-21): spelling variants must not be missed ---------
     ENTITY_VARIANTS = [
-        ("AZIENDA|Contoso", ["Contoso", "contoso", "Contoso", "Contoso S.r.l.", "Contoso srl",
-                            "Contoso S.R.L.", "Contoso s.r.l"], ["Contosost", "la contosotta"]),
+        ("AZIENDA|Contoso", ["Contoso", "contoso", "CONTOSO", "Contoso S.r.l.", "contoso srl",
+                            "CONTOSO S.R.L.", "Contoso s.r.l"], ["Contosost", "la contosotta"]),
         ("AZIENDA|Acme Italia", ["Acme Italia", "acme-italia", "Acme.Italia srl"], ["AcmeItalia", "Acme"]),
         ("PERSONA|Nicolò Rossi", ["Nicolò Rossi"], ["Nicolo Rossi"]),
-        ("AZIENDA|Contoso|Contoso", ["Contoso", "Contoso"], []),
+        ("AZIENDA|Contoso|Contoso-Italia", ["Contoso", "Contoso-Italia"], []),
     ]
 
     def _entities_from(self, line: str):
@@ -314,7 +314,7 @@ class RoundTripTest(unittest.TestCase):
     def test_entity_variants_stay_lossless(self) -> None:
         """Each surface form gets its own placeholder: deanon restores the exact spelling."""
         entities = self._entities_from("AZIENDA|Contoso|Contoso S.r.l.")
-        source = "Contoso S.r.l. e poi Contoso, con Contoso in maiuscolo.\n"
+        source = "Contoso S.r.l. e poi Contoso, con CONTOSO in maiuscolo.\n"
         redacted, entries, _ = anon.anonymize(source, entities)
         self.assertNotIn("contoso", redacted.casefold(), "a variant survived")
         restored, _ = deanon.deanonize(redacted, entries)
@@ -560,6 +560,39 @@ class CliTest(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn('"allowed": true', res.stdout)
 
+    def test_allow_glob_disables_check_for_one_run(self) -> None:
+        # Same effect as allow.txt, but scoped to this invocation: this is what the Pi guard
+        # passes for its session-only allowlist, without writing a temp file.
+        src = self.tmp / "nota.txt"
+        src.write_text("email: mario@acme.it\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--check", "--json", "--allow-glob", f"{self.tmp}/*")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn('"allowed": true', res.stdout)
+
+    def test_allow_glob_is_additive_to_the_allow_file(self) -> None:
+        (self.tmp / "allow.txt").write_text("/nowhere/*\n", encoding="utf-8")
+        src = self.tmp / "nota.txt"
+        src.write_text("email: mario@acme.it\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--check", "--json", "--allow-glob", f"{self.tmp}/*")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn('"allowed": true', res.stdout)
+
+    def test_product_version_is_single_sourced(self) -> None:
+        # deanon.py must not keep its own version string: it reports anon.VERSION, so this catches a
+        # revert to a hardcoded value (it cannot catch a version that is wrong but equal in both).
+        # The web UI reads anon.VERSION directly, so it is single-sourced by construction.
+        import re as _re
+
+        anon_res = self.run_anon("--version")
+        deanon_res = subprocess.run(
+            [sys.executable, str(DEANON_PY), "--version"], capture_output=True, text=True, check=False
+        )
+        anon_v = _re.search(r"\d+\.\d+\.\d+", anon_res.stdout)
+        deanon_v = _re.search(r"\d+\.\d+\.\d+", deanon_res.stdout)
+        self.assertIsNotNone(anon_v, anon_res.stdout)
+        self.assertIsNotNone(deanon_v, deanon_res.stdout)
+        self.assertEqual(anon_v.group(0), deanon_v.group(0))
+
 
 class AddressCorpusTest(unittest.TestCase):
     """The address rule, measured on a corpus instead of reasoned about.
@@ -756,21 +789,21 @@ class AuditTest(unittest.TestCase):
         self.assertNotIn("10.42.7.19", res.stdout)
 
     def test_variant_candidate_is_flagged_and_masked(self) -> None:
-        res = self.audit("variant.txt", "Il cliente Contoso Srl ha tre stabilimenti.\n")
+        res = self.audit("variant.txt", "Il cliente Con Toso Srl ha tre stabilimenti.\n")
         self.assertEqual(res.returncode, 4, res.stdout + res.stderr)
         report = json.loads(res.stdout)
         self.assertEqual(report["verdict"], "suspicious")
         self.assertEqual(report["near_miss"][0]["kind"], "variant")
-        self.assertNotIn("Contoso", res.stdout)
+        self.assertNotIn("Con Toso", res.stdout)
         self.assertNotIn("Contoso", res.stdout, "entity names are sensitive too")
         self.assertIn("\u2022", report["near_miss"][0]["token_masked"])
 
     def test_reveal_shows_the_candidates(self) -> None:
-        res = self.audit("variant2.txt", "Il cliente Contoso Srl ha tre stabilimenti.\n", "--reveal")
+        res = self.audit("variant2.txt", "Il cliente Con Toso Srl ha tre stabilimenti.\n", "--reveal")
         self.assertEqual(res.returncode, 4)
         report = json.loads(res.stdout)
         self.assertTrue(report["revealed"])
-        self.assertEqual(report["near_miss"][0]["token"], "Contoso")
+        self.assertEqual(report["near_miss"][0]["token"], "Con Toso")
         self.assertEqual(report["near_miss"][0]["entity"], "Contoso")
 
     def test_binary_document_is_refused(self) -> None:

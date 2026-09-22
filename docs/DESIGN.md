@@ -56,7 +56,7 @@ same tests and the same adversarial reviews.
 `anon` replaces each sensitive span with a typed placeholder (`[EMAIL-1]`, `[AZIENDA-2]`) and
 records `placeholder → {type, exact original}` in a map. Because the *exact substring* is stored,
 `anon → deanon` reconstructs the document byte for byte, including spelling variants: `Contoso`,
-`Contoso S.r.l.` and `Contoso` are each redacted and each restored exactly as written.
+`Contoso S.r.l.` and `CONTOSO` are each redacted and each restored exactly as written.
 
 Placeholder-shaped text already present in the source is *reserved*, so a literal `[EMAIL-1]` in
 the document is never mistaken for one this run produced.
@@ -91,14 +91,14 @@ One entry covers a family of spellings, deterministically:
 
 | Mechanism | Example |
 |---|---|
-| case folding | `Contoso` = `contoso` = `Contoso` |
-| legal-form tolerance (optional suffix) | `Contoso` also matches `Contoso S.r.l.`, `Contoso srl` |
+| case folding | `Contoso` = `contoso` = `CONTOSO` |
+| legal-form tolerance (optional suffix) | `Contoso` also matches `Contoso S.r.l.`, `contoso srl` |
 | separators between words | `Acme Italia` matches `Acme-Italia`, `Acme.Italia` |
 | Unicode normalization | an NFC entry matches an NFD (macOS) file |
-| explicit aliases (`TYPE|value|alias`) | `Contoso` and `Contoso` |
+| explicit aliases (`TYPE|value|alias`) | `Contoso` and `Contoso-Italia` |
 | **stem** (`@stem`, planned) | `Pincopallino` also matches `Pincopallino1`, `Pincopallino-DB01` |
 
-Deliberately *not* matched: intra-word variation (`Contoso` ≠ `Contoso` unless declared as an
+Deliberately *not* matched: intra-word variation (`Contoso-Italia` ≠ `Contoso` unless declared as an
 alias). Fuzzy matching was rejected: in a privacy tool a fuzzy rule that silently misses is worse
 than an explicit alias the operator adds once.
 

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
@@ -471,7 +471,7 @@ HEURISTIC_PRIORITY = 1000
 
 
 # Legal forms are stripped from the dictionary value and tolerated as an optional suffix, so a
-# single entry matches the whole family: `Contoso` covers `Contoso S.r.l.`, `Contoso srl`, `Contoso`.
+# single entry matches the whole family: `Contoso` covers `Contoso S.r.l.`, `contoso srl`, `CONTOSO`.
 # Whole-token match, bounded quantifiers only (no nested `*` on `\s`: no ReDoS surface).
 LEGAL_FORM_SRC = (
     r"(?:s\.?\s?r\.?\s?l\.?\s?s?"  # srl / s.r.l. / srls
@@ -1024,7 +1024,7 @@ def read_text(path: Path) -> str:
 
 def _fold_entity(value: str) -> str:
     """Canonical key for fuzzy comparison: case-folded, legal forms dropped, non-alphanumerics
-    removed. `Contoso S.r.l.` and `Contoso` fold to the same key."""
+    removed. `Contoso S.r.l.` and `CONTOSO` fold to the same key."""
     tokens = _name_tokens(value)
     return "".join(char for char in "".join(tokens).casefold() if char.isalnum())
 
@@ -1043,7 +1043,7 @@ def near_misses(
     Two kinds, both REPORTED for a human to declare — never used to redact, because a fuzzy rule
     that silently misses is worse than an explicit alias added once:
       * `variant` — the text writes the entity differently but it folds to the same key
-        (`Contoso` / `Contoso Srl` vs a declared `Contoso`); found by folding adjacent-word joins.
+        (`Con Toso` / `CONTOSO Srl` vs a declared `Contoso`); found by folding adjacent-word joins.
       * `near` — a single word that is close but not identical (a typo, another transliteration).
     Bounded on purpose (word and vocabulary caps) so the audit stays fast.
     """
@@ -1224,6 +1224,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         return _emit_check(args, detect(text, entities, families=resolve_families(args)), Path("<stdin>"), text=text)
     target = Path(args.file).expanduser()
     allow = load_allowlist(Path(args.allow) if args.allow else DEFAULT_ALLOW)
+    allow += list(args.allow_glob or [])
     if is_allowed(target, allow):
         return _emit_check(args, [], target, allowed=True)
     if not target.is_file():
@@ -1537,6 +1538,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="with --prune-maps: actually delete the listed maps"
     )
     parser.add_argument("--allow", help="path-glob allowlist used by --check (default: ~/.anon/allow.txt)")
+    parser.add_argument(
+        "--allow-glob",
+        action="append",
+        metavar="GLOB",
+        help="extra path glob treated as un-sensitive by --check (repeatable; same syntax as --allow)",
+    )
     parser.add_argument("--check", action="store_true", help="report sensitive content, write nothing")
     parser.add_argument(
         "--audit",

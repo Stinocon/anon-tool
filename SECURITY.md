@@ -45,7 +45,8 @@ in `docs/DESIGN.md` §7:
   extends it to shell output);
 - **the guard's own false positives**: the guard scans with the same engine, so a heuristic that
   over-matches blocks a legitimate read (in this repository that happens on its own source and
-  docs). The remedy is `~/.anon/allow.txt` or a narrower heuristic, never a workaround;
+  docs). The remedy is `~/.anon/allow.txt`, a session-only `--anon-guard-allow '/a/*,/b/*'` (or
+  `/anon-allow <path>`), or `anon.py --allow-glob GLOB` for one run — never a workaround;
 - **a check slower than the timeout or bigger than the cap** is refused, not read (fail-closed).
 - a document whose only placeholder would collide with another run's map is now
   detected and refused; the tag is 6 hex digits (16.7M values), so a collision stays negligible
@@ -54,4 +55,4 @@ in `docs/DESIGN.md` §7:
 
 ## Supported versions
 
-Pre-1.0: only the current `main` is supported.
+Only the current `main` (the latest tagged release) is supported.

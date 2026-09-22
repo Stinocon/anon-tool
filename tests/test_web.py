@@ -377,17 +377,17 @@ class WebUiTest(unittest.TestCase):
         self.assertIn("mario@contoso.it", content)
 
     def test_audit_never_returns_the_values(self) -> None:
-        status, result = self.call("/api/audit", {"text": "Il cliente Contoso e mario@contoso.it\n"})
+        status, result = self.call("/api/audit", {"text": "Il cliente Con Toso e mario@contoso.it\n"})
         self.assertEqual(status, 200)
         self.assertEqual(result["verdict"], "sensitive")
         raw = json.dumps(result)
         self.assertNotIn("contoso.it", raw)
-        self.assertNotIn("Contoso", raw)
+        self.assertNotIn("Con Toso", raw)
         self.assertNotIn("Contoso", raw)
 
-        status, revealed = self.call("/api/audit", {"text": "Il cliente Contoso e mario@contoso.it\n", "reveal": True})
+        status, revealed = self.call("/api/audit", {"text": "Il cliente Con Toso e mario@contoso.it\n", "reveal": True})
         self.assertEqual(status, 200)
-        self.assertEqual(revealed["near_miss"][0]["token"], "Contoso")
+        self.assertEqual(revealed["near_miss"][0]["token"], "Con Toso")
 
     def test_entities_can_be_read_and_saved(self) -> None:
         status, data = self.call("/api/entities")
