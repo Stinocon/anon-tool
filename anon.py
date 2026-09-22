@@ -17,9 +17,10 @@ Modes
   anon.py --prune-maps DAYS [--yes]  # list (or delete) the maps older than DAYS
 
 Exit codes
-  0  ok (or --check: nothing sensitive found)
+  0  ok (or --check: nothing sensitive found, or --audit: clean)
   1  --check: sensitive content found
   2  error (bad arguments, unreadable file, unparseable entities)
+  4  --audit: nothing directly sensitive, but near-miss candidates (not clean, not proof)
 
 Design notes
   * Idempotent: already-present placeholders are protected, so anonymizing twice is a no-op
@@ -1208,10 +1209,6 @@ def sniff(path: Path, head_bytes: int = 8192) -> str | None:
     return None
 
 
-def looks_binary(path: Path) -> bool:
-    return sniff(path) is not None
-
-
 def cmd_check(args: argparse.Namespace) -> int:
     if args.file == "-":
         # stdin mode: check arbitrary text (e.g. the Markdown anon-guard just produced)
@@ -1285,6 +1282,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
         "candidates_capped": capped,
         "placeholders_present": placeholders,
     }
+    if len(found) > len(findings):
+        report["findings_truncated"] = True
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False))
@@ -1333,6 +1332,10 @@ def _emit_check(
         "types": by_type,
         "findings": findings,
     }
+    if len(found) > len(findings):
+        # The list is capped for output size: say so, instead of letting a truncated list read as
+        # the whole picture (the near-miss cap had exactly this failure mode).
+        result["findings_truncated"] = True
     if allowed:
         result["allowed"] = True
     if binary:

@@ -181,10 +181,18 @@ async function boot() {
 
 /* ---------------------------------------------------------------- mappe */
 async function loadMaps() {
-  const { maps = [] } = await request("/api/maps");
+  const { maps = [], total = maps.length, truncated = false } = await request("/api/maps");
   state.maps = maps;
   const list = $("map-list");
   list.innerHTML = "";
+  if (truncated) {
+    // The list is capped: saying "100 mappe" when there are 300 would be a silent lie.
+    const note = document.createElement("p");
+    note.className = "map-empty";
+    note.textContent = `Mostrate le prime ${maps.length} mappe su ${total}. Le più vecchie si ripuliscono con ` +
+      "`anon.py --prune-maps <giorni>`.";
+    list.append(note);
+  }
   if (!maps.length) {
     list.innerHTML = '<p class="map-empty">Nessuna mappa: anonimizza qualcosa nella prima scheda.</p>';
     return;

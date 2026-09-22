@@ -55,6 +55,7 @@ CONVERT_MAX_BYTES = int(os.environ.get("ANON_CONVERT_MAX_BYTES") or 160 * 1024 *
 CONVERT_TIMEOUT_SECONDS = int(os.environ.get("ANON_CONVERT_TIMEOUT") or 300)
 STDERR_KEEP_BYTES = 8192
 DEFAULT_RATE_LIMIT = 120  # requests per minute on /api/*, per process; 0 disables the bucket
+MAP_LIST_LIMIT = 100  # `/api/maps` is capped; the COUNT is not (see `_list_maps`)
 # The tool ships its own converter; the Pi `docs` skill is used only as a fallback when the
 # tool's own convert.py is missing (older installs).
 def _default_converter() -> Path:
@@ -376,7 +377,14 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/state":
                 self._json(self._state())
             elif path == "/api/maps":
-                self._json({"maps": self._list_maps()})
+                total = len(self._map_files())
+                self._json(
+                    {
+                        "maps": self._list_maps(),
+                        "total": total,
+                        "truncated": total > MAP_LIST_LIMIT,
+                    }
+                )
             elif path == "/api/entities":
                 text = anon.DEFAULT_ENTITIES.read_text(encoding="utf-8") if anon.DEFAULT_ENTITIES.is_file() else ""
                 self._json({"text": text, "path": str(anon.DEFAULT_ENTITIES)})
@@ -422,30 +430,40 @@ class Handler(BaseHTTPRequestHandler):
             "version": anon.VERSION,
             "catalogs": anon.list_catalogs(),
             "patterns": list(anon.PATTERN_FAMILIES),
-            "maps_count": len(self._list_maps()),
+            "maps_count": len(self._map_files()),
             "converter": CONVERTER.is_file(),
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),
         }
 
-    def _list_maps(self) -> list[dict]:
-        """Metadata only: the map holds the REAL values and must not travel on a list call."""
+    def _map_files(self) -> list[Path]:
+        if not anon.DEFAULT_MAPS.is_dir():
+            return []
+        return sorted(anon.DEFAULT_MAPS.glob("*.map.json"), reverse=True)
+
+    def _list_maps(self, limit: int | None = MAP_LIST_LIMIT) -> list[dict]:
+        """Metadata only: the map holds the REAL values and must not travel on a list call.
+
+        The listing is capped (`MAP_LIST_LIMIT`); `/api/state` counts through `_map_files()` with
+        `limit=None`. A capped listing must never make the total look smaller than it is — the
+        truncation is reported (`/api/maps` returns `truncated`) instead of being silent.
+        """
         out = []
-        if anon.DEFAULT_MAPS.is_dir():
-            for path in sorted(anon.DEFAULT_MAPS.glob("*.map.json"), reverse=True)[:100]:
-                try:
-                    data = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    continue
-                out.append(
-                    {
-                        "id": data.get("id", path.stem.replace(".map", "")),
-                        "created": data.get("created"),
-                        "source": Path(str(data.get("source", ""))).name,
-                        "counts": data.get("counts"),
-                        "entries": len(data.get("entries") or {}),
-                    }
-                )
+        paths = self._map_files()
+        for path in paths[:limit] if limit is not None else paths:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            out.append(
+                {
+                    "id": data.get("id", path.stem.replace(".map", "")),
+                    "created": data.get("created"),
+                    "source": Path(str(data.get("source", ""))).name,
+                    "counts": data.get("counts"),
+                    "entries": len(data.get("entries") or {}),
+                }
+            )
         return out
 
     def _anonymize(self) -> None:

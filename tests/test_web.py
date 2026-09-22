@@ -409,6 +409,29 @@ class WebUiTest(unittest.TestCase):
         for entry in data["maps"]:
             self.assertNotIn("original", json.dumps(entry))
             self.assertIn("entries", entry)
+        # The listing is capped; the total is not, and the truncation is declared.
+        self.assertEqual(data["total"], len(data["maps"]))
+        self.assertFalse(data["truncated"])
+
+    def test_the_map_count_is_not_capped_by_the_listing(self) -> None:
+        """`/api/state` counted through the capped list: 300 maps would have reported 100."""
+        before = len(list((self.tmp / "maps").glob("*.map.json")))
+        created = []
+        for index in range(105):
+            path = self.tmp / "maps" / f"20200101-000000-{index:06d}.map.json"
+            path.write_text('{"entries": {}}', encoding="utf-8")
+            created.append(path)
+        try:
+            status, maps = self.call("/api/maps")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(maps["maps"]), 100, "the listing is capped")
+            self.assertEqual(maps["total"], before + 105, "the total must count every map")
+            self.assertTrue(maps["truncated"])
+            status, state = self.call("/api/state")
+            self.assertEqual(state["maps_count"], before + 105)
+        finally:
+            for path in created:
+                path.unlink()
 
     @unittest.skipUnless(DOCX_AVAILABLE, "document converter not installed")
     def test_document_upload_is_converted_and_redacted(self) -> None:

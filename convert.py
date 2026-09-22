@@ -21,7 +21,6 @@ Local only: no network at conversion time (only `--install` uses pip).
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import sys

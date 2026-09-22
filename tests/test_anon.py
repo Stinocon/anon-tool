@@ -487,6 +487,26 @@ class CliTest(unittest.TestCase):
         self.assertFalse(old.exists(), "the old map must be gone")
         self.assertTrue(fresh.exists(), "a recent map must survive")
 
+    def test_a_capped_findings_list_says_so(self) -> None:
+        """`findings` is capped for output size; a truncated list must not read as the whole list."""
+        src = self.tmp / "molti.txt"
+        # Real findings, not placeholders: the engine protects existing placeholders on purpose.
+        src.write_text(
+            "\n".join(f"riga {index}: utente{index}@cliente{index}.it" for index in range(1, 61)),
+            encoding="utf-8",
+        )
+        check = json.loads(self.run_anon(str(src), "--check", "--json").stdout)
+        self.assertEqual(check["total"], 60)
+        self.assertLess(len(check["findings"]), 60)
+        self.assertTrue(check["findings_truncated"], "the truncation must be declared")
+
+        audit = json.loads(self.run_anon(str(src), "--audit", "--json").stdout)
+        self.assertTrue(audit["findings_truncated"])
+
+        small = self.tmp / "piccolo.txt"
+        small.write_text("una sola utente9@cliente9.it\n", encoding="utf-8")
+        self.assertNotIn("findings_truncated", json.loads(self.run_anon(str(small), "--check", "--json").stdout))
+
     def test_short_stem_warns_and_a_long_one_does_not(self) -> None:
         """A 3-character stem redacts unrelated words: say so, but never refuse (see the note)."""
         stem_dictionary = self.tmp / "stems.txt"
@@ -578,8 +598,11 @@ class AddressCorpusTest(unittest.TestCase):
     )
 
     def setUp(self) -> None:
-        self.empty = Path(tempfile.mkdtemp(prefix="anon-address-")) / "empty.txt"
-        self.entities = anon.load_entities(self.empty)
+        self.work = Path(tempfile.mkdtemp(prefix="anon-address-"))
+        self.entities = anon.load_entities(self.work / "empty.txt")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.work, ignore_errors=True)
 
     def test_addresses_are_detected(self) -> None:
         for text in self.POSITIVE:
