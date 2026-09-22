@@ -1137,7 +1137,7 @@ class DeanonContainerTest(unittest.TestCase):
         """
         docx = self._make_docx("illeggibile.docx", {
             "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
-            + self._para("[EMAIL-1-bbbb] ecco") + "</w:body></w:document>",
+            + self._para("[EMAIL-1] ecco") + "</w:body></w:document>",
         })
         import zipfile
 

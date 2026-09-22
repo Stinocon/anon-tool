@@ -215,17 +215,22 @@ calls it implicitly; the engine itself keeps zero network capability.
   is Word splitting a run, and that one is fine to cross; `</w:p><w:p>` or
   `</dc:title><dc:creator>` is not — the rewrite would put the placeholder in the first fragment and
   EMPTY the others, destroying text that belongs to another element, and the map would store the
-  separator spaces as part of the value. The decision compares CONTAINERS, not tags: for every
-  fragment the walker records the element path it lives in (names AND instance ids), and joining two
-  fragments is safe when their paths diverge only on inline elements — a run, a run property, a tab,
-  a break, a bookmark, a hyperlink, a content control, a rich-text run (`INLINE_ELEMENTS`). Anything
-  else, i.e. `</w:p><w:p>` or `</dc:title><dc:creator>`, means the two halves are text from different
-  containers and the match is refused, naming the element. Getting here took two corrections of the
-  same mechanism, both on real documents: classifying per tag refused an ordinary footer whose runs
-  carried a `<w:rPr>` block (`<w:rFonts/>`, `<w:sz/>`, `<w:spacing/>` — formatting, which opens no
-  container), and classifying by element NAME alone cannot tell two runs of one paragraph from two
-  paragraphs. The rule is load-bearing: the tests fail if the comparison uses names instead of
-  instances, or if it stops refusing.
+  separator spaces as part of the value. The decision compares CONTAINERS: for every fragment the
+  walker records the element path it lives in (names AND instance ids) and reduces it to a signature —
+  every ancestor that is not an inline element (`INLINE_ELEMENTS`: runs, text nodes, run properties,
+  inline wrappers and markers). Joining two fragments is safe when the signatures are EQUAL, and it is
+  checked for EVERY fragment against the first, because the middle ones are emptied too. Two runs of
+  one sentence share every container; `</w:p><w:p>`, `</dc:title><dc:creator>`, two table cells, two
+  equations, or body-vs-text-box do not, and emptying the other fragment there would delete text that
+  belongs to the document. Getting here took three corrections of one mechanism, each found on a real
+  document or by adversarial review: classifying per tag refused an ordinary footer whose runs carried
+  a `<w:rPr>` block (`<w:rFonts/>`, `<w:sz/>` — formatting, which opens no container); classifying by
+  element NAME alone cannot tell two runs of one paragraph from two paragraphs; and stopping at the
+  FIRST differing element returned "safe" for a text box nested inside a run (`w:r` is inline, while
+  the real boundary — a `w:p` inside `w:drawing` / the legacy VML `w:txbxContent` — sat three levels
+  deeper, and the text box's text was deleted). The rule is load-bearing and the tests say so: they
+  fail if the comparison uses names instead of instances, if it stops checking every fragment, or if
+  the refusal disappears.
 - **bounds on what a container may expand to**: a part over 64 MB, a part expanding more than 200x
   its compressed size, or parts totalling over 256 MB are refused before decompression, and
   `--check` (the guard's path on a `read`) uses the 12 MB `SCAN_MAX_BYTES` budget instead. Without a

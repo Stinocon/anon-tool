@@ -1070,7 +1070,7 @@ INLINE_ELEMENTS = frozenset({
     "w:hyperlink", "w:sdt", "w:sdtContent", "w:ins", "w:del", "w:smartTag", "w:subDoc",
     "a:r", "a:rPr", "a:endParaRPr", "a:br", "a:tab", "a:fld",
     "text:span", "text:a", "text:bookmark-start", "text:bookmark-end",
-    "r", "rPr", "m:r", "m:rPr", "m:oMath", "m:oMathPara",
+    "r", "rPr", "m:r", "m:rPr",
 })
 
 
@@ -1110,26 +1110,34 @@ def path_at_source(segments, offset: int) -> tuple:
     return _segment_at(segments, offset, lambda segment: segment[1])[2]
 
 
-def boundary_offenders(left, right) -> list[str]:
-    """The elements that make joining two fragments a CROSS-CONTAINER rewrite, or [] when it is safe.
+def container_signature(path) -> tuple:
+    """The CONTAINERS a fragment lives in: every ancestor that is not an inline element.
 
-    This compares CONTAINERS, not tags: the boundary between two runs of the same sentence is made of
-    formatting tags (and it is fine), while `</w:p><w:p>` or `</dc:title><dc:creator>` puts the two
-    halves in two different text containers — and then emptying the second fragment would delete text
-    that belongs to the document rather than to the match. The first version classified tags one by
-    one, so a run-properties block (`<w:rFonts/>`, `<w:sz/>`, ...) looked like a boundary and an
-    ordinary footer was refused.
+    Comparing signature with signature is what answers "are these two halves of one sentence, or two
+    different pieces of the document?" — and it has to look at the WHOLE path, not at the first
+    difference: a text box inside a run differs from the body first at `w:r` (inline, harmless) while
+    the real boundary is the `w:p` nested three levels down inside `w:drawing`/`w:txbxContent`. A
+    version that stopped at the first differing element returned "safe" there and deleted the text
+    box's content.
     """
-    for position, (mine, theirs) in enumerate(zip(left, right)):
-        if mine == theirs:
-            continue
-        names = {mine[0], theirs[0]}
-        return [] if names <= INLINE_ELEMENTS else sorted(names)
-    if len(left) != len(right):
-        deeper = right[len(left):] if len(right) > len(left) else left[len(right):]
-        names = {name for name, _id in deeper}
-        return [] if names <= INLINE_ELEMENTS else sorted(names)
-    return []
+    return tuple(entry for entry in path if entry[0] not in INLINE_ELEMENTS)
+
+
+def boundary_offenders(left, right) -> list[str]:
+    """The containers that differ between two fragments, or [] when joining them is safe.
+
+    Two runs of one sentence share every container, so their signatures are equal and the value is
+    rewritten; `</w:p><w:p>`, `</dc:title><dc:creator>` or body-vs-text-box do not, and emptying the
+    second fragment would delete text that belongs to the document rather than to the match.
+    """
+    mine, theirs = container_signature(left), container_signature(right)
+    if mine == theirs:
+        return []
+    names = {name for name, _id in mine}
+    names |= {name for name, _id in theirs}
+    differing = [entry for entry in mine if entry not in theirs]
+    differing += [entry for entry in theirs if entry not in mine]
+    return sorted({name for name, _id in differing}) or sorted(names)
 
 
 def masked_index(xml: str) -> tuple[str, array.array, list[tuple[int, int, tuple]]]:
@@ -1289,8 +1297,17 @@ def anonymize_container(
                     raw = [position for position in offsets[start:end] if position >= 0]
                     if not raw:
                         continue
-                    crossed = boundary_offenders(path_at_visible(segments, start),
-                                                 path_at_visible(segments, end - 1))
+                    runs = group_runs(raw)
+                    # EVERY fragment is checked against the first, because the ones in the middle
+                    # are emptied too: checking only the two ends let a value whose middle landed in
+                    # another container (a text box, a second equation) pass and be deleted.
+                    crossed = []
+                    for run in runs[1:]:
+                        # `raw` and `runs` hold SOURCE offsets, so the lookup is by source: mixing
+                        # the two coordinate systems silently returned the first segment's path.
+                        crossed += boundary_offenders(path_at_source(segments, runs[0][0]),
+                                                      path_at_source(segments, run[0]))
+                    crossed = sorted(set(crossed))
                     if crossed:
                         raise UnreadablePart(
                             f"REFUSED — a value of type {ptype} spans a structural boundary "
@@ -1298,7 +1315,6 @@ def anonymize_container(
                             "text from another container. Nothing was written."
                         )
                     placeholder = alloc.for_value(ptype, "".join(text[position] for position in raw))
-                    runs = group_runs(raw)
                     # As in the reverse direction: the first fragment carries the whole token and
                     # the others are emptied, so no formatting moves and the part stays valid.
                     edits.append((runs[0][0], runs[0][-1] + 1, placeholder))
@@ -2028,6 +2044,12 @@ def _emit_check(
     return 1 if (found or unscannable) else 0
 
 
+def _refusal_reason(exc: Exception) -> str:
+    """A short, actionable version of a container refusal (the message itself names the part)."""
+    message = str(exc).removeprefix("REFUSED — ").split(":")[0].strip()
+    return f"container refused: {message}" if message else "container refused (binary or corrupt)"
+
+
 def _is_own_output(name: str) -> bool:
     """True for a file this tool produced: `x.redacted.md`, `X.REDACTED.MD`, `x.deanon.docx`,
     `x.map.json`.
@@ -2196,12 +2218,14 @@ def cmd_batch(args: argparse.Namespace) -> int:
         if kind == "container":
             try:
                 text = container_text(path)
-            except UnreadableContainer:
+            except UnreadableContainer as exc:
+                # "binary or corrupt" loses the actionable half: WHICH part, and whether the file is
+                # a bomb, unreadable text, or not a ZIP at all.
                 if args.check:
                     rows.append({"file": str(path), "total": 1, "entries": 0, "counts": {},
                                  "redacted": None, "map": None, "unscannable": True})
                 else:
-                    skipped.append((path, "not a readable container (binary or corrupt)"))
+                    skipped.append((path, _refusal_reason(exc)))
                 continue
         elif kind is not None:
             if args.check:

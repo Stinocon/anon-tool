@@ -25,13 +25,23 @@ enforces that they agree.
 
 ### Fixed
 
+- **The boundary rule was still wrong, and adversarial review found the DESTRUCTIVE case it hid.** The
+  check stopped at the first difference between the fragments' element paths, so a fragment inside a
+  text box nested in a run (`w:drawing`, and the legacy VML `w:txbxContent`) looked "safe" and the text
+  box's text was DELETED. Two more holes in the same decision: only the first and last fragments were
+  checked (a value whose middle landed in another container passed), and `m:oMathPara`/`m:oMath` counted
+  as inline (two equations = one text). The decision is now a SIGNATURE — every ancestor that is not an
+  inline element — compared for EVERY fragment, verified with the review's own reproductions in both
+  directions and against the legitimate splits that must keep working.
 - **Three more defects of the same class, found by hunting for it.** (1) `deanon`'s repair had the
   mirror of the destructive rewrite: across a container boundary it moved the value into the first
   fragment and deleted the second paragraph's text — and its test asserted that behaviour while
   claiming to test a run split. The boundary rule now runs in both directions from the same code, and
   the test uses a genuine run split. (2) The inline element set was incomplete (tracked deletions via
   `w:delText`, math runs, field characters, legacy markers, text boxes), so a value split there
-  refused an ordinary document; a corpus test over 8 real constructs protects the set. (3) A part
+  refused an ordinary document — though on review only the MATH case is a real behaviour change: in
+  the other seven the difference was already a `w:r`. The corpus test protects against the opposite
+  mistake, refusing a legitimate split. (3) A part
   named as text that could not be decoded was SKIPPED — now refused in the redaction and reported as
   `unreadable_parts` in the restore, which can no longer answer `complete`.
 

@@ -150,8 +150,10 @@ def repair_split_placeholders(
         if segments is None:
             # Computed once, and only when a split actually has to be judged.
             _visible, _offsets, segments = masked_index(text)
-        offenders = boundary_offenders(path_at_source(segments, raw[0]),
-                                       path_at_source(segments, raw[-1]))
+        offenders = []
+        for other in runs[1:]:
+            offenders += boundary_offenders(path_at_source(segments, runs[0][0]),
+                                            path_at_source(segments, other[0]))
         if offenders:
             continue  # two containers: leaving it is reported, not hidden — see the docstring
         value = entries[placeholder].get("original")
@@ -438,6 +440,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"deanon: mappa del {report['map_created'] or '?'} da {report['map_source']}")
         if report["unknown_placeholders"]:
             print(f"deanon: {report['unknown_placeholders']} placeholder-shaped token(s) not in the map — left as-is")
+        # An unreadable part is the reason `complete` can be false with nothing else to show: without
+        # this line the operator sees "NOTHING RESTORED" and looks at the wrong thing.
+        if report.get("unreadable_parts"):
+            print(
+                "deanon: a part named as text could not be read, so the result cannot be called "
+                "complete:"
+            )
+            for name in report["unreadable_parts"]:
+                print(f"        {name}")
+            print("        A document nobody could fully read is not a document confirmed restored.")
         print(f"deanon: -> {out}")
 
     # Never silenced — not by --quiet, not by --json: an undeliverable document is an error

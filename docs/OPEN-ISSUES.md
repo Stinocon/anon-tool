@@ -217,20 +217,47 @@ The operator asked whether other bugs of the same kind existed. Three were found
    correct. The classifier now runs in both directions from the same code (`boundary_offenders`), the
    fixture is a genuine run split, and a new test pins the cross-paragraph case: not repaired, exit 3,
    and the second paragraph's text intact. Verified by mutation.
-2. **The inline set was incomplete in exactly the way the operator's document exposed.** A value
-   split by `w:delText` (tracked deletion), a math run (`m:r`/`m:t`), a field character sequence
-   (`w:fldChar`), a legacy marker (`w:footnoteRef`, `w:pgNum`, `w:separator`, ...) or a text box
-   (`w:txbxContent`) would have refused the document. The set is now the run-level children and
-   inline wrappers of the namespaces the formats use, and a new corpus test walks 8 real constructs
-   (table cell, text box, tracked insertion, tracked deletion, field in the middle, math, hyperlink,
-   block content control) — it FAILS if the set is narrowed back.
+2. **The inline set was extended, but less of it bites than I first claimed** — corrected after
+   review attacked the claim rather than the code. Of the 8 corpus constructs (table cell, text box,
+   tracked insertion, tracked deletion, field in the middle, math, hyperlink, block content control),
+   only the MATH case (`m:r`) is a genuine behaviour change: in the other seven the first differing
+   element was already `w:r` under the old set. The leaf text nodes (`w:delText`, `m:t`) and the
+   self-closing markers (`w:fldChar`, `w:footnoteRef`, ...) can never be a difference at all — a
+   self-closing tag is never pushed, and a leaf always sits under a run that differs first. They are
+   harmless, not load-bearing. And `w:txbxContent` was never added, and must not be: a text box IS a
+   container (see point 4). The corpus test is still worth having — it is what fails if the signature
+   starts refusing a legitimate split.
+
 3. **A part named as text but undecodable was skipped silently** — only `.xml`/`.rels` were protected,
    so a `.vml`, `.rdf` or `.txt` part that could not be decoded went through unscanned, and the
    verification (same view) would not have seen it either. Now refused in the redaction, and reported
    as `unreadable_parts` in the restore, where it also prevents `complete: true`.
 
-Declared residual from the same sweep: embedded binary objects (`word/embeddings/*.bin`, an xlsx
-`vbaProject.bin`, media) are not scanned — a container inside the container.
+**4. The boundary decision itself was still wrong, and adversarial review found a DESTRUCTIVE case.**
+The first version compared the element paths and stopped at the first difference. A fragment inside a
+text box nested in a run differed from the body first at `w:r` (inline, harmless) while the real
+boundary — a `w:p` inside `w:drawing` / the legacy VML `w:txbxContent` — sat three levels deeper: the
+check returned "safe", the value was rewritten, and the text box's text was DELETED. Reproduced for
+both the DrawingML and the VML text box. Two more holes in the same decision: only the first and last
+fragments were checked, so a value whose MIDDLE landed in another container passed (destructive in
+both directions); and `m:oMath`/`m:oMathPara` counted as inline, so two equations counted as one text.
+
+The decision is a **signature** comparison now — every ancestor that is not an inline element, for
+EVERY fragment — which closes all three. Verified with the review's own reproductions: body + text box
+→ refused; three fragments with the middle in a text box → refused (anon: exit 2, nothing written;
+deanon: exit 3, `repaired 0`, the text box's text intact and no value placed in it); two equations →
+refused; and the legitimate splits (two runs, tab, break, bookmark, content control, math within one
+equation) still produce a redacted document.
+
+Declared residuals of the sweep:
+
+- embedded binary objects (`word/embeddings/*.bin`, an xlsx `vbaProject.bin`, media) are not scanned
+  — a container inside the container;
+- `MARKUP_RE` (`<[^>]*>`) mis-tokenizes a tag whose ATTRIBUTE VALUE contains `>` (legal XML), and a
+  CDATA block or comment containing one: the tail leaks into the visible text and shifts the offsets
+  around it. The element NAME is still parsed, so the container signature stays right; what suffers is
+  the text near such a construct, where a match could hide. Legal and rare in Office output, pre-existing,
+  now written down instead of waiting to be discovered.
 
 ### Adversarial review of the container pass (2026-09-22) — every finding accounted for
 
