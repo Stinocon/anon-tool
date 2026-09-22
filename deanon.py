@@ -434,9 +434,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         entries = load_map(map_path)
-        raw_map = json.loads(map_path.read_text(encoding="utf-8"))
-        if not isinstance(raw_map, dict):
-            raw_map = {}  # provenance only; a wrong-shaped map already failed in load_map
+        # Through the same helper, not a bare `json.loads`: this read only serves provenance, and
+        # relying on "the parse above already validated the bytes" makes correctness depend on the
+        # order of two statements.
+        raw_map = anon.read_json_object(map_path.read_text(encoding="utf-8"), str(map_path))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"deanon: {exc}", file=sys.stderr)
         return 2
