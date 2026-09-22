@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 from pathlib import Path
 
@@ -1513,6 +1514,129 @@ class BatchTest(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertTrue((out / "verbale.redacted.txt").is_file())
         self.assertTrue((out / "sub" / "verbale.redacted.txt").is_file(), "same name, different folder")
+
+
+class ContainerRedactionTest(unittest.TestCase):
+    """`anon.py verbale.docx` -> `verbale.redacted.docx`: the document comes back, not Markdown.
+
+    The reason this matters: the Markdown path LOSES headers, footers, comments and the document
+    properties (measured, `scripts/convert-fidelity.py`), so a client name in a letterhead was
+    neither redacted nor delivered. Rewriting the parts covers them where they live.
+    """
+
+    PART_TYPES = (
+        '[Content_Types].xml',
+        '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="xml" ContentType="application/xml"/></Types>',
+    )
+    RELS = (
+        '_rels/.rels',
+        '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/'
+        '2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    )
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-container-"))
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        (self.home / "entities.txt").write_text("AZIENDA|Contoso\nPERSONA|Mario Rossi\n", encoding="utf-8")
+        self.env = {**os.environ, "ANON_HOME": str(self.home)}
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def build(self, name: str, body: str, header: str = "", author: str = "") -> Path:
+        """A minimal but valid package: body, optional header, optional properties."""
+        docx = self.tmp / name
+        with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(*self.PART_TYPES)
+            archive.writestr(*self.RELS)
+            archive.writestr(
+                "word/document.xml",
+                '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+                f'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{body}</w:t></w:r></w:p>'
+                "</w:body></w:document>",
+            )
+            if header:
+                archive.writestr(
+                    "word/header1.xml",
+                    '<?xml version="1.0"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/'
+                    f'wordprocessingml/2006/main"><w:p><w:r><w:t>{header}</w:t></w:r></w:p></w:hdr>',
+                )
+            if author:
+                archive.writestr(
+                    "docProps/core.xml",
+                    '<?xml version="1.0"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/'
+                    'package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                    f"<dc:creator>{author}</dc:creator></cp:coreProperties>",
+                )
+        return docx
+
+    def run_anon(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ANON_PY), *args], capture_output=True, text=True, env=self.env, check=False
+        )
+
+    def all_text(self, path: Path) -> str:
+        # The container's own view: the same one the redaction and its verification use.
+        return anon.container_text(path)
+
+    def test_a_docx_is_redacted_in_place_and_comes_back_whole(self) -> None:
+        src = self.build(
+            "verbale.docx",
+            "Referente: Mario Rossi, cliente Contoso.",
+            header="Spett.le Contoso, uso interno",
+            author="Mario Rossi",
+        )
+        res = self.run_anon(str(src), "--json")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        redacted = self.tmp / "verbale.redacted.docx"
+        self.assertTrue(redacted.is_file())
+        self.assertTrue(zipfile.is_zipfile(redacted), "the output is still a real container")
+
+        text = self.all_text(redacted)
+        for value in ("Mario Rossi", "Contoso"):
+            self.assertNotIn(value, text, f"{value!r} survived the redaction")
+        self.assertIn("PERSONA-1-", text)
+        self.assertIn("AZIENDA-1-", text)
+
+        # the reverse direction, on the SAME file, must restore every part exactly
+        report = json.loads(res.stdout)
+        restored = self.tmp / "verbale.deanon.docx"
+        back = subprocess.run(
+            [sys.executable, str(DEANON_PY), str(redacted), report["map"], "--out", str(restored), "--json"],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+        self.assertEqual(back.returncode, 0, back.stderr)
+        self.assertTrue(json.loads(back.stdout)["complete"])
+        self.assertEqual(self.all_text(restored), self.all_text(src), "part by part, the text is back")
+
+    def test_a_value_split_across_two_runs_is_still_redacted(self) -> None:
+        src = self.build("spezzato.docx", "<w:t>Mario </w:t></w:r><w:r><w:t>Rossi</w:t></w:r>")
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        text = self.all_text(self.tmp / "spezzato.redacted.docx")
+        self.assertNotIn("Mario", text)
+        self.assertNotIn("Rossi", text)
+
+    def test_dry_run_on_a_container_writes_nothing(self) -> None:
+        src = self.build("nota.docx", "Cliente Contoso.")
+        before = {p.name for p in self.tmp.iterdir()}
+        res = self.run_anon(str(src), "--dry-run", "--json")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual({p.name for p in self.tmp.iterdir()}, before, "a dry run writes nothing")
+        self.assertTrue(json.loads(res.stdout)["dry_run"])
+        self.assertFalse((self.tmp / "nota.redacted.docx").exists())
+
+    def test_a_fake_container_is_refused_with_nothing_written(self) -> None:
+        fake = self.tmp / "finto.docx"
+        fake.write_bytes(b"PK\x03\x04" + bytes(range(256)) * 10)
+        res = self.run_anon(str(fake), "--quiet")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("REFUSED", res.stderr)
+        self.assertFalse((self.tmp / "finto.redacted.docx").exists())
+        self.assertEqual(list(self.home.glob("maps/*.map.json")), [])
 
 
 class OfflineContractTest(unittest.TestCase):

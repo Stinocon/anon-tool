@@ -41,9 +41,11 @@ import os
 import re
 import sys
 import time
+import zipfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _sax_escape
 from typing import Callable, Iterable
 
 VERSION = "1.7.0"
@@ -961,6 +963,63 @@ def detect(
     return found
 
 
+class _Placeholders:
+    """Per-run placeholder allocation, shared by the text path and the container path.
+
+    One instance per document/run: `[EMAIL-1-tag]` must mean the same value in `document.xml` and
+    in `header1.xml`, or the map would describe two different things under one key. The numbering
+    and the reserved-token rule live here once, so the two paths cannot drift apart.
+    """
+
+    def __init__(self, tag: str | None, reserved: Iterable[str] = ()) -> None:
+        self.tag = tag or new_tag()
+        self.by_key: dict[tuple[str, str], str] = {}
+        self.counters: dict[str, int] = {}
+        self.entries: dict[str, dict[str, str]] = {}
+        # Placeholder-shaped text already in the source must not be reused as a FRESH placeholder:
+        # `[EMAIL-1] e info@acme.it` would otherwise map the literal `[EMAIL-1]` to the new value,
+        # and deanon would rewrite both.
+        self.reserved = set(reserved)
+
+    def for_value(self, ptype: str, value: str) -> str:
+        known = self.by_key.get((ptype, value))
+        if known is not None:
+            return known
+        suffix = f"-{self.tag}" if self.tag else ""
+        while True:
+            self.counters[ptype] = self.counters.get(ptype, 0) + 1
+            candidate = f"[{ptype}-{self.counters[ptype]}{suffix}]"
+            if candidate not in self.reserved:
+                break
+        self.reserved.add(candidate)
+        self.by_key[(ptype, value)] = candidate
+        self.entries[candidate] = {"type": ptype, "original": value}
+        return candidate
+
+    def counts(self) -> dict[str, int]:
+        # Recomputed from the entries: `counters` also advances past reserved numbers, so it would
+        # over-report (e.g. {"EMAIL": 2} for a single entry) in the map summary.
+        counts: dict[str, int] = {}
+        for entry in self.entries.values():
+            counts[entry["type"]] = counts.get(entry["type"], 0) + 1
+        return counts
+
+
+def group_runs(offsets: list[int]) -> list[list[int]]:
+    """Group raw offsets into the contiguous runs they came from.
+
+    A value (or a placeholder) that a word processor split across runs arrives as offsets with
+    gaps: `"Mario "` in one `<w:t>` and `"Rossi"` in the next.
+    """
+    runs: list[list[int]] = []
+    for position in offsets:
+        if runs and position == runs[-1][-1] + 1:
+            runs[-1].append(position)
+        else:
+            runs.append([position])
+    return runs
+
+
 def anonymize(
     text: str,
     entities: list[Entity],
@@ -973,43 +1032,153 @@ def anonymize(
     Every placeholder carries a `tag` identifying the map it belongs to (`[EMAIL-1-a3f9]`), so a
     document can only be de-anonymized with ITS map. `tag=None` generates a fresh one.
     """
-    if tag is None:
-        tag = new_tag()
     found = detect(text, entities, include_heuristics, families)
-    by_key: dict[tuple[str, str], str] = {}
-    counters: dict[str, int] = {}
-    entries: dict[str, dict[str, str]] = {}
-    # Placeholder-shaped text already in the source must not be reused as a fresh
-    # placeholder: `[EMAIL-1] e info@acme.it` would otherwise map the literal `[EMAIL-1]` to
-    # the new value and deanon would rewrite BOTH, breaking the lossless round-trip.
-    reserved = {m.group(0) for m in PLACEHOLDER_RE.finditer(text)}
+    alloc = _Placeholders(tag, (m.group(0) for m in PLACEHOLDER_RE.finditer(text)))
     out: list[str] = []
     cursor = 0
     for start, end, ptype in found:
-        value = text[start:end]
-        key = (ptype, value)
-        placeholder = by_key.get(key)
-        if placeholder is None:
-            suffix = f"-{tag}" if tag else ""
-            while True:
-                counters[ptype] = counters.get(ptype, 0) + 1
-                candidate = f"[{ptype}-{counters[ptype]}{suffix}]"
-                if candidate not in reserved:
-                    placeholder = candidate
-                    break
-            reserved.add(placeholder)
-            by_key[key] = placeholder
-            entries[placeholder] = {"type": ptype, "original": value}
         out.append(text[cursor:start])
-        out.append(placeholder)
+        out.append(alloc.for_value(ptype, text[start:end]))
         cursor = end
     out.append(text[cursor:])
-    # Recompute from the entries: `counters` also advances past reserved placeholder numbers,
-    # so it would over-report (e.g. `{"EMAIL": 2}` for a single entry) in the map summary.
-    counts: dict[str, int] = {}
-    for entry in entries.values():
-        counts[entry["type"]] = counts.get(entry["type"], 0) + 1
-    return "".join(out), entries, counts
+    return "".join(out), alloc.entries, alloc.counts()
+
+
+class UnreadableContainer(ValueError):
+    """A `.docx`-looking file that is not a readable ZIP: fake, or corrupt.
+
+    Refused with the same words as any other binary (`REFUSED`, `binary`), because that is what it
+    is: a familiar extension must not make the refusal vaguer.
+    """
+
+
+def masked_index(xml: str) -> tuple[str, list[int]]:
+    """(the text a reader sees, with ONE SPACE where each tag was; source offset per character, -1
+    for the inserted separator).
+
+    `visible_index` CONCATENATES fragments, which is what a self-delimiting token (`[EMAIL-1]`)
+    needs, and it stays that way for the restore direction. Detecting a real VALUE needs the
+    opposite: `</dc:title><dc:creator>` must not merge `Contoso` and `Mario` into one word (that is
+    exactly how a document property escaped redaction), while a value split inside a paragraph must
+    still be found — and it is, because the entity patterns join their tokens with `[\\s...]+`, so a
+    single space between two run fragments matches.
+    """
+    visible: list[str] = []
+    offsets: list[int] = []
+    position = 0
+    for match in MARKUP_RE.finditer(xml):
+        visible.extend(xml[position:match.start()])
+        offsets.extend(range(position, match.start()))
+        visible.append(" ")
+        offsets.append(-1)
+        position = match.end()
+    visible.extend(xml[position:])
+    offsets.extend(range(position, len(xml)))
+    return "".join(visible), offsets
+
+
+def open_container(src: Path) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(src)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise UnreadableContainer(
+            f"REFUSED — {src} looks like an office document but is not a readable ZIP "
+            f"(binary or corrupt: {type(exc).__name__}). Nothing was written."
+        ) from exc
+
+
+def container_text(src: Path) -> str:
+    """The visible text of EVERY text part, joined: what a reader of the container sees."""
+    chunks: list[str] = []
+    with open_container(src) as archive:
+        for name in archive.namelist():
+            text, _codec = decode_part(archive.read(name))
+            if text is not None:
+                # The SAME view the rewrite detects on: verifying on a different one is how the
+                # first version reported "0 leftovers" while the document properties were intact.
+                chunks.append(masked_index(text)[0])
+    return "\n".join(chunks)
+
+
+def _container_leftovers(path: Path, entities, include_heuristics, families) -> int:
+    """How much still looks sensitive in the file we just wrote.
+
+    The verdict comes from the OUTPUT, never from our intent: a `*.redacted.docx` that still
+    carries a client name is the one outcome this feature must never produce.
+    """
+    return len(detect(container_text(path), entities, include_heuristics, families))
+
+
+def anonymize_container(
+    src: Path,
+    out: Path | None,
+    entities,
+    include_heuristics: bool = True,
+    families: Iterable[str] | None = None,
+    tag: str | None = None,
+    dry_run: bool = False,
+) -> tuple[dict[str, dict[str, str]], dict[str, int], dict[str, int]]:
+    """Redact a ZIP container PART BY PART, keeping the file type, the layout and the styles.
+
+    This is the opposite trade from converting to Markdown: instead of losing headers, footers,
+    comments and document properties (measured: 6 features of 17), it rewrites them where they
+    live. Returns (entries, counts, {part: values replaced}).
+
+    Raises ValueError — deleting the output first — when the written file still contains a detected
+    value. Nothing is delivered on trust.
+    """
+    parts: dict[str, int] = {}
+    blocks: list[tuple[zipfile.ZipInfo, bytes, str | None, str | None]] = []
+    reserved: set[str] = set()
+    with open_container(src) as archive:
+        for info in archive.infolist():
+            blob = archive.read(info)
+            text, codec = decode_part(blob)
+            if text is not None:
+                # Reserved tokens must be collected across the WHOLE container before allocating:
+                # a part read later could otherwise reuse a number an earlier part already shows.
+                reserved.update(m.group(0) for m in PLACEHOLDER_RE.finditer(visible_text(text)))
+            blocks.append((info, blob, text, codec))
+
+    alloc = _Placeholders(tag, reserved)
+    chunks: list[tuple[zipfile.ZipInfo, bytes]] = []
+    for info, blob, text, codec in blocks:
+        if text is not None:
+            visible, offsets = masked_index(text)
+            found = detect(visible, entities, include_heuristics, families)
+            if found:
+                edits: list[tuple[int, int, str]] = []
+                for start, end, ptype in found:
+                    placeholder = alloc.for_value(ptype, visible[start:end])
+                    # -1 marks an inserted separator: it has no source character to rewrite.
+                    raw = [position for position in offsets[start:end] if position >= 0]
+                    if not raw:
+                        continue
+                    runs = group_runs(raw)
+                    # As in the reverse direction: the first fragment carries the whole token and
+                    # the others are emptied, so no formatting moves and the part stays valid.
+                    edits.append((runs[0][0], runs[0][-1] + 1, placeholder))
+                    for run in runs[1:]:
+                        edits.append((run[0], run[-1] + 1, ""))
+                for start, end, replacement in sorted(edits, reverse=True):
+                    text = text[:start] + replacement + text[end:]
+                parts[info.filename] = len(found)
+                blob = text.encode(codec or "utf-8", "surrogateescape")
+        chunks.append((info, blob))
+
+    entries, counts = alloc.entries, alloc.counts()
+    if dry_run or out is None:
+        return entries, counts, parts
+
+    write_container_atomic(out, chunks)
+    leftover = _container_leftovers(out, entities, include_heuristics, families)
+    if leftover:
+        out.unlink(missing_ok=True)
+        raise ValueError(
+            f"redaction INCOMPLETE: {leftover} value(s) still readable in the written document — "
+            "nothing was written. Report this: the container has a shape this pass does not cover."
+        )
+    return entries, counts, parts
 
 
 TAG_DIGITS = 6  # a width, NOT a guarantee: uniqueness comes from new_tag(existing_tags(...))
@@ -1085,6 +1254,98 @@ def tag_of(entries: dict[str, dict[str, str]]) -> str | None:
         if match and placeholder.count("-") >= 2:
             return placeholder.rsplit("-", 1)[-1].rstrip("]")
     return None
+
+
+# --------------------------------------------------------------- containers
+# Office containers (.docx/.xlsx/.pptx/.odt) are ZIPs whose text lives in XML parts, and a word
+# processor splits a string across runs (`<w:t>[EMAIL-</w:t></w:r><w:r><w:t>1]</w:t>`). Both
+# directions of the tool — writing a placeholder in, restoring a value out — need the same three
+# primitives, so they live here and `deanon.py` imports them: two copies of "what a text part is"
+# would drift, and the drift would be invisible until a document was wrong.
+MARKUP_RE = re.compile(r"<[^>]*>")
+XML_SUFFIXES = (".xml", ".rels")
+
+# A ZIP part can legally be UTF-16/UTF-32 encoded (OOXML allows it); decoded as UTF-8 its
+# placeholders are NUL-interleaved and would be neither replaced nor detected.
+CONTAINER_BOMS = (
+    (b"\xff\xfe\x00\x00", "utf-32-le"),
+    (b"\x00\x00\xfe\xff", "utf-32-be"),
+    (b"\xff\xfe", "utf-16-le"),
+    (b"\xfe\xff", "utf-16-be"),
+)
+
+
+def visible_text(xml: str) -> str:
+    """The text a reader of the document would see, approximated by dropping every tag."""
+    return MARKUP_RE.sub("", xml)
+
+
+def decode_part(blob: bytes) -> tuple[str | None, str | None]:
+    """(text, codec) for a text part, or (None, None) when the part is binary.
+
+    Binary is decided by content, not by filename: `word/embeddings/note.txt` holds text that
+    must be rewritten, and an image is binary whatever it is called.
+    """
+    for bom, codec in CONTAINER_BOMS:
+        if blob.startswith(bom):
+            return blob.decode(codec, "surrogateescape"), codec
+    if b"\x00" in blob[:8192]:
+        return None, None
+    return blob.decode("utf-8", "surrogateescape"), "utf-8"
+
+
+def is_xml_part(name: str) -> bool:
+    return name == "[Content_Types].xml" or name.lower().endswith(XML_SUFFIXES)
+
+
+def xml_protect(value: str) -> str:
+    """Escape a value before writing it into an XML part.
+
+    `&`, `<`, `>` are mandatory in element text; `"` and `'` matter when the value sits in an
+    attribute (`w:tooltip="..."`, a `.rels` Target). Escaping quotes in element text is harmless —
+    they decode back to themselves — so this is safe in both contexts.
+    """
+    return _sax_escape(value, {'"': "&quot;", "'": "&apos;"})
+
+
+def visible_index(xml: str) -> tuple[str, list[int]]:
+    """(the text a reader sees, the offset in `xml` of every one of its characters).
+
+    This is what makes a value (or a placeholder) that a word processor split across runs findable
+    as one string, and repairable without touching a single tag.
+    """
+    visible: list[str] = []
+    offsets: list[int] = []
+    position = 0
+    for match in MARKUP_RE.finditer(xml):
+        visible.extend(xml[position:match.start()])
+        offsets.extend(range(position, match.start()))
+        position = match.end()
+    visible.extend(xml[position:])
+    offsets.extend(range(position, len(xml)))
+    return "".join(visible), offsets
+
+
+def write_container_atomic(output: Path, chunks) -> None:
+    """Write the parts to a new ZIP, then `os.replace` it into place: a half-written container
+    must never be left where a caller could pick it up."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp-{os.urandom(4).hex()}")
+    try:
+        with zipfile.ZipFile(temporary, "w") as target:
+            for info, blob in chunks:
+                # A fresh ZipInfo: reusing the original object can carry a data-descriptor flag
+                # bit that zipfile then rewrites inconsistently.
+                clean = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                clean.compress_type = info.compress_type
+                clean.external_attr = info.external_attr
+                clean.internal_attr = info.internal_attr
+                clean.create_system = info.create_system
+                target.writestr(clean, blob)
+        os.replace(temporary, output)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _default_output(path: Path) -> Path:
@@ -1503,6 +1764,29 @@ def _is_own_output(name: str) -> bool:
     return bool(OWN_OUTPUT_RE.search(name)) or name.lower().endswith(".map.json")
 
 
+def plan_map_path(args: argparse.Namespace) -> Path:
+    """Where the map will go. Planned separately from writing it, so a dry run can name the file it
+    would create without creating anything."""
+    selected = getattr(args, "map", None)
+    if selected:
+        return Path(selected).expanduser()
+    return DEFAULT_MAPS / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}.map.json"
+
+
+def write_map(map_path: Path, src: Path, out: Path | None, entries, counts) -> None:
+    payload = {
+        "tag": tag_of(entries),
+        "version": VERSION,
+        "id": map_path.stem.removesuffix(".map"),
+        "source": str(src.resolve()),
+        "output": str(out) if out is not None else "(stdout)",
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "counts": counts,
+        "entries": entries,
+    }
+    _write_private(map_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
 def write_run(
     src: Path,
     redacted: str,
@@ -1523,10 +1807,7 @@ def write_run(
     out: Path | None = None
     if not to_stdout:
         out = out_path if out_path is not None else (Path(args.out).expanduser() if args.out else _default_output(src))
-    map_path: Path | None = None
-    if entries:
-        map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
-        map_path = Path(args.map).expanduser() if args.map else DEFAULT_MAPS / f"{map_id}.map.json"
+    map_path: Path | None = plan_map_path(args) if entries else None
     if dry_run:
         return out, map_path
     if to_stdout:
@@ -1538,17 +1819,7 @@ def write_run(
     else:
         _write_private(out, redacted)
     if map_path is not None:
-        payload = {
-            "tag": tag_of(entries),
-            "version": VERSION,
-            "id": map_path.stem.removesuffix(".map"),
-            "source": str(src.resolve()),
-            "output": str(out) if out is not None else "(stdout)",
-            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "counts": counts,
-            "entries": entries,
-        }
-        _write_private(map_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        write_map(map_path, src, out, entries, counts)
     return out, map_path
 
 
@@ -1634,16 +1905,28 @@ def cmd_batch(args: argparse.Namespace) -> int:
         if size > BATCH_MAX_BYTES:
             skipped.append((path, f"over {BATCH_MAX_BYTES // (1024 * 1024)} MB"))
             continue
-        if sniff(path) is not None:
+        kind = sniff(path)
+        if kind == "container":
+            try:
+                text = container_text(path)
+            except UnreadableContainer:
+                if args.check:
+                    rows.append({"file": str(path), "total": 1, "entries": 0, "counts": {},
+                                 "redacted": None, "map": None, "unscannable": True})
+                else:
+                    skipped.append((path, "not a readable container (binary or corrupt)"))
+                continue
+        elif kind is not None:
             if args.check:
                 # Fail CLOSED, exactly like the single-file check: "unscannable" is not "clean".
-                # Reporting a folder of .docx as clean is the one answer that must never happen.
+                # Reporting a folder of PDFs as clean is the one answer that must never happen.
                 rows.append({"file": str(path), "total": 1, "entries": 0, "counts": {},
                              "redacted": None, "map": None, "unscannable": True})
             else:
-                skipped.append((path, "not text (convert it first)"))
+                skipped.append((path, "not text (binary/image: convert it first)"))
             continue
-        text = read_text(path)
+        else:
+            text = read_text(path)
         if args.check:
             found = detect(text, entities, include_heuristics=not args.no_hosts, families=families)
             by_type: dict[str, int] = {}
@@ -1653,18 +1936,35 @@ def cmd_batch(args: argparse.Namespace) -> int:
                          "redacted": None, "map": None})
             continue
         tag = new_tag() if args.dry_run else allocate_tag([DEFAULT_MAPS])
-        redacted, entries, counts = anonymize(
-            text, entities, include_heuristics=not args.no_hosts, families=families, tag=tag,
-        )
         # The relative path is preserved: flattening to the basename made `a/nota.txt` and
         # `b/nota.txt` overwrite each other in --out, silently, with two maps pointing at one file.
-        planned = None
-        if out_dir is not None:
-            relative = path.relative_to(root)
-            planned = out_dir / relative.parent / _default_output(path).name
-        out, map_path = write_run(
-            path, redacted, entries, counts, tag, args, dry_run=args.dry_run, out_path=planned,
-        )
+        relative = path.relative_to(root)
+        planned = out_dir / relative.parent / _default_output(path).name if out_dir is not None else None
+        if kind == "container":
+            # Kept, not converted: the folder workflow brings documents back, not Markdown.
+            out = planned if planned is not None else _default_output(path)
+            try:
+                entries, counts, _parts = anonymize_container(
+                    path, None if args.dry_run else out, entities,
+                    include_heuristics=not args.no_hosts, families=families, tag=tag, dry_run=args.dry_run,
+                )
+            except UnreadableContainer:
+                if args.check:
+                    rows.append({"file": str(path), "total": 1, "entries": 0, "counts": {},
+                                 "redacted": None, "map": None, "unscannable": True})
+                else:
+                    skipped.append((path, "not a readable container (binary or corrupt)"))
+                continue
+            map_path = plan_map_path(args) if entries else None
+            if not args.dry_run and map_path is not None:
+                write_map(map_path, path, out, entries, counts)
+        else:
+            redacted, entries, counts = anonymize(
+                text, entities, include_heuristics=not args.no_hosts, families=families, tag=tag,
+            )
+            out, map_path = write_run(
+                path, redacted, entries, counts, tag, args, dry_run=args.dry_run, out_path=planned,
+            )
         rows.append({
             "file": str(path), "total": len(entries), "entries": len(entries), "counts": counts,
             "redacted": str(out) if out else None, "map": str(map_path) if map_path else None,
@@ -1710,15 +2010,79 @@ def cmd_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_anonymize_container(args: argparse.Namespace, src: Path) -> int:
+    """`anon.py verbale.docx` -> `verbale.redacted.docx`: same type, same layout, same map shape.
+
+    The alternative (convert to Markdown, redact, hand back Markdown) is what the guard does for a
+    `read`; here the operator gets the DOCUMENT back, with headers, footers, comments and properties
+    rewritten where they live instead of dropped.
+    """
+    if args.stdout:
+        print("anon: --stdout does not apply to a container: its content is not text", file=sys.stderr)
+        return 2
+    entities = resolve_entities(args)
+    destination = Path(args.map).expanduser().parent if args.map else DEFAULT_MAPS
+    tag = new_tag() if args.dry_run else allocate_tag([DEFAULT_MAPS, destination], getattr(args, "tag", None))
+    out: Path | None = None if args.dry_run else (Path(args.out).expanduser() if args.out else _default_output(src))
+    entries, counts, parts = anonymize_container(
+        src, out, entities,
+        include_heuristics=not args.no_hosts, families=resolve_families(args), tag=tag, dry_run=args.dry_run,
+    )
+    if args.dry_run:
+        if args.json:
+            print(json.dumps({
+                **_envelope("anon.py --dry-run"),
+                "dry_run": True, "container": True, "file": str(src), "sensitive": bool(entries),
+                "would_write": str(out), "would_map": str(plan_map_path(args)) if entries else None,
+                "entries": len(entries), "counts": counts, "parts": parts,
+            }, ensure_ascii=False))
+            return 0
+        if not args.quiet:
+            if entries:
+                summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                print(f"anon: dry run — nothing written; would redact {len(entries)} value(s) [{summary}]")
+                print(f"anon: would write -> {out}")
+                print(f"anon: would map   -> {plan_map_path(args)}")
+                for name, count in sorted(parts.items()):
+                    print(f"       {name}: {count}")
+            else:
+                print(f"anon: dry run — nothing sensitive in {src}; nothing would be written")
+        return 0
+
+    map_path = plan_map_path(args) if entries else None
+    if map_path is not None:
+        write_map(map_path, src, out, entries, counts)
+    if args.json:
+        print(json.dumps({
+            **_envelope("anon.py"), "container": True, "sensitive": bool(entries),
+            "redacted": str(out), "map": str(map_path) if map_path else None,
+            "entries": len(entries), "counts": counts, "parts": parts,
+        }, ensure_ascii=False))
+        return 0
+    if not args.quiet:
+        if not entries:
+            print(f"anon: nothing sensitive found in {src}", file=sys.stderr)
+        else:
+            summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            print(f"anon: {len(entries)} placeholder(s) [{summary}] over {len(parts)} part(s)")
+        print(f"anon: redacted -> {out}")
+        if map_path is not None:
+            print(f"anon: map      -> {map_path}")
+    return 0
+
+
 def cmd_anonymize(args: argparse.Namespace) -> int:
     src = Path(args.file).expanduser()
     if not src.is_file():
         print(f"anon: not a file: {src}", file=sys.stderr)
         return 2
-    if sniff(src) is not None:
+    kind = sniff(src)
+    if kind == "container":
+        return cmd_anonymize_container(args, src)
+    if kind is not None:
         print(
-            f"anon: REFUSED — {src} is a binary file (Word/PDF/Excel/image). Reading it as text\n"
-            "      would redact almost nothing and leave a corrupted copy named 'redacted'.\n"
+            f"anon: REFUSED — {src} is a binary file (PDF/image/legacy .doc/.xls/.ppt). Reading it\n"
+            "      as text would redact almost nothing and leave a corrupted copy named 'redacted'.\n"
             "      Convert it to Markdown first, then anonymize that:\n"
             '        doc_to_markdown(path="…", output="…/file.md")   # writes, does not return\n'
             "        /anon …/file.md                                  # redacts the Markdown\n"

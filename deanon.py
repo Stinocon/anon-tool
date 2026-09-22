@@ -50,7 +50,6 @@ import re
 import sys
 import zipfile
 from pathlib import Path
-from xml.sax.saxutils import escape as _sax_escape
 
 # One source of truth for the placeholder syntax and the container sniffing: the engine itself.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -58,54 +57,17 @@ import anon  # noqa: E402  (path set above on purpose)
 
 VERSION = anon.VERSION  # single source of truth: the product version lives in anon.py
 
-# Markup stripper used by the VERIFICATION step. Verifying on the raw XML is wrong: Word splits a
-# placeholder across runs (`<w:t>[EMAIL-</w:t></w:r><w:r><w:t>1]</w:t>`), so the contiguous string
-# is absent from the raw bytes even though the document visibly still contains `[EMAIL-1]`.
-MARKUP_RE = re.compile(r"<[^>]*>")
-XML_SUFFIXES = (".xml", ".rels")
-
-# A ZIP part can legally be UTF-16/UTF-32 encoded (OOXML allows it); decoded as UTF-8 its
-# placeholders are NUL-interleaved and would be neither replaced nor detected.
-_BOMS = (
-    (b"\xff\xfe\x00\x00", "utf-32-le"),
-    (b"\x00\x00\xfe\xff", "utf-32-be"),
-    (b"\xff\xfe", "utf-16-le"),
-    (b"\xfe\xff", "utf-16-be"),
-)
-
-
-def visible_text(xml: str) -> str:
-    """The text a reader of the document would see, approximated by dropping every tag."""
-    return MARKUP_RE.sub("", xml)
-
-
-def decode_part(blob: bytes) -> tuple[str | None, str | None]:
-    """(text, codec) for a text part, or (None, None) when the part is binary.
-
-    Binary is decided by content, not by filename: `word/embeddings/note.txt` holds text that
-    must be rewritten, and an image is binary whatever it is called.
-    """
-    for bom, codec in _BOMS:
-        if blob.startswith(bom):
-            return blob.decode(codec, "surrogateescape"), codec
-    if b"\x00" in blob[:8192]:
-        return None, None
-    return blob.decode("utf-8", "surrogateescape"), "utf-8"
-
-
-def is_xml_part(name: str) -> bool:
-    return name == "[Content_Types].xml" or name.lower().endswith(XML_SUFFIXES)
-
-
-def xml_protect(value: str) -> str:
-    """Escape a real value before writing it into an XML part.
-
-    `&`, `<`, `>` are mandatory in element text; `"` and `'` matter when the placeholder sits in
-    an attribute value (`w:tooltip="..."`, a `.rels` Target). Escaping quotes in element text is
-    harmless — they decode back to themselves — so this is safe in both contexts.
-    """
-    return _sax_escape(value, {'"': "&quot;", "'": "&apos;"})
-
+# The container primitives live in the ENGINE (`anon.py`): one implementation for both directions
+# — writing a placeholder in, restoring a value out — because two copies of "what a text part is"
+# would drift silently. They are re-bound here so this module reads exactly as before.
+MARKUP_RE = anon.MARKUP_RE
+XML_SUFFIXES = anon.XML_SUFFIXES
+visible_text = anon.visible_text
+decode_part = anon.decode_part
+is_xml_part = anon.is_xml_part
+xml_protect = anon.xml_protect
+visible_index = anon.visible_index
+write_container_atomic = anon.write_container_atomic
 
 def restorable(entries: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
     """Only entries that actually carry a value: a key with `original: null` cannot be restored."""
@@ -129,26 +91,6 @@ def deanonize(
         restored += text.count(placeholder)
         text = text.replace(placeholder, protect(value) if protect else value)
     return text, restored
-
-
-def visible_index(xml: str) -> tuple[str, list[int]]:
-    """(the text a reader sees, the offset in `xml` of every one of its characters).
-
-    Word splits a placeholder across runs (`<w:t>[EMAIL-</w:t></w:r><w:r><w:t>1]</w:t>`), so the
-    contiguous string is absent from the raw bytes while the reader plainly sees `[EMAIL-1]`.
-    The visible view is what must be compared, and the index is what makes a repair possible
-    without touching a single tag.
-    """
-    visible: list[str] = []
-    offsets: list[int] = []
-    position = 0
-    for match in MARKUP_RE.finditer(xml):
-        visible.extend(xml[position:match.start()])
-        offsets.extend(range(position, match.start()))
-        position = match.end()
-    visible.extend(xml[position:])
-    offsets.extend(range(position, len(xml)))
-    return "".join(visible), offsets
 
 
 def repair_split_placeholders(
@@ -301,24 +243,6 @@ def load_map_metadata(path: Path) -> dict[str, object]:
     }
 
 
-def _write_atomic(output: Path, chunks: list[tuple[zipfile.ZipInfo, bytes]]) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.tmp-{os.urandom(4).hex()}")
-    try:
-        with zipfile.ZipFile(temporary, "w") as target:
-            for info, blob in chunks:
-                # A fresh ZipInfo: reusing the original object can carry a data-descriptor flag
-                # bit that zipfile then rewrites inconsistently.
-                clean = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-                clean.compress_type = info.compress_type
-                clean.external_attr = info.external_attr
-                clean.internal_attr = info.internal_attr
-                clean.create_system = info.create_system
-                target.writestr(clean, blob)
-        os.replace(temporary, output)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
 
 
 def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, str]]) -> dict:
@@ -340,7 +264,7 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
                     repairs += repaired
                 blob = text.encode(codec or "utf-8", "surrogateescape")
             chunks.append((info, blob))
-    _write_atomic(output, chunks)
+    write_container_atomic(output, chunks)
 
     # The verdict must come from the OUTPUT, not from our intent, and it must be computed on the
     # VISIBLE text of every text part (a split placeholder is invisible in the raw XML; an

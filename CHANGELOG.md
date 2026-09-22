@@ -10,6 +10,17 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Added
+
+- **`anon.py verbale.docx` → `verbale.redacted.docx`**: an office container is redacted IN PLACE,
+  part by part, so the document comes back as the same kind of file — layout and styles intact —
+  instead of as Markdown. It also covers what the Markdown path loses (measured: 6 features of 17):
+  headers and footers, comments, footnotes and the document properties (the AUTHOR), so a client
+  name in a letterhead is no longer left in the clear. The written file is re-read and re-scanned
+  before anything is delivered; if a value survives, the output is deleted and the run fails.
+  `--batch` picks containers up too, `--dry-run` shows what would change. DEC-0015 supersedes the
+  blanket refusal of DEC-0011 for the formats we can rewrite; legacy `.doc/.xls/.ppt`, PDF and
+  images are still refused, as is any file that claims to be a container but is not a readable ZIP.
 ### Fixed
 
 - **The Anonimizza button never armed for a DROPPED document** (only the file picker worked): the
