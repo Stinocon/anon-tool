@@ -59,8 +59,9 @@ These are declared limits, not oversights:
   needs a human read before it leaves your hands.
 - **Images and screenshots** cannot be scanned: pixels pass through, so do not paste a screenshot
   of a client document into a chat.
-- **The custom dictionary is curated by hand.** A proper name that is not in `entities.txt` is not
-  redacted. Keeping that file current is the one recurring maintenance task.
+- **The custom dictionary is curated by hand.** A proper name that is not in the dictionary
+  (`entities.txt`, `people.txt`, `clients.txt`) is not redacted. Keeping those files current is the
+  one recurring maintenance task.
 - **Shell reads** (`cat`, `rg`) are outside the Pi guard's default perimeter; `--anon-guard=all`
   extends it to shell output.
 - **It is not a legal opinion** on using a cloud provider. It reduces technical risk; it does not
@@ -166,6 +167,11 @@ The Pi guard (and `anon.py --check`) treats a path listed in `~/.anon/allow.txt`
 For a one-off or session-scoped exemption there is `anon.py --allow-glob GLOB` (repeatable) and, in
 Pi, `--anon-guard-allow` / the `/anon-allow` command — so the permanent allowlist is reserved for
 genuinely public paths. The allowlist is still evaluated by the engine, never by the guard.
+
+A **binary document** read through Pi (docx, pdf, xlsx) is not a dead end: the guard converts and
+anonymizes it locally (`--anon-guard-auto=ask|on|off`, default `ask`) and only the redacted
+Markdown reaches the context. If the conversion fails, the read is blocked — the failure path is
+the fail-closed block, never "clean".
 
 The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 [`docs/DESIGN.md`](docs/DESIGN.md).
