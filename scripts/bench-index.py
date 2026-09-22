@@ -81,7 +81,8 @@ def measure(impl: str, megabytes: float) -> None:
     else:
         index = legacy_masked_index
     started = time.time()
-    visible, offsets, _structural = index(xml)
+    result = index(xml)
+    visible, offsets = result[0], result[1]
     elapsed = time.time() - started
     # `ru_maxrss` is KiB on Linux and BYTES on macOS — the two platforms disagree, and getting it
     # backwards is how a benchmark reports half a terabyte of peak RSS without anyone noticing.

@@ -1824,6 +1824,26 @@ class ContainerRedactionTest(unittest.TestCase):
                 self.assertNotIn("Contoso", text, label)
                 self.assertIn("AZIENDA-1-", text, label)
 
+    def test_run_properties_between_two_fragments_are_not_a_boundary(self) -> None:
+        """The shape Word actually writes in a footer: every run carries its own formatting block.
+
+        A per-tag classification called `<w:rFonts/>`, `<w:sz/>` and `<w:spacing/>` boundaries, so an
+        ordinary document was refused and the UI fell back to Markdown alone. They are formatting:
+        they never open a text container, and the two fragments are in the same paragraph.
+        """
+        props = ('<w:rPr><w:rFonts w:cstheme="minorHAnsi"/><w:spacing w:val="40"/>'
+                 '<w:sz w:val="18"/><w:szCs w:val="22"/></w:rPr>')
+        src = self.pack("proprieta.docx", {"word/footer1.xml":
+            f"<w:p><w:r>{props}<w:t>Spett.le Contoso</w:t></w:r>"
+            f"<w:r>{props}<w:t>S.r.l.</w:t></w:r></w:p>"})
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        out = self.tmp / "proprieta.redacted.docx"
+        self.assertTrue(zipfile.is_zipfile(out))
+        text = self.all_text(out)
+        self.assertNotIn("Contoso", text)
+        self.assertIn("AZIENDA-1-", text)
+
     def test_a_refusal_names_the_tag_that_blocked_it(self) -> None:
         """A REFUSED must be actionable: the operator has to know WHAT to look at."""
         src = self.pack("bloccato.docx", {"word/footer1.xml":

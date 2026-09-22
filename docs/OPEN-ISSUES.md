@@ -194,6 +194,16 @@ ANY other tag is structural, and the refusal names the tag (`w:p`, `dc:title`) s
 something to act on. Four fixtures (tab, break, bookmark, content control) fail if the list is
 narrowed back to the run-level set.
 
+**Second correction, same day, same mechanism** — and the rule that came out of it. The next real
+document was refused again, this time on `<w:rFonts/>`, `<w:spacing/>`, `<w:sz/>`, `<w:szCs/>`:
+those are the run PROPERTIES Word writes on every run, and a per-tag classifier cannot see that they
+open nothing. Two failures of the same mechanism in one day is the signal to change the mechanism
+rather than the list, so the classification now compares the CONTAINER of the two fragments: the
+walker records the element path (names and instance ids) each fragment lives in, and joining is safe
+when the paths diverge only on inline elements. Instance ids are what make it work — by name alone,
+two runs of one paragraph and two paragraphs look identical. Tests fail if the comparison downgrades
+to names, and if the refusal disappears.
+
 ### Adversarial review of the container pass (2026-09-22) — every finding accounted for
 
 Review by a different model on the engine + UI of the container pass. Four real defects, all fixed

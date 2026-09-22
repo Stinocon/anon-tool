@@ -1053,28 +1053,71 @@ class UnreadableContainer(ValueError):
     """
 
 
-# Tags that do NOT start a new text container, i.e. everything a word processor normally uses to
-# split a value: a run boundary, a tab, a line break, a bookmark, a proofing mark, a hyperlink or a
-# content control wrapped around part of the name. `</w:t></w:r><w:r><w:t>` is the same sentence, and
-# so is `Contoso<w:tab/>S.r.l.` in a letterhead.
-#
-# The rule is stated in the permissive direction ON PURPOSE: ANY tag not in this list makes the
-# boundary structural, and a match that needs one is REFUSED rather than rewritten — `</w:p><w:p>` or
-# `</dc:title><dc:creator>` means the "value" is made of two different elements, and emptying the
-# second fragment would destroy text that belongs to the document, not to the match. A first version
-# listed only the run-level tags and refused ordinary footers, which is the other way to be wrong.
-INLINE_TAGS = re.compile(
-    r"^</?(?:w:r|w:t|w:rPr|w:proofErr|w:noProof|w:lastRenderedPageBreak|w:instrText|w:fldSimple|"
-    r"w:tab|w:br|w:cr|w:softHyphen|w:noBreakHyphen|w:sym|w:bookmarkStart|w:bookmarkEnd|"
-    r"w:commentRangeStart|w:commentRangeEnd|w:hyperlink|w:sdt|w:sdtContent|w:ins|w:del|w:smartTag|"
-    r"a:r|a:t|a:rPr|a:endParaRPr|a:br|a:fld|"
-    r"text:span|text:s|text:tab|text:line-break)\b"
-)
+# Elements that do NOT make a new text container: a word processor splits a value with exactly
+# these — a run, a run property, a tab or a break, a bookmark, a hyperlink, a content control, a
+# proofing mark, an Office rich-text run. `xlsx` and `odt` have unprefixed equivalents (`t`, `r`).
+INLINE_ELEMENTS = frozenset({
+    "w:r", "w:t", "w:rPr", "w:proofErr", "w:noProof", "w:lastRenderedPageBreak", "w:instrText",
+    "w:fldSimple", "w:tab", "w:br", "w:cr", "w:softHyphen", "w:noBreakHyphen", "w:sym",
+    "w:bookmarkStart", "w:bookmarkEnd", "w:commentRangeStart", "w:commentRangeEnd",
+    "w:hyperlink", "w:sdt", "w:sdtContent", "w:ins", "w:del", "w:smartTag",
+    "a:r", "a:t", "a:rPr", "a:endParaRPr", "a:br", "a:fld",
+    "text:span", "text:s", "text:tab", "text:line-break",
+    "t", "r", "rPr",
+})
 
 
-def masked_index(xml: str) -> tuple[str, array.array, dict[int, str]]:
+def _element_name(tag: str) -> tuple[str, bool, bool] | None:
+    """(name, closing, self_closing) for an element tag; None for a declaration, comment or doctype."""
+    if not tag.startswith("<"):
+        return None
+    inner = tag[1:-1].strip() if tag.endswith(">") else tag[1:].strip()
+    if not inner or inner[0] in "?!":
+        return None
+    closing = inner.startswith("/")
+    body = inner[1:].strip() if closing else inner
+    self_closing = body.endswith("/")
+    name = body.rstrip("/").strip().split(" ")[0].strip()
+    return (name, closing, self_closing) if name else None
+
+
+def _path_at(starts: list[int], paths: list[tuple[tuple[str, int], ...]], index: int):
+    """The element path a visible character lives in (the last segment that starts at or before it)."""
+    low, high = 0, len(starts) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if starts[middle] <= index:
+            low = middle
+        else:
+            high = middle - 1
+    return paths[low]
+
+
+def _boundary_offenders(left, right) -> list[str]:
+    """The elements that make joining two fragments a CROSS-CONTAINER rewrite, or [] when it is safe.
+
+    This compares CONTAINERS, not tags: the boundary between two runs of the same sentence is made of
+    formatting tags (and it is fine), while `</w:p><w:p>` or `</dc:title><dc:creator>` puts the two
+    halves in two different text containers — and then emptying the second fragment would delete text
+    that belongs to the document rather than to the match. The first version classified tags one by
+    one, so a run-properties block (`<w:rFonts/>`, `<w:sz/>`, ...) looked like a boundary and an
+    ordinary footer was refused.
+    """
+    for position, (mine, theirs) in enumerate(zip(left, right)):
+        if mine == theirs:
+            continue
+        names = {mine[0], theirs[0]}
+        return [] if names <= INLINE_ELEMENTS else sorted(names)
+    if len(left) != len(right):
+        deeper = right[len(left):] if len(right) > len(left) else left[len(right):]
+        names = {name for name, _id in deeper}
+        return [] if names <= INLINE_ELEMENTS else sorted(names)
+    return []
+
+
+def masked_index(xml: str) -> tuple[str, array.array, list[int], list[tuple[tuple[str, int], ...]]]:
     """(the text a reader sees, with ONE SPACE where each tag was; source offset per character, -1
-    for the inserted separator; the structural separators, index -> the tag responsible).
+    for the inserted separator; the segment start of every container path, and the paths).
 
     `visible_index` CONCATENATES fragments, which is what a self-delimiting token (`[EMAIL-1]`)
     needs, and it stays that way for the restore direction. Detecting a real VALUE needs the
@@ -1083,9 +1126,9 @@ def masked_index(xml: str) -> tuple[str, array.array, dict[int, str]]:
     still be found — and it is, because the entity patterns join their tokens with `[\\s...]+`, so a
     single space between two run fragments matches.
 
-    A match reaching across one of the reported boundaries takes text from ANOTHER element, so the
-    caller must refuse it instead of rewriting: that is the difference between "Word split a run"
-    and "two paragraphs happened to end and start with the right words".
+    The paths are what the caller needs to tell "Word split a run" from "two paragraphs happened to
+    end and start with the right words": joining the second kind takes text from ANOTHER container,
+    so it is refused instead of rewritten (`_boundary_offenders`).
     """
     return _walk_parts(xml, " ")
 
@@ -1215,7 +1258,7 @@ def anonymize_container(
     chunks: list[tuple[zipfile.ZipInfo, bytes]] = []
     for info, blob, text, codec in blocks:
         if text is not None:
-            visible, offsets, structural = masked_index(text)
+            visible, offsets, starts, paths = masked_index(text)
             found = detect(visible, entities, include_heuristics, families)
             if found:
                 edits: list[tuple[int, int, str]] = []
@@ -1227,13 +1270,13 @@ def anonymize_container(
                     raw = [position for position in offsets[start:end] if position >= 0]
                     if not raw:
                         continue
-                    crossed = sorted({structural[index] for index in range(start, end)
-                                      if index in structural})
+                    crossed = _boundary_offenders(_path_at(starts, paths, start),
+                                                  _path_at(starts, paths, end - 1))
                     if crossed:
                         raise UnreadablePart(
                             f"REFUSED — a value of type {ptype} spans a structural boundary "
                             f"({', '.join(crossed)}) in {info.filename}: rewriting it would take "
-                            "text from another element. Nothing was written."
+                            "text from another container. Nothing was written."
                         )
                     placeholder = alloc.for_value(ptype, "".join(text[position] for position in raw))
                     runs = group_runs(raw)
@@ -1429,40 +1472,56 @@ def xml_protect(value: str) -> str:
     return _sax_escape(value, {'"': "&quot;", "'": "&apos;"})
 
 
-def _walk_parts(xml: str, separator: str) -> tuple[str, array.array, dict[int, str]]:
-    """(visible text, the source offset of every one of its characters, the structural separators).
+def _walk_parts(xml: str, separator: str):
+    """(visible text, per-character source offsets, segment starts, per-segment element paths).
 
-    One implementation for both directions. Two details are about NOT spending the text over again:
+    One implementation for both directions. Three details are about NOT spending the text over again:
     the visible text is built from chunks and joined ONCE (a list of single characters is a pointer
-    per character), and the offsets live in an `array('i')` — a Python list of ints costs tens of
-    bytes each, which is how a 64 MB part used to ask for gigabytes. `-1` marks a character that
-    has no source position because it IS the separator standing for a tag.
+    per character), the offsets live in an `array('i')` (a Python list of ints costs tens of bytes
+    each, which is how a 64 MB part used to ask for gigabytes), and the container paths are one small
+    tuple per TEXT SEGMENT rather than per character. `-1` marks a character that has no source
+    position because it IS the separator standing for a tag.
+
+    Element ids, not just names, are what make the paths comparable: two runs of the same paragraph
+    have the same path, two paragraphs do not.
     """
     chunks: list[str] = []
     offsets = array.array("i")
-    # index -> the tag that made the boundary structural, so the refusal can name it: a REFUSED an
-    # operator cannot act on is a dead end, and a dead end is what pushes people to switch the tool off.
-    structural: dict[int, str] = {}
+    stack: list[tuple[str, int]] = []
+    starts: list[int] = []
+    paths: list[tuple[tuple[str, int], ...]] = []
+    opened = 0
     position = 0
     length = 0
     for match in MARKUP_RE.finditer(xml):
         chunk = xml[position:match.start()]
+        starts.append(length)
+        paths.append(tuple(stack))
         chunks.append(chunk)
         offsets.extend(range(position, match.start()))
         length += len(chunk)
         if separator:
-            offender = next((tag for tag in MARKUP_RE.findall(match.group(0))
-                             if not INLINE_TAGS.match(tag)), None)
-            if offender is not None:
-                structural[length] = offender
             chunks.append(separator)
             offsets.append(-1)
             length += 1
+        parsed = _element_name(match.group(0))
+        if parsed is not None:
+            name, closing, self_closing = parsed
+            if closing:
+                if any(open_name == name for open_name, _id in stack):
+                    while stack and stack[-1][0] != name:
+                        stack.pop()
+                    stack.pop()
+            elif not self_closing:
+                opened += 1
+                stack.append((name, opened))
         position = match.end()
     chunk = xml[position:]
+    starts.append(length)
+    paths.append(tuple(stack))
     chunks.append(chunk)
     offsets.extend(range(position, len(xml)))
-    return "".join(chunks), offsets, structural
+    return "".join(chunks), offsets, starts, paths
 
 
 def visible_index(xml: str) -> tuple[str, array.array]:
@@ -1471,7 +1530,7 @@ def visible_index(xml: str) -> tuple[str, array.array]:
     This is what makes a value (or a placeholder) that a word processor split across runs findable
     as one string, and repairable without touching a single tag.
     """
-    visible, offsets, _structural = _walk_parts(xml, "")
+    visible, offsets, _starts, _paths = _walk_parts(xml, "")
     return visible, offsets
 
 

@@ -25,14 +25,19 @@ enforces that they agree.
 
 ### Fixed
 
-- **A refusal on an ordinary footer, corrected the same day.** The rule that refuses a match spanning
-  a structural boundary was stated too narrowly: it accepted only run-level tags, so a company name
-  split by a `<w:tab/>`, a `<w:br/>`, a bookmark or a content control — all of them inside ONE text
-  container — made the whole document "not rewritable" and it fell back to Markdown alone. The
-  classification is now stated in the permissive direction (`INLINE_TAGS`, everything a word
-  processor actually splits a value with) and the refusal message NAMES the tag that blocked it
-  (`w:p`, `dc:title`, ...) instead of leaving the operator with a dead end. Four fixtures cover the
-  realistic splits; they fail if the list is narrowed back.
+- **A refusal on ordinary documents, corrected twice the same day — the mechanism, not the list.**
+  The rule that refuses a match spanning a structural boundary classified TAGS one by one, so the
+  run-properties block Word writes on every run (`<w:rFonts/>`, `<w:sz/>`, `<w:spacing/>`) looked
+  like a boundary and a real footer was refused, leaving the UI with the Markdown alone. It now
+  compares the CONTAINER of the two fragments: the walker records the element path (names AND
+  instance ids) each fragment lives in, and joining is safe when they diverge only on inline
+  elements — a run, a run property, a tab, a break, a bookmark, a hyperlink, a content control.
+  `</w:p><w:p>` and `</dc:title><dc:creator>` still put the halves in different containers and are
+  refused, naming the element. Instance ids are load-bearing: by name alone two runs of one
+  paragraph and two paragraphs are indistinguishable, and the tests fail if the comparison
+  downgrades to names or stops refusing. Verified end-to-end on the real footer shape (run
+  properties between the fragments) and on tab/break/bookmark/content-control splits: all come back
+  as a REDACTED DOCX; the two-paragraph case is refused with `w:p` named.
 - **`--batch` no longer follows a symlink out of the tree it was pointed at.** `is_file()` follows
   links, so a link inside the folder could pull in a file nobody put in scope — including a map from
   the private store, where the real values live. A candidate whose target is inside `~/.anon` or
