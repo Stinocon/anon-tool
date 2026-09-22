@@ -14,6 +14,7 @@ document, so "client document -> work in Pi -> final report" loses nothing.
 Modes
   anon.py FILE [--out PATH] [--map PATH] [--entities PATH] [--stdout] [--quiet]
   anon.py FILE --check [--json]      # no output written; report only (used by anon-guard)
+  anon.py --prune-maps DAYS [--yes]  # list (or delete) the maps older than DAYS
 
 Exit codes
   0  ok (or --check: nothing sensitive found)
@@ -296,6 +297,59 @@ class Rule:
 # Ordered by confidence: a URL/email/JWT/key span is claimed before any heuristic can
 # carve a substring out of it. Dictionary entities (curated, real) come next; IP/phone/host
 # heuristics last.
+
+
+# Street words that introduce an address. The abbreviations (`v.le`, `p.zza`) are how Italian
+# documents write them, and matching them is what keeps `V.le Europa, 12` one span instead of a
+# half-redacted "V.le" plus a visible name.
+ADDRESS_MARKERS = (
+    r"(?:via|viale|v\.?le|piazza|piazzale|p\.?zza|p\.?za|corso|strada|vicolo|largo|lungomare|"
+    r"traversa|borgo|stradone|salita)"
+)
+ADDRESS_SRC = (
+    r"(?<![\w])" + ADDRESS_MARKERS + r"\s+"
+    # Street name: 1..5 tokens, with dots and hyphens allowed inside (`G.`, `Mazzini-Rossi`).
+    r"(?P<strada>[^\W\d_][\w'\u2019.\-]*(?:\s+[\w'\u2019.\-]+){0,4}?)"
+    r"[,\s]+(?:n\.?\s*)?"
+    # Civic number, required, with the Italian suffix (`3/A`, `12-bis`).
+    r"(?P<civico>\d{1,4})(?:\s*[/\-]\s*[A-Za-z0-9]{1,3})?(?![\w])"
+)
+ADDRESS_RE = re.compile(ADDRESS_SRC, re.IGNORECASE)
+
+
+def _address_street(value: str) -> str | None:
+    """The street-name part of a matched address, with its ORIGINAL capitalization.
+
+    `re.IGNORECASE` decides whether a string matches; the captured group still carries the
+    characters as written, which is exactly what `_valid_address` has to read.
+    """
+    shape = ADDRESS_RE.fullmatch(value.strip())
+    return shape.group("strada") if shape else None
+
+
+def _valid_address(value: str) -> bool:
+    """A marker word plus a civic number is not an address on its own.
+
+    `in via del tutto eccezionale, 3 volte` has the shape and none of the content, and it was the
+    false positive that made this rule untrustworthy. Requiring one capitalized name token drops
+    that whole class while keeping every form in the tests' address corpus (`Via G. Verdi 3/A`,
+    `Piazza G. Verdi, 3`, `Via Roma, n. 3`, `V.le Europa 12`, `VIA ROMA 12`).
+
+    Declared trade-off: an all-lowercase address (`via roma 12`) is NOT redacted - precision over
+    recall, the same choice the hostname heuristic makes, and the reason the guard stays usable.
+    """
+    street = _address_street(value)
+    if street is None:
+        return False
+    # `d'Azeglio`, `dell'Università`, `l'Aquila`: the elided article is lowercase and the name is
+    # not, so the capitalization test looks at the part AFTER the apostrophe.
+    for token in street.split():
+        head = token.rsplit("'", 1)[-1].rsplit("\u2019", 1)[-1]
+        if head[:1].isupper():
+            return True
+    return False
+
+
 RULES: tuple[Rule, ...] = (
     Rule(
         "URL",
@@ -370,13 +424,8 @@ RULES: tuple[Rule, ...] = (
         # An address identifies a person as surely as a name does. The marker word is required,
         # and at least one name token plus a civic number: `via Roma 12`, `Piazza G. Verdi, 3`.
         "INDIRIZZO",
-        re.compile(
-            r"(?<![\w])(?:via|viale|v\\.?le|piazza|piazzale|p\\.?zza|corso|strada|vicolo|largo|"
-            r"lungomare)\s+[A-Za-zÀ-Ý][\w'’\-]*(?:\s+[\w'’\-]+){0,4}?[,\s]+(?:n\\.?\s*)?"
-            r"(\d{1,4})(?:\s*[/\-]\s*\d{1,3})?(?![\w])",
-            re.IGNORECASE,
-        ),
-        validator=lambda value: len(re.findall(r"\d", value)) >= 1,
+        ADDRESS_RE,
+        validator=_valid_address,
         family="legal",
     ),
 )
@@ -450,12 +499,51 @@ class Entity:
     type: str
     surface: str
     regex: re.Pattern[str]
+    # Fast-scan metadata filled by `_entity_regexes` (see `entity_hits`). An entry built by hand
+    # has none, and is then scanned directly instead of being skipped.
+    first_token: str = ""
+    inner: str = ""
+    context: str | None = None
+    form: str = "NFC"
 
     def spans(self, text: str):
-        """Yield (start, end, matched_text) for every occurrence."""
+        """Yield (start, end, matched_text) for every occurrence.
+
+        The reference implementation: one full-text pass per entry. Correct and slow — it is
+        what `entity_hits` has to reproduce, and what the equivalence test compares against.
+        """
         for match in self.regex.finditer(text):
             start, end = match.span(ENTITY_GROUP)
             yield start, end, match.group(ENTITY_GROUP)
+
+
+@dataclass(frozen=True)
+class EntityVariant:
+    """One compiled form of a dictionary entry, plus what a fast scan needs to find it."""
+
+    regex: re.Pattern[str]
+    # The same pattern WITHOUT the `(?P<entity>…)` wrapper: several entries that share a
+    # `@context` are compiled into one alternation, which cannot repeat the group name.
+    inner: str
+    # The first name token, normalized like the pattern. Every match contains it verbatim, so a
+    # text that does not contain it can skip the pattern entirely (the whole point of the scan).
+    first_token: str
+    # `@context` entries are NOT literal-scannable: their match starts at the context, not at the
+    # first token. They are grouped by (context, normalization form) and scanned once per group.
+    context: str | None = None
+    form: str = "NFC"
+
+
+def _name_tokens(value: str) -> list[str]:
+    """The surface form split into tokens, with a trailing legal form dropped.
+
+    `len(tokens) > 1`: a company literally named "SA"/"AG"/"AB" must stay declarable. Stripping
+    its only token would produce zero regexes and silently drop the entry (a false negative).
+    """
+    tokens = [token for token in re.split(r"\s+", value.strip()) if token]
+    while len(tokens) > 1 and LEGAL_FORM_RE.fullmatch(tokens[-1]):
+        tokens.pop()
+    return tokens
 
 
 def _entity_regexes(
@@ -464,13 +552,9 @@ def _entity_regexes(
     stem: bool = False,
     case_sensitive: bool = False,
     context: str | None = None,
-) -> list[re.Pattern[str]]:
-    """One regex per Unicode normalization form, so a macOS NFD file matches an NFC dictionary."""
-    tokens = [token for token in re.split(r"\s+", value.strip()) if token]
-    # `len(tokens) > 1`: a company literally named "SA"/"AG"/"AB" must stay declarable. Stripping
-    # its only token would produce zero regexes and silently drop the entry (a false negative).
-    while len(tokens) > 1 and LEGAL_FORM_RE.fullmatch(tokens[-1]):
-        tokens.pop()
+) -> list[EntityVariant]:
+    """One variant per Unicode normalization form, so a macOS NFD file matches an NFC dictionary."""
+    tokens = _name_tokens(value)
     if not tokens:
         return []
     core = NAME_SEPARATOR_RE.join(re.escape(token) for token in tokens) + LEGAL_SUFFIX_RE
@@ -481,15 +565,29 @@ def _entity_regexes(
     # Case sensitivity applies to the ENTITY only: a `@context` marker like "comune di" must
     # still match however it is capitalized in the document, while `Prato` must not match `prato`.
     inner = f"(?-i:{core})" if case_sensitive else core
-    named = f"(?P<{ENTITY_GROUP}>{inner})"
-    if context:
-        # The context is looked for but NOT captured: only the entity span is redacted.
-        named = f"(?:{context})(?<!\\w){named}"
-    else:
-        named = r"(?<!\w)" + named
-    pattern = named + r"(?!\w)"
-    forms = {unicodedata.normalize(form, pattern) for form in ("NFC", "NFD")}
-    return [re.compile(form, re.IGNORECASE) for form in forms]
+    prefix = f"(?:{context})(?<!\\w)" if context else r"(?<!\w)"
+    variants: list[EntityVariant] = []
+    seen: set[str] = set()
+    for form in ("NFC", "NFD"):
+        # The first token is normalized like the pattern: an NFC token compared against an NFD
+        # text (or the reverse) would make the fast scan miss a match the pattern would find.
+        normalized_inner = unicodedata.normalize(form, inner)
+        normalized_context = unicodedata.normalize(form, context) if context else None
+        normalized_prefix = f"(?:{normalized_context})(?<!\\w)" if context else prefix
+        full = f"{normalized_prefix}(?P<{ENTITY_GROUP}>{normalized_inner})(?!\\w)"
+        if full in seen:  # pure-ASCII entries normalize to the same pattern twice
+            continue
+        seen.add(full)
+        variants.append(
+            EntityVariant(
+                regex=re.compile(full, re.IGNORECASE),
+                inner=normalized_inner,
+                first_token=unicodedata.normalize(form, tokens[0]),
+                context=normalized_context,
+                form=form,
+            )
+        )
+    return variants
 
 
 # Directives apply to the entries that FOLLOW them, so one file can mix behaviours (a
@@ -497,6 +595,32 @@ def _entity_regexes(
 KNOWN_DIRECTIVES = ("type", "stem", "match", "context")
 _TRUE = ("", "on", "true", "yes", "1")
 _FALSE = ("off", "false", "no", "0")
+
+# A stem matches any suffix (`Acme` -> `AcmeCorp`, `Acme-DB01`), so a 3-4 character stem quietly
+# redacts unrelated words.
+STEM_MIN_CHARS = 5
+
+# Warned once per stem body per process: the web UI reloads the dictionary on every request, and
+# an operator must not get the same line of stderr on every click.
+_WARNED_STEMS: set[str] = set()
+
+
+def _warn_short_stem(path: Path, lineno: int, value: str) -> None:
+    """Warn — never refuse — when a `@stem` entry is short enough to over-redact.
+
+    Refusing would be a hard error on a live dictionary, and an engine that fails to load is an
+    engine the Pi guard reports as unreachable: it then turns itself OFF for the session. A
+    dictionary nit must not be able to fail open a privacy control.
+    """
+    body = "".join(_name_tokens(value))
+    if len(body) >= STEM_MIN_CHARS or body.casefold() in _WARNED_STEMS:
+        return
+    _WARNED_STEMS.add(body.casefold())
+    print(
+        f"anon: {path.name} line {lineno}: @stem on {value!r} ({len(body)} characters) — a stem "
+        "this short also matches unrelated words; declare the full forms instead",
+        file=sys.stderr,
+    )
 
 
 def load_entities(path: Path) -> list[Entity]:
@@ -567,13 +691,26 @@ def load_entities(path: Path) -> list[Entity]:
             if key in seen:
                 continue
             seen.add(key)
-            regexes = _entity_regexes(
+            variants = _entity_regexes(
                 value, stem=stem, case_sensitive=case_sensitive, context=context
             )
-            if not regexes:
+            if not variants:
                 print(f"anon: {path.name} line {lineno}: '{line_type}' has no usable name, skipped", file=sys.stderr)
                 continue
-            entries.extend(Entity(line_type, value, regex) for regex in regexes)
+            if stem:
+                _warn_short_stem(path, lineno, value)
+            entries.extend(
+                Entity(
+                    line_type,
+                    value,
+                    variant.regex,
+                    first_token=variant.first_token,
+                    inner=variant.inner,
+                    context=variant.context,
+                    form=variant.form,
+                )
+                for variant in variants
+            )
     # Longest surface first, so "Acme Italia" wins over "Acme".
     entries.sort(key=lambda entity: len(entity.surface), reverse=True)
     return entries
@@ -647,6 +784,82 @@ def is_allowed(path: Path, patterns: Iterable[str]) -> bool:
     return False
 
 
+def entity_hits(text: str, entities: Iterable[Entity]):
+    """Yield (entity, start, end) for every dictionary occurrence, with the same matches
+    `Entity.spans` produces — but without one full-text pass per entry.
+
+    That per-entry pass was the whole cost of a scan: a 200-entry dictionary compiles to 400
+    patterns (one per normalization form) and took 13.5s of 13.7s on 2 MB (scripts/bench-check.py).
+    Two stages instead:
+
+      * entries without a `@context` are located by ONE case-insensitive scan over the first
+        token of every entry, then verified ANCHORED at each candidate position — the very match
+        `finditer` would have returned, because a context-free entry always starts at its first
+        token;
+      * entries WITH a `@context` cannot be found that way (their match starts at the context),
+        so they are grouped by (context, normalization form) and scanned once per group.
+
+    An entry built by hand (no scan metadata) is scanned directly: never skipped, so a caller
+    cannot silence an entry by omitting a field.
+    """
+    literals: dict[str, list[Entity]] = {}
+    sources: set[str] = set()
+    groups: dict[tuple[str, str], list[Entity]] = {}
+    direct: list[Entity] = []
+    for entity in entities:
+        if not entity.first_token or not entity.inner:
+            direct.append(entity)
+        elif entity.context:
+            groups.setdefault((entity.context, entity.form), []).append(entity)
+        else:
+            literals.setdefault(entity.first_token.casefold(), []).append(entity)
+            sources.add(entity.first_token)
+
+    if sources:
+        # Longest literal first: the alternation takes the FIRST branch that matches at a position,
+        # and this way that is also the longest — the choice the overlap resolver makes anyway for
+        # matches that start at the same offset.
+        alternation = re.compile(
+            "|".join(re.escape(source) for source in sorted(sources, key=len, reverse=True)),
+            re.IGNORECASE,
+        )
+        for match in alternation.finditer(text):
+            matched = match.group(0)
+            # The alternation takes the FIRST branch that matches, so a longer literal hides a
+            # shorter one starting at the same offset: with `@stem on` on `Ferretti` behind the
+            # literal `Ferrettini`, `Ferrettini` wins and the stem entry — whose `[\w\-]*` DOES
+            # match that word — would never be probed. Every prefix of the matched text is looked
+            # up too, so the shorter entry gets its anchored chance.
+            for end in range(1, len(matched) + 1):
+                for entity in literals.get(matched[:end].casefold(), ()):
+                    anchored = entity.regex.match(text, match.start())
+                    if anchored is not None:
+                        start, span_end = anchored.span(ENTITY_GROUP)
+                        yield entity, start, span_end
+
+    for (context, _form), members in groups.items():
+        # Same order as the caller's list (longest surface first), so a city catalog inside one
+        # context keeps the behavior of one scan per entry.
+        branches = "|".join(
+            f"(?P<e{index}>{member.inner})" for index, member in enumerate(members)
+        )
+        grouped = re.compile(f"(?:{context})(?<!\\w)(?:{branches})(?!\\w)", re.IGNORECASE)
+        for match in grouped.finditer(text):
+            # The group pattern only LOCATES the context positions; each member is then verified
+            # anchored there, exactly as above. An alternation reports one branch per position, so
+            # reading the matched group would silently drop `Roma` when `Roma Nord` is declared in
+            # the same context — the reference scan yields both, and the overlap resolver decides.
+            for member in members:
+                anchored = member.regex.match(text, match.start())
+                if anchored is not None:
+                    start, end = anchored.span(ENTITY_GROUP)
+                    yield member, start, end
+
+    for entity in direct:
+        for start, end, _value in entity.spans(text):
+            yield entity, start, end
+
+
 def detect(
     text: str,
     entities: list[Entity],
@@ -698,9 +911,8 @@ def detect(
 
     for index, rule in enumerate(RULES):
         apply(rule, index)
-    for entity in entities:
-        for start, end, value in entity.spans(text):
-            collect(start, end, ENTITY_PRIORITY, entity.type, value)
+    for entity, start, end in entity_hits(text, entities):
+        collect(start, end, ENTITY_PRIORITY, entity.type, text[start:end])
     if include_heuristics:
         for index, rule in enumerate(HEURISTIC_RULES):
             apply(rule, HEURISTIC_PRIORITY + index)
@@ -806,9 +1018,7 @@ def read_text(path: Path) -> str:
 def _fold_entity(value: str) -> str:
     """Canonical key for fuzzy comparison: case-folded, legal forms dropped, non-alphanumerics
     removed. `Contoso S.r.l.` and `Contoso` fold to the same key."""
-    tokens = [token for token in re.split(r"\s+", value.strip()) if token]
-    while len(tokens) > 1 and LEGAL_FORM_RE.fullmatch(tokens[-1]):
-        tokens.pop()
+    tokens = _name_tokens(value)
     return "".join(char for char in "".join(tokens).casefold() if char.isalnum())
 
 
@@ -1219,6 +1429,66 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prune_maps(args: argparse.Namespace) -> int:
+    """List the maps older than N days — and delete them only with `--yes`.
+
+    `~/.anon/maps` otherwise grows forever: every anonymize writes a map holding the REAL values,
+    and nothing ever removes one. Dry-run by default, because a deletion the operator cannot
+    preview is not something this tool should do on its own.
+    """
+    days = args.prune_maps
+    if days < 1:
+        # `0` would mean "cutoff = now", i.e. delete everything including the map written a second
+        # ago. Deleting is not undoable here, so the smallest accepted window is one day.
+        print("anon: --prune-maps takes at least 1 day (nothing is deleted without --yes)", file=sys.stderr)
+        return 2
+    cutoff = time.time() - days * 86400
+    candidates: list[tuple[Path, os.stat_result]] = []
+    if DEFAULT_MAPS.is_dir():
+        for path in sorted(DEFAULT_MAPS.glob("*.map.json")):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime < cutoff:
+                candidates.append((path, stat))
+
+    removed = 0
+    freed = 0
+    if args.yes:
+        for path, stat in candidates:
+            try:
+                path.unlink()
+            except OSError as exc:
+                print(f"anon: could not remove {path.name}: {exc}", file=sys.stderr)
+                continue
+            removed += 1
+            freed += stat.st_size
+
+    report: dict[str, object] = {
+        **_envelope("anon.py --prune-maps"),
+        "maps_dir": str(DEFAULT_MAPS),
+        "days": days,
+        "candidates": len(candidates),
+        "deleted": removed,
+        "bytes_freed": freed,
+        "applied": bool(args.yes),
+    }
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False))
+        return 0
+    for path, stat in candidates:
+        age = (time.time() - stat.st_mtime) / 86400
+        print(f"anon: {'removed' if args.yes else 'would remove'} {path.name} ({age:.0f} days old, {stat.st_size} bytes)")
+    if not candidates:
+        print(f"anon: no map older than {days} day(s) in {DEFAULT_MAPS}")
+    elif args.yes:
+        print(f"anon: {removed} map(s) removed, {freed} bytes freed")
+    else:
+        print(f"anon: {len(candidates)} map(s) older than {days} day(s) — rerun with --yes to delete them")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="anon.py",
@@ -1231,6 +1501,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--catalogs", help="comma-separated catalog names from ~/.anon/catalogs/")
     parser.add_argument("--patterns", help=f"pattern groups to apply: {', '.join(PATTERN_FAMILIES)}")
     parser.add_argument("--list-catalogs", action="store_true", help="list the installed catalogs and exit")
+    parser.add_argument(
+        "--prune-maps",
+        type=int,
+        metavar="DAYS",
+        help="list the maps in ~/.anon/maps older than DAYS (1 or more) and exit (add --yes to delete them)",
+    )
+    parser.add_argument(
+        "--yes", action="store_true", help="with --prune-maps: actually delete the listed maps"
+    )
     parser.add_argument("--allow", help="path-glob allowlist used by --check (default: ~/.anon/allow.txt)")
     parser.add_argument("--check", action="store_true", help="report sensitive content, write nothing")
     parser.add_argument(
@@ -1265,6 +1544,8 @@ def main(argv: list[str] | None = None) -> int:
         for item in available:
             print(f"{item['name']}\t{item['entries']} entries\t{item['path']}")
         return 0
+    if args.prune_maps is not None:
+        return cmd_prune_maps(args)
     if not args.file:
         print("anon: a file is required (or use --list-catalogs)", file=sys.stderr)
         return 2

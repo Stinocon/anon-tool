@@ -72,6 +72,173 @@ class StaticUiTest(unittest.TestCase):
                 continue
             self.assertIn("nonce=", attributes, f"inline script without a nonce: {match.group(0)}")
 
+    def test_reveal_view_can_be_relocked(self) -> None:
+        """The real values must be removable from the page without a reload, and they expire."""
+        self.assertIn('id="hide-map"', self.HTML)
+        self.assertIn("REVEAL_TTL_MS", self.JS)
+        self.assertIn('$("hide-map").addEventListener', self.JS)
+
+    def test_a_capped_candidate_scan_is_stated_out_loud(self) -> None:
+        """`candidates_capped` means the list is partial: silence would read as 'nothing found'."""
+        self.assertIn("candidates_capped", self.JS)
+
+
+class RateLimitTest(unittest.TestCase):
+    """The API token bucket: a runaway client gets a 429, not a pinned worker thread."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp(prefix="anon-web-rate-"))
+        (cls.tmp / "maps").mkdir()
+        (cls.tmp / "catalogs").mkdir()
+        cls.port = free_port()
+        cls.env = {**os.environ, "ANON_HOME": str(cls.tmp)}
+        cls.process = subprocess.Popen(
+            [sys.executable, str(SERVER), "--port", str(cls.port), "--rate-limit", "3"],
+            env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.time() + 15
+        page = None
+        while time.time() < deadline:
+            if cls.process.poll() is not None:
+                raise AssertionError(f"server died: {cls.process.stderr.read()}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/", timeout=1) as response:
+                    page = response.read().decode()
+                break
+            except Exception:  # noqa: BLE001 - still starting
+                time.sleep(0.2)
+        if page is None:
+            raise AssertionError("server did not start")
+        match = re.search(r'window\.ANON_TOKEN = "([^"]+)"', page)
+        assert match, "token not injected into the page"
+        cls.token = match.group(1)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.process.terminate()
+        try:
+            cls.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.process.kill()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _call(self) -> tuple[int, dict, str]:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/state", headers={TOKEN_HEADER: self.token}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, dict(response.headers), response.read().decode()
+        except urllib.error.HTTPError as error:
+            return error.code, dict(error.headers), error.read().decode()
+
+    def test_the_bucket_refuses_after_the_burst(self) -> None:
+        results = [self._call() for _ in range(8)]
+        statuses = [status for status, _headers, _body in results]
+        self.assertIn(200, statuses, f"nothing succeeded: {statuses}")
+        self.assertIn(429, statuses, f"the limit never fired: {statuses}")
+        first_refusal = statuses.index(429)
+        self.assertTrue(all(code == 200 for code in statuses[:first_refusal]),
+                        f"the burst must come first: {statuses}")
+        self.assertTrue(all(code == 429 for code in statuses[first_refusal:]),
+                        f"the refusal must stay sticky: {statuses}")
+        headers, body = next((headers, body) for status, headers, body in results if status == 429)
+        self.assertIn("Retry-After", headers, "a 429 must say when to come back")
+        # With --rate-limit 3 the bucket refills in ~20s: a constant `1` would send the client
+        # back into the wall again and again.
+        self.assertGreater(int(headers["Retry-After"]), 1, "Retry-After must come from the bucket")
+        self.assertIn("error", body, "the refusal is JSON, not a half-processed job")
+        self.assertIn("too many requests", body)
+
+
+class ConverterCapTest(unittest.TestCase):
+    """The converter's output is capped WHILE it is produced, not after buffering it.
+
+    `communicate()` used to read the whole output into memory first, so a zip bomb inflated the
+    server before the cap was ever compared. The fake converter here writes far more than the
+    cap and never stops on its own: the answer must arrive anyway, and quickly.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp(prefix="anon-web-cap-"))
+        (cls.tmp / "maps").mkdir()
+        (cls.tmp / "catalogs").mkdir()
+        cls.converter = cls.tmp / "fake_converter.py"
+        cls.converter.write_text(
+            "import sys\n"
+            "chunk = 'A' * 4096\n"
+            "for _ in range(20000):\n"  # ~80 MB: the cap must stop it long before this
+            "    sys.stdout.write(chunk)\n"
+            "    sys.stdout.flush()\n",
+            encoding="utf-8",
+        )
+        cls.port = free_port()
+        cls.env = {
+            **os.environ,
+            "ANON_HOME": str(cls.tmp),
+            "ANON_CONVERTER": str(cls.converter),
+            "ANON_CONVERT_MAX_BYTES": "1024",
+        }
+        cls.process = subprocess.Popen(
+            [sys.executable, str(SERVER), "--port", str(cls.port)],
+            env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.time() + 15
+        page = None
+        while time.time() < deadline:
+            if cls.process.poll() is not None:
+                raise AssertionError(f"server died: {cls.process.stderr.read()}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/", timeout=1) as response:
+                    page = response.read().decode()
+                break
+            except Exception:  # noqa: BLE001 - still starting
+                time.sleep(0.2)
+        if page is None:
+            raise AssertionError("server did not start")
+        match = re.search(r'window\.ANON_TOKEN = "([^"]+)"', page)
+        assert match, "token not injected into the page"
+        cls.token = match.group(1)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.process.terminate()
+        try:
+            cls.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.process.kill()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_a_runaway_converter_is_cut_off(self) -> None:
+        import zipfile
+
+        docx = self.tmp / "bomb.docx"
+        with zipfile.ZipFile(docx, "w") as archive:
+            archive.writestr("word/document.xml", "<w:t>x</w:t>")
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/anonymize-document",
+            data=docx.read_bytes(),
+            headers={
+                TOKEN_HEADER: self.token,
+                "X-Filename": "bomb.docx",
+                "Content-Type": "application/octet-stream",
+            },
+            method="POST",
+        )
+        started = time.time()
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status, body = response.status, response.read().decode()
+        except urllib.error.HTTPError as error:
+            status, body = error.code, error.read().decode()
+        elapsed = time.time() - started
+        self.assertEqual(status, 500, body)
+        self.assertIn("more than 1 KB", body)
+        self.assertLess(elapsed, 20, "the cap must abort the child, not wait for it")
+
 
 class WebUiTest(unittest.TestCase):
     @classmethod

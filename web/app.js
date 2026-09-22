@@ -285,6 +285,20 @@ $("copy-redacted").addEventListener("click", async () => {
 });
 $("download-redacted").addEventListener("click", () => download(pending.name, pending.text));
 
+/* The reveal view shows the REAL values. They must not keep living in the page because a tab
+   was left open: auto-relock after REVEAL_TTL_MS, plus an explicit "hide again". */
+const REVEAL_TTL_MS = 60000;
+let revealTimer = null;
+
+function relockMapping(message = "valori reali rimossi dalla pagina") {
+  if (revealTimer) {
+    clearTimeout(revealTimer);
+    revealTimer = null;
+  }
+  $("mapping").innerHTML = `<span class="muted small">${message}</span>`;
+  $("hide-map").hidden = true;
+}
+
 $("reveal-map").addEventListener("click", async () => {
   if (!state.lastMapId) return;
   try {
@@ -302,10 +316,15 @@ $("reveal-map").addEventListener("click", async () => {
       row.lastChild.textContent = info.original;
       mapping.append(row);
     }
+    $("hide-map").hidden = false;
+    if (revealTimer) clearTimeout(revealTimer);
+    revealTimer = setTimeout(() => relockMapping("valori reali rimossi dalla pagina (tempo scaduto)"), REVEAL_TTL_MS);
   } catch (error) {
     $("mapping").textContent = String(error.message || error);
   }
 });
+
+$("hide-map").addEventListener("click", () => relockMapping());
 
 /* ---------------------------------------------------------- deanonimizza */
 $("run-deanon").addEventListener("click", async () => {
@@ -382,6 +401,16 @@ $("run-audit").addEventListener("click", async () => {
 
     const near = $("audit-near");
     near.innerHTML = "";
+    if (result.candidates_capped) {
+      // The engine stops the near-miss search at a bound (400 words / 200 entities). Said out
+      // loud: a short list would otherwise read as "nothing suspicious" when it is only partial.
+      const row = document.createElement("div");
+      row.className = "row bad";
+      row.innerHTML = '<span class="k">limite scansione</span><span></span>';
+      row.lastChild.textContent =
+        "elenco parziale: la ricerca dei candidati si è fermata ai limiti (400 parole / 200 entità)";
+      near.append(row);
+    }
     if (result.placeholders_present) {
       const row = document.createElement("div");
       row.className = "row";

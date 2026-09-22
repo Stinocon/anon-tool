@@ -6,6 +6,10 @@
 #
 # The image ships the engine, its own converter and the front-end. The DATA (entities.txt, the
 # maps) lives in the mounted volume, never in the image.
+#
+# The converter is installed from requirements-anydoc.txt with --require-hashes: every candidate
+# artifact is pinned to its published sha256, so a swapped wheel cannot enter the image. Refresh
+# the pins with `python3 scripts/pin-converter.py > requirements-anydoc.txt`.
 
 FROM python:3.12-slim
 
@@ -19,13 +23,22 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=1407
 
 WORKDIR /app
-COPY anon.py deanon.py convert.py ./
+COPY anon.py deanon.py ./
+COPY requirements-anydoc.txt ./
 COPY catalogs ./catalogs
 COPY web ./web
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint
+# Staged OUTSIDE /app: a smarter image must not claim a converter it does not have (/api/state
+# would answer `converter: true` and the UI would offer docx/pdf uploads that then fail). COPY
+# cannot be conditional, so presence is decided by the same RUN that installs the dependency.
+COPY convert.py /opt/convert.py
 
 RUN chmod +x /usr/local/bin/entrypoint \
- && if [ "$WITH_CONVERTER" = "1" ]; then pip install --no-cache-dir "firecrawl-anydoc==0.2.3"; fi \
+ && if [ "$WITH_CONVERTER" = "1" ]; then \
+        pip install --no-cache-dir --require-hashes -r requirements-anydoc.txt \
+        && mv /opt/convert.py /app/convert.py ; \
+    fi \
+ && rm -f /opt/convert.py \
  && useradd --create-home --uid 10001 anon \
  && mkdir -p /data/maps /data/catalogs \
  && chown -R anon:anon /data /app

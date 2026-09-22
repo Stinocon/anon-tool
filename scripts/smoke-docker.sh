@@ -91,4 +91,14 @@ fi
 docker port anon-tool-smoke | grep -q "^1407/tcp -> 127.0.0.1:${PORT}$" || fail "port is not loopback-only"
 pass "port published on 127.0.0.1 only"
 
+# The text-only variant must be discoverable, and it must not exist only as an undocumented
+# build arg. `config` is enough here: the image itself is built by the profile, not by this gate.
+if docker compose version >/dev/null 2>&1; then
+  SERVICES=$(cd "$REPO" && docker compose --profile slim config --services 2>/dev/null | sort | tr '\n' ' ')
+  case "$SERVICES" in
+    *anon-tool-slim*) pass "compose profile 'slim' exposes anon-tool-slim" ;;
+    *) fail "compose profile 'slim' is missing (services: ${SERVICES:-none})" ;;
+  esac
+fi
+
 printf '\nALL DOCKER SMOKE CHECKS PASSED\n'

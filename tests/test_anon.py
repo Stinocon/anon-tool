@@ -64,6 +64,54 @@ class RoundTripTest(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
+    def test_fast_entity_scan_reproduces_the_reference_scan(self) -> None:
+        """`entity_hits` is an optimization, not a rule: it must yield what `Entity.spans` yields.
+
+        The dictionary covers every axis the fast scan branches on: a stem, a case-sensitive
+        entry, a `@context` entry, an accented name (NFC and NFD in the text), legal forms and
+        multi-word names.
+        """
+        path = Path(self._tmpdir) / "rich.txt"
+        path.write_text(
+            "\n".join([
+                "@type CLIENTE",
+                "Ferraris Group",
+                "@stem on",
+                "@type SERVIZIO",
+                "Ferretti",
+                "@stem off",
+                "@match case-sensitive",
+                "@type CITTÀ",
+                "Prato",
+                "@match insensitive",
+                "@type SEDE",
+                r"@context (?:sede di)\s+",
+                "Brescia",
+                "Roma Nord",
+                "Roma",
+                "@type PERSONA",
+                "Ferraris Gianni",
+                "König Söhne",
+                "@type SERVIZIO",
+                "Ferrettini Group",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        entities = anon.load_entities(path)
+        text = (
+            "Ferraris Group e ferraris group; Ferretti-DB01 e Ferretti; Prato ma non prato; "
+            "sede di Brescia e Brescia; sede di Roma Nord; Ferraris Gianni; "
+            "König Söhne e Ko\u0308nig So\u0308hne; Ferrettini e Ferrettini Group.\n"
+        )
+        reference = sorted(
+            (start, end, entity.type) for entity in entities for start, end, _ in entity.spans(text)
+        )
+        fast = sorted(
+            (start, end, entity.type) for entity, start, end in anon.entity_hits(text, entities)
+        )
+        self.assertTrue(reference, "the fixture must actually match")
+        self.assertEqual(fast, reference)
+
     def test_roundtrip_is_lossless(self) -> None:
         original = (
             "Spett.le Acme Italia S.r.l. (rif. Acme),\n"
@@ -408,6 +456,49 @@ class CliTest(unittest.TestCase):
         self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
         self.assertIn('"line": 3', res.stdout)
 
+    def test_prune_maps_lists_and_deletes_only_with_yes(self) -> None:
+        """The maps hold the REAL values: a deletion must be previewable and explicit."""
+        maps = self.tmp / "maps"
+        maps.mkdir()
+        old = maps / "20200101-000000-aaaaaa.map.json"
+        fresh = maps / "20260101-000000-bbbbbb.map.json"
+        for path in (old, fresh):
+            path.write_text('{"entries": {}}', encoding="utf-8")
+        aged = 1_600_000_000  # 2020-09-13: deterministic, and unambiguously older than 30 days
+        os.utime(old, (aged, aged))
+
+        listed = self.run_anon("--prune-maps", "30")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn(old.name, listed.stdout)
+        self.assertIn("--yes", listed.stdout)
+        self.assertTrue(old.exists(), "a dry run must not delete anything")
+
+        report = json.loads(self.run_anon("--prune-maps", "30", "--json").stdout)
+        self.assertEqual(report["schema"], anon.SCHEMA)
+        self.assertEqual(report["candidates"], 1)
+        self.assertFalse(report["applied"])
+
+        refused = self.run_anon("--prune-maps", "0", "--yes")
+        self.assertEqual(refused.returncode, 2, "0 days would mean 'delete everything'")
+        self.assertTrue(old.exists() and fresh.exists(), "a refused run must not delete anything")
+
+        applied = self.run_anon("--prune-maps", "30", "--yes")
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertFalse(old.exists(), "the old map must be gone")
+        self.assertTrue(fresh.exists(), "a recent map must survive")
+
+    def test_short_stem_warns_and_a_long_one_does_not(self) -> None:
+        """A 3-character stem redacts unrelated words: say so, but never refuse (see the note)."""
+        stem_dictionary = self.tmp / "stems.txt"
+        stem_dictionary.write_text("@stem on\nSERVIZIO|Abb\nSERVIZIO|Ferretti\n", encoding="utf-8")
+        src = self.tmp / "stems-doc.txt"
+        src.write_text("il servizio Abb e Ferretti\n", encoding="utf-8")
+        res = self.run_anon(str(src), "--entities", str(stem_dictionary), "--stdout")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("'Abb'", res.stderr)
+        self.assertNotIn("'Ferretti'", res.stderr)
+        self.assertIn("[SERVIZIO-1-", res.stdout)
+
     def test_catalogs_flag_and_pattern_groups(self) -> None:
         catalogs = self.tmp / "catalogs"
         catalogs.mkdir()
@@ -448,6 +539,64 @@ class CliTest(unittest.TestCase):
         res = self.run_anon(str(src), "--check", "--json")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertIn('"allowed": true', res.stdout)
+
+
+class AddressCorpusTest(unittest.TestCase):
+    """The address rule, measured on a corpus instead of reasoned about.
+
+    Before this pass the rule had false negatives on this list (`V.le`, `P.zza`, `G.`, `n. 3`,
+    `3/A` were all missed, because the abbreviated markers were escaped twice inside the pattern)
+    AND it redacted prose (`in via del tutto eccezionale, 3 volte`). Both directions are pinned.
+    """
+
+    POSITIVE = (
+        "Sede in Via Roma 12 per la verifica",
+        "Ufficio in V.le Europa 12, secondo piano",
+        "Sede in P.zza Garibaldi 3",
+        "Recapito: Piazza G. Verdi, 3",
+        "Recapito: Via Roma, n. 3",
+        "Recapito: Via G. Verdi 3/A",
+        "Corso Buenos Aires, 12-bis",
+        "Piazza del Campo 1, Siena",
+        "Viale dei Mille 3",
+        "via della Repubblica 7",
+        "VIA ROMA 12",
+        "Indirizzo di fatturazione: Via dei Mille, 21/A",
+        "Recapito: Via d'Azeglio 1",
+        "Sede legale: Via dell'Università 12",
+        "Uffici in Corso d'Italia 5",
+        "Via l'Aquila 4",
+    )
+
+    NEGATIVE = (
+        "in via del tutto eccezionale, 3 volte l'anno",
+        "percorrere la via libera 4 corsie",
+        "il viale alberato 2 piani",
+        "nessun indirizzo in questa riga",
+        "via roma 12 in minuscolo (trade-off dichiarato: non redatto)",
+        "il corso d'acqua 2 metri",
+    )
+
+    def setUp(self) -> None:
+        self.empty = Path(tempfile.mkdtemp(prefix="anon-address-")) / "empty.txt"
+        self.entities = anon.load_entities(self.empty)
+
+    def test_addresses_are_detected(self) -> None:
+        for text in self.POSITIVE:
+            self.assertTrue(anon.detect(text, self.entities), f"missed address: {text!r}")
+
+    def test_prose_is_not_redacted(self) -> None:
+        for text in self.NEGATIVE:
+            self.assertEqual(anon.detect(text, self.entities), [], f"false positive: {text!r}")
+
+    def test_the_civic_suffix_is_part_of_the_span(self) -> None:
+        """A half-redacted `Via G. Verdi 3` plus a visible `/A` is worse than no redaction."""
+        text = "Recapito: Via G. Verdi 3/A"
+        found = anon.detect(text, self.entities)
+        self.assertEqual(len(found), 1)
+        start, end, ptype = found[0]
+        self.assertEqual(ptype, "INDIRIZZO")
+        self.assertEqual(text[start:end], "Via G. Verdi 3/A")
 
 
 class ValidatorTest(unittest.TestCase):
@@ -744,19 +893,51 @@ class DeanonContainerTest(unittest.TestCase):
             self.assertIn("mario.rossi@contoso.it", body)
             self.assertNotIn("[EMAIL-1]", self._visible(archive.read("word/document.xml")))
 
-    def test_split_placeholder_is_reported_not_silently_ignored(self) -> None:
-        """Word splits a placeholder across runs; the raw XML then has no contiguous string."""
+    def test_split_placeholder_is_repaired_without_touching_the_markup(self) -> None:
+        """Word splits a placeholder across runs; the value goes in the FIRST fragment.
+
+        Merging the runs would move whatever formatting they carry, so the repair never touches
+        markup: it writes the value where the first fragment was and empties the others. The
+        paragraph structure must therefore come out identical, and the part well-formed.
+
+        This supersedes `..._is_reported_not_silently_ignored`: that behavior (report and exit 3)
+        was the honest workaround while a repair was risky, not the goal.
+        """
         docx = self._make_docx("split.docx", {
             "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
             + self._para("Referente: [EMAIL-") + self._para("1] fine") + "</w:body></w:document>",
         })
         res = self._deanon(docx, "split.deanon.docx")
-        self.assertEqual(res.returncode, 3, "a leftover must NOT report success")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         report = json.loads(res.stdout)
-        self.assertFalse(report["complete"])
-        self.assertEqual(report["remaining"], 1)
-        self.assertEqual(report["remaining_parts"], ["word/document.xml"])
-        self.assertIn("INCOMPLETE", res.stderr)
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["repaired"], 1)
+        self.assertEqual(report["remaining"], 0)
+
+        import xml.etree.ElementTree as ET
+        import zipfile
+
+        with zipfile.ZipFile(self.tmp / "split.deanon.docx") as archive:
+            self.assertIsNone(archive.testzip(), "the rewritten archive must be readable")
+            raw = archive.read("word/document.xml")
+            body = raw.decode()
+            ET.fromstring(raw)  # a repair must never break well-formedness
+            visible = self._visible(raw)
+            self.assertNotIn("[EMAIL-", visible)
+            self.assertIn("fine", visible)
+            self.assertEqual(body.count("<w:p>"), 2, "the paragraph structure must be untouched")
+
+    def test_fragment_across_two_parts_is_still_reported(self) -> None:
+        """A placeholder split between two PARTS cannot be repaired, and must stay fail-closed."""
+        docx = self._make_docx("crosspart.docx", {
+            "word/document.xml": '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+            + self._para("[EMAIL-") + "</w:body></w:document>",
+            "word/header1.xml": '<?xml version="1.0"?><w:hdr xmlns:w="x">'
+            + self._para("1] nell'header") + "</w:hdr>",
+        })
+        res = self._deanon(docx, "crosspart.deanon.docx")
+        self.assertEqual(res.returncode, 3, "an unrepairable split must not report success")
+        self.assertIn("NOTHING RESTORED", res.stderr)
 
     def test_odf_mimetype_stays_first_and_stored(self) -> None:
         import zipfile

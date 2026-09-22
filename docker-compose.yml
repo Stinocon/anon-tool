@@ -1,5 +1,7 @@
 # anon-tool — local UI. `docker compose up -d` and open http://127.0.0.1:1407
 #
+# Text-only variant: `docker compose --profile slim up -d anon-tool-slim` on port 1408.
+#
 # SECURITY: the UI has NO authentication. It is therefore published on 127.0.0.1 only. Changing
 # the port mapping to "1407:1407" would expose your documents and your entity dictionary to the
 # whole network — don't, unless you really mean it.
@@ -23,6 +25,41 @@ services:
     read_only: true
     tmpfs:
       - /tmp # the converter needs scratch space
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:1407/',timeout=3)"
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+
+  # Text-only variant (md/txt/csv/json/yaml): same engine, no converter, smaller image. It is a
+  # PROFILE, so `docker compose up` starts the default service only; run this one with either
+  #   docker compose --profile slim up -d anon-tool-slim      (or: make up-slim)
+  # It uses its own port so the two can coexist, and /api/state answers `converter: false`
+  # because the slim image genuinely has none.
+  anon-tool-slim:
+    profiles: ["slim"]
+    build:
+      context: .
+      args:
+        WITH_CONVERTER: "0"
+    image: anon-tool:slim
+    container_name: anon-tool-slim
+    ports:
+      - "127.0.0.1:${ANON_SLIM_PORT:-1408}:1407"
+    volumes:
+      - "${ANON_HOME:-$HOME/.anon}:/data"
+    environment:
+      ANON_HOME: /data
+    read_only: true
+    tmpfs:
+      - /tmp
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped

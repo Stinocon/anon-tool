@@ -9,10 +9,11 @@
 
 IMAGE  ?= anon-tool:local
 PORT   ?= 1407
+SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up down logs restart build native test smoke clean
+.PHONY: help up up-slim down logs restart build native test smoke clean
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -20,6 +21,12 @@ help:
 up: ## start the container (loopback only)
 	$(COMPOSE) up -d --build
 	@echo "anon-tool on http://127.0.0.1:$(PORT)"
+
+up-slim: ## start the text-only variant (no converter, port $(SLIM_PORT))
+	# The port is passed explicitly: compose reads ANON_SLIM_PORT, and printing a different
+	# variable than the one that binds the socket is how a URL ends up being wrong.
+	ANON_SLIM_PORT=$(SLIM_PORT) $(COMPOSE) --profile slim up -d --build anon-tool-slim
+	@echo "anon-tool (slim) on http://127.0.0.1:$(SLIM_PORT)"
 
 down: ## stop the container
 	$(COMPOSE) down

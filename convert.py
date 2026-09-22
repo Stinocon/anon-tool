@@ -10,8 +10,8 @@ installation.
     convert.py --doctor        # is a converter available?
 
 Resolution order for the `anydoc` engine:
-  1. importable in the running interpreter (the container installs it, `pip install
-     firecrawl-anydoc==0.2.3`);
+  1. importable in the running interpreter (the container installs it from
+     `requirements-anydoc.txt`, hashes pinned: `pip install --require-hashes -r ...`);
   2. otherwise a pinned venv — `$ANON_CONVERTER_PYTHON`, else `~/.pi/agent/venvs/anydoc-venv`
      (the venv the `docs` skill provisions), created on demand with `--install`.
 
@@ -28,6 +28,9 @@ import sys
 from pathlib import Path
 
 PIN = "firecrawl-anydoc==0.2.3"
+# The hashed pin lives next to this script (and in the repository). Installing through it makes
+# pip verify the wheel's digest instead of trusting whatever the index serves today.
+REQUIREMENTS = Path(__file__).resolve().parent / "requirements-anydoc.txt"
 DEFAULT_VENV = Path.home() / ".pi" / "agent" / "venvs" / "anydoc-venv"
 
 _CONVERT_CODE = r"""
@@ -67,7 +70,20 @@ def ensure_venv() -> bool:
 
     venv.create(DEFAULT_VENV, with_pip=True)
     subprocess.run([str(python), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], check=False)
-    subprocess.run([str(python), "-m", "pip", "install", "--quiet", PIN], check=True)
+    if REQUIREMENTS.is_file():
+        # --require-hashes: every artifact must match a published digest, so a swapped wheel at
+        # the index cannot silently enter the venv.
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--quiet", "--require-hashes", "-r", str(REQUIREMENTS)],
+            check=True,
+        )
+    else:
+        print(
+            f"convert: {REQUIREMENTS.name} not found next to this script — falling back to a version "
+            f"pin ({PIN}) without a digest check",
+            file=sys.stderr,
+        )
+        subprocess.run([str(python), "-m", "pip", "install", "--quiet", PIN], check=True)
     return has_anydoc(str(python))
 
 

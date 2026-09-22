@@ -21,9 +21,9 @@ Exit codes
   0  every placeholder was replaced
   2  error (unreadable/empty document, unparsable map, unusable arguments)
   3  PARTIAL — some placeholders this map produced are still visible in the output. Reported,
-     never silent: a document that still contains `[EMAIL-3]` is not deliverable. The usual cause
-     is Word splitting a run (`[EMAIL-` + `3]` in two text nodes), so no contiguous string was
-     there to replace.
+     never silent: a document that still contains `[EMAIL-3]` is not deliverable. A placeholder
+     that Word split across two runs (`[EMAIL-` + `3]` in two text nodes) is REPAIRED
+     automatically; what is left is a fragment split across two PARTS, or a hand-edited token.
 
 Design notes
   * Placeholders are replaced longest-first, so `[EMAIL-10]` can never be partially rewritten by
@@ -131,6 +131,83 @@ def deanonize(
     return text, restored
 
 
+def visible_index(xml: str) -> tuple[str, list[int]]:
+    """(the text a reader sees, the offset in `xml` of every one of its characters).
+
+    Word splits a placeholder across runs (`<w:t>[EMAIL-</w:t></w:r><w:r><w:t>1]</w:t>`), so the
+    contiguous string is absent from the raw bytes while the reader plainly sees `[EMAIL-1]`.
+    The visible view is what must be compared, and the index is what makes a repair possible
+    without touching a single tag.
+    """
+    visible: list[str] = []
+    offsets: list[int] = []
+    position = 0
+    for match in MARKUP_RE.finditer(xml):
+        visible.extend(xml[position:match.start()])
+        offsets.extend(range(position, match.start()))
+        position = match.end()
+    visible.extend(xml[position:])
+    offsets.extend(range(position, len(xml)))
+    return "".join(visible), offsets
+
+
+def repair_split_placeholders(
+    text: str,
+    entries: dict[str, dict[str, str]],
+    protect: "callable | None" = None,
+) -> tuple[str, int]:
+    """Restore placeholders that a word processor split across two runs.
+
+    The placeholder is written in fragments in separate text nodes, so `deanonize` found nothing
+    contiguous to replace. Merging those nodes into one would move the formatting of whatever
+    they carry, so instead the real value goes in the FIRST fragment and the remaining fragments
+    are emptied: text inside the same nodes is untouched, no markup is added or removed, and the
+    part stays well-formed. Only characters of the placeholder itself are ever deleted.
+
+    Returns (repaired text, number of placeholders repaired).
+    """
+    if not entries:
+        return text, 0
+    visible, offsets = visible_index(text)
+    known = [placeholder for placeholder in entries if placeholder in visible]
+    if not known:
+        return text, 0
+    # Longest placeholder first (as in `deanonize`), so `[EMAIL-10]` is never read as `[EMAIL-1`.
+    known.sort(key=len, reverse=True)
+
+    edits: list[tuple[int, int, str]] = []
+    repaired = 0
+    cursor = 0
+    while cursor < len(visible):
+        placeholder = next((item for item in known if visible.startswith(item, cursor)), None)
+        if placeholder is None:
+            cursor += 1
+            continue
+        raw = offsets[cursor:cursor + len(placeholder)]
+        cursor += len(placeholder)
+        runs: list[list[int]] = []
+        for position in raw:
+            if runs and position == runs[-1][-1] + 1:
+                runs[-1].append(position)
+            else:
+                runs.append([position])
+        if len(runs) == 1:
+            continue  # contiguous: the normal pass already replaced it
+        value = entries[placeholder].get("original")
+        if value is None:
+            continue
+        # The FIRST fragment is replaced by the value, the other fragments are emptied: only
+        # characters of the placeholder itself are ever touched.
+        edits.append((runs[0][0], runs[0][-1] + 1, protect(value) if protect else value))
+        repaired += 1
+        for run in runs[1:]:
+            edits.append((run[0], run[-1] + 1, ""))
+
+    for start, end, replacement in sorted(edits, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    return text, repaired
+
+
 def count_placeholders(text: str, entries: dict[str, dict[str, str]]) -> tuple[int, int]:
     """(still-restorable placeholders, placeholder-shaped tokens not in the map)."""
     known = sum(text.count(placeholder) for placeholder in entries)
@@ -171,6 +248,7 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
     entries = restorable(entries)
     chunks: list[tuple[zipfile.ZipInfo, bytes]] = []
     parts: dict[str, int] = {}
+    repairs = 0
     with zipfile.ZipFile(source) as archive:
         for info in archive.infolist():
             blob = archive.read(info)
@@ -178,8 +256,10 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
             if text is not None:
                 protect = xml_protect if is_xml_part(info.filename) else None
                 text, replaced = deanonize(text, entries, protect)
-                if replaced:
-                    parts[info.filename] = parts.get(info.filename, 0) + replaced
+                text, repaired = repair_split_placeholders(text, entries, protect)
+                if replaced or repaired:
+                    parts[info.filename] = parts.get(info.filename, 0) + replaced + repaired
+                    repairs += repaired
                 blob = text.encode(codec or "utf-8", "surrogateescape")
             chunks.append((info, blob))
     _write_atomic(output, chunks)
@@ -207,6 +287,7 @@ def deanon_container(source: Path, output: Path, entries: dict[str, dict[str, st
         "format": "container",
         "parts": parts,
         "replaced": sum(parts.values()),
+        "repaired": repairs,
         "remaining": remaining,
         "remaining_parts": remaining_parts,
         "unknown_placeholders": unknown,
@@ -221,6 +302,7 @@ def deanon_text(source: Path, output: Path, entries: dict[str, dict[str, str]]) 
     entries = restorable(entries)
     text = source.read_text(encoding="utf-8", errors="replace")
     restored, replaced = deanonize(text, entries)
+    restored, repaired = repair_split_placeholders(restored, entries)
     remaining, unknown = count_placeholders(restored, entries)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.name}.tmp-{os.urandom(4).hex()}")
@@ -235,6 +317,7 @@ def deanon_text(source: Path, output: Path, entries: dict[str, dict[str, str]]) 
         "format": "text",
         "parts": {source.name: replaced},
         "replaced": replaced,
+        "repaired": repaired,
         "remaining": remaining,
         "remaining_parts": [source.name] if remaining else [],
         "unknown_placeholders": unknown,
@@ -334,10 +417,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"deanon: INCOMPLETE — {remaining} placeholder(s) this map produced are still visible\n"
             f"        in the output ({where}). A document still containing them is NOT\n"
-            "        deliverable. Usual cause: Word split a placeholder across two text runs\n"
-            "        (`[EMAIL-` + `3]`), so no contiguous string was there to replace.\n"
-            "        Fix: regenerate the document from the Markdown (`pandoc final.md -o out.docx`)\n"
-            "        instead of editing the .docx by hand, then run deanon again.",
+            "        deliverable. A placeholder split inside ONE text part is repaired\n"
+            "        automatically, so what is left is either a fragment split across two\n"
+            "        parts (document + header), a placeholder edited by hand, or a document\n"
+            "        that does not belong to this map. Fix: regenerate it from the Markdown\n"
+            "        (`pandoc final.md -o out.docx`) instead of editing the .docx by hand,\n"
+            "        then run deanon again.",
             file=sys.stderr,
         )
     if not remaining and unknown:

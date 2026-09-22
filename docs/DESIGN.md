@@ -72,7 +72,8 @@ in the token itself:
 [EMAIL-1-a3f9]      # 1st email of the run tagged a3f9
 ```
 
-- `anon.py` generates a fresh tag per run (4 hex chars), records it in the map, and stamps every
+- `anon.py` generates a fresh tag per run (6 hex digits: 4 made a collision likely enough to be
+  worth fixing), records it in the map, and stamps every
   placeholder with it. `--tag` pins it when reproducibility matters.
 - `deanon.py` resolves placeholders exactly, so a foreign map leaves them untouched and the run
   reports INCOMPLETE (exit 3) instead of substituting the wrong values.
@@ -100,6 +101,26 @@ One entry covers a family of spellings, deterministically:
 Deliberately *not* matched: intra-word variation (`Contoso` ≠ `Contoso` unless declared as an
 alias). Fuzzy matching was rejected: in a privacy tool a fuzzy rule that silently misses is worse
 than an explicit alias the operator adds once.
+
+### 5b. Scanning cost (why the dictionary is not scanned entry by entry)
+
+A 200-entry dictionary compiles to 400 patterns (one per normalization form). Scanning each one over
+the whole text was the entire cost of `--check`: 13.7 s for 2 MB, measured, which is what made the
+guard time out. The engine now locates candidates with ONE case-insensitive pass over the first
+token of every entry and verifies each entry anchored at those positions — the same match, ~1.8-2.0
+MB/s (`scripts/bench-check.py`). Entries with a `@context` cannot be found that way, so they are
+grouped by context and the group pattern is used as a locator, again with anchored verification, so
+`Roma` is still found next to `Roma Nord`.
+
+Two detection rules carry their precision in a validator rather than in the pattern:
+
+- **addresses** require a street marker, a name and a civic number, and at least one capitalized
+  name token (read after an elided article: `d'Azeglio`, `dell'Università`). That is what separates
+  `Via Roma 12` from `in via del tutto eccezionale, 3 volte`. Declared trade-off: an all-lowercase
+  address (`via roma 12`) is not redacted.
+- **`@stem`** entries warn (never refuse) below 5 characters: a stem matches any suffix, so a short
+  one redacts unrelated words — and refusing would make the engine fail to load, which the Pi guard
+  reads as "engine unreachable" and turns into a disabled guard.
 
 ## 6. Catalogs (built-in lists) and pattern groups
 
@@ -136,9 +157,12 @@ The web UI is the only part with a network surface, so its perimeter is explicit
 - **no client-supplied paths**: uploads land in a per-request temp directory under generated
   names and are deleted afterwards; the server never reads or writes an arbitrary path; results
   are streamed back as a download instead of written into the filesystem.
-- size limits on uploads (32 MB), no shell, no `eval`, no content or value logging;
+- size limits on uploads (160 MB) and on `/api/*` requests per minute (token bucket, `--rate-limit`),
+  no shell, no `eval`, no content or value logging;
 - the socket has a 30 s read timeout, so a client that announces a body and stalls cannot pin a
-  worker thread; the external converter is bounded in time (300 s) and output (32 MB);
+  worker thread; the external converter runs in its own process group, is killed as a group, is
+  bounded in time (300 s, `ANON_CONVERT_TIMEOUT`) and in output — the cap is applied WHILE the
+  output is produced (`ANON_CONVERT_MAX_BYTES`, default 160 MB), never after buffering it;
 - the container runs as a non-root user, with a read-only root filesystem, `no-new-privileges`,
   and only the data volume (`/data`) plus a tmpfs writable.
 - `/api/maps` exposes counts only; the placeholder→real-value mapping is shown only behind an
@@ -163,6 +187,9 @@ calls it implicitly; the engine itself keeps zero network capability.
 - images/screenshots are not scannable (pixels), so a screenshot of a client document passes;
 - office containers cannot be anonymized directly — they are converted to Markdown first, and
   `anon.py` refuses binary input rather than producing a corrupted file *named* "redacted";
-- a file too large to scan is blocked (fail-closed), not silently skipped;
+- a file too large to scan is blocked (fail-closed), and so is a file whose check does not finish
+  within the guard's timeout: the guard does not know whether it is sensitive, so it refuses rather
+  than guesses (12 MB / 20 s, sized from `scripts/bench-check.py`);
 - if the engine cannot run at all, the Pi guard fails open **with a visible indicator** — a
-  broken checker must not brick the editor.
+  broken checker must not brick the editor. That is the ONLY fail-open path left, and it is
+  reserved for a genuinely missing engine (python absent, crash), never for a slow file.

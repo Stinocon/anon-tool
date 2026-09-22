@@ -73,14 +73,16 @@ python3 anon.py report.txt --audit               # is an ALREADY redacted file r
 python3 deanon.py final.docx <map.json>          # put the real values back (text or .docx/.xlsx/.odt)
 python3 convert.py report.docx > report.md       # docx/pdf -> Markdown, locally
 python3 anon.py --list-catalogs                  # which built-in lists are installed
+python3 anon.py --prune-maps 90                  # list the maps older than 90 days (--yes deletes)
 ```
 
 ### Web UI
 
 ```bash
 docker compose up -d                             # -> http://127.0.0.1:1407
+docker compose --profile slim up -d anon-tool-slim   # text formats only, no converter, port 1408
 # or, without Docker:
-python3 web/server.py
+python3 web/server.py                            # --rate-limit N caps /api/* (default 120/min)
 ```
 
 Four tabs, one primary action each: **Anonimizza**, **Deanonimizza**, **Verifica**, **Dizionario**.
@@ -136,6 +138,10 @@ a non-loopback bind unless `--allow-lan` is passed explicitly. Requests must car
 `Host` header and a per-run token delivered through a CSP nonce; a foreign `Origin` is refused. No
 client-supplied filesystem path is ever used.
 
+The API is additionally rate limited (token bucket, `--rate-limit`, 0 disables it), so a runaway
+script cannot pin every worker thread, and the document converter's output is capped *while* it is
+produced rather than after it has been buffered.
+
 The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 [`docs/DESIGN.md`](docs/DESIGN.md).
 
@@ -144,7 +150,16 @@ The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 ```bash
 make test      # engine suite, web integration, UI load check
 make smoke     # build the container and exercise every endpoint
+make up-slim   # the text-only container variant (port 1408)
+
+# How fast can the engine check a file? The Pi guard's size cap is derived from this measurement.
+python3 scripts/bench-check.py --mb 8 --entities 200
+# Refresh the converter's hashed pin after a version bump.
+python3 scripts/pin-converter.py > requirements-anydoc.txt
 ```
+
+The converter is installed from `requirements-anydoc.txt` with `--require-hashes`, so a swapped
+wheel cannot enter the image or the native venv.
 
 `docs/OPEN-ISSUES.md` records what is intentionally left for a later pass.
 

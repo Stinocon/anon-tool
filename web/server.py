@@ -15,10 +15,12 @@ because it is loopback-only and unauthenticated, so:
   * every `/api/*` request must carry the per-run token, injected into the page at load time —
     a page from another origin cannot read it, and custom headers require a CORS preflight we
     never grant (CSRF);
-  * a present `Origin` header must be our own.
+  * a present `Origin` header must be our own;
+  * `/api/*` is rate limited (token bucket), so a runaway script cannot pin every worker thread;
   * NO client-supplied filesystem path is ever used: uploaded bytes land in a per-request temp
     directory under a generated name and are deleted afterwards;
-  * request bodies are capped; no shell, no eval; the server logs no content and no values.
+  * request bodies are capped; the converter's output is capped WHILE it is produced;
+  * no shell, no eval; the server logs no content and no values.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import argparse
 import base64
 import json
 import os
+import signal
 import shutil
 import socketserver
 import subprocess
@@ -44,6 +47,14 @@ import deanon as deanon_engine  # noqa: E402
 
 MAX_BODY_BYTES = 160 * 1024 * 1024
 TOKEN_HEADER = "X-Anon-Token"
+# The converter runs as a child process, so both bounds are enforced from the parent: the output
+# is read in blocks and the child is killed the moment the cap is passed.
+# Overridable so the bound can be exercised in tests, and lowered by an operator who wants a
+# tighter ceiling than memory alone would enforce.
+CONVERT_MAX_BYTES = int(os.environ.get("ANON_CONVERT_MAX_BYTES") or 160 * 1024 * 1024)
+CONVERT_TIMEOUT_SECONDS = int(os.environ.get("ANON_CONVERT_TIMEOUT") or 300)
+STDERR_KEEP_BYTES = 8192
+DEFAULT_RATE_LIMIT = 120  # requests per minute on /api/*, per process; 0 disables the bucket
 # The tool ships its own converter; the Pi `docs` skill is used only as a fallback when the
 # tool's own convert.py is missing (older installs).
 def _default_converter() -> Path:
@@ -52,9 +63,43 @@ def _default_converter() -> Path:
 
 
 CONVERTER = Path(os.environ.get("ANON_CONVERTER") or _default_converter())
-STATE = {"token": None, "nonce": None, "port": 1407, "jobs": 0}
-CONVERT_MAX_BYTES = 160 * 1024 * 1024
+STATE = {"token": None, "nonce": None, "port": 1407, "jobs": 0, "limiter": None}
 LOCK = threading.Lock()
+
+
+class RateLimiter:
+    """Token bucket for the local API.
+
+    The UI is loopback-only and unauthenticated, which is acceptable *because* nothing else can
+    reach it — but a runaway script (or a tab stuck in a loop) can still pin one worker thread
+    per request until the process is unusable. The bucket is deliberately generous: it exists to
+    stop a runaway, not to throttle an operator clicking through the tabs.
+    """
+
+    def __init__(self, per_minute: int, burst: int | None = None) -> None:
+        self.rate = max(0.0, float(per_minute)) / 60.0
+        self.burst = float(burst if burst is not None else max(3, per_minute // 4))
+        self.tokens = self.burst
+        self.stamp = time.monotonic()
+        self.lock = threading.Lock()
+
+    def retry_after(self) -> int:
+        """Seconds until one token is available again — what `Retry-After` must advertise."""
+        if self.rate <= 0:
+            return 0
+        return max(1, int(1.0 / self.rate + 0.5))
+
+    def allow(self) -> bool:
+        if self.rate <= 0:
+            return True
+        with self.lock:
+            now = time.monotonic()
+            self.tokens = min(self.burst, self.tokens + (now - self.stamp) * self.rate)
+            self.stamp = now
+            if self.tokens < 1.0:
+                return False
+            self.tokens -= 1.0
+            return True
 
 
 # --------------------------------------------------------------------------------------
@@ -76,11 +121,23 @@ def _map_path(map_id: str) -> Path:
     return candidate
 
 
+def _human_bytes(size: int) -> str:
+    """A cap reads better as `1 KB` than as `0 MB` when a test lowers it."""
+    if size >= 1024 * 1024:
+        return f"{size // 1024 // 1024} MB"
+    if size >= 1024:
+        return f"{size // 1024} KB"
+    return f"{size} bytes"
+
+
 def _convert_to_markdown(source: Path) -> str:
     """Convert with the external converter, bounding BOTH the wall time and the output size.
 
-    A deliberately hostile document (a zip bomb) could otherwise inflate a document far past
-    memory; the cap turns that into a clean error.
+    The cap has to apply WHILE the converter runs: `communicate()` buffers the whole output first,
+    so a deliberately hostile document (a zip bomb) inflates memory well before any size check.
+    stdout is read in blocks and the child is killed the moment the cap is passed; stderr is
+    drained by a thread, because a full stderr pipe blocks the child and would look like a
+    timeout.
     """
     if not CONVERTER.is_file():
         raise RuntimeError(
@@ -89,18 +146,74 @@ def _convert_to_markdown(source: Path) -> str:
     process = subprocess.Popen(
         [sys.executable, str(CONVERTER), str(source)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Its own session: the converter spawns the engine as a GRANDCHILD that inherits stdout,
+        # and killing only the direct child would leave the reader blocked on a pipe the
+        # grandchild still holds. The whole group is killed instead, and the child is always
+        # reaped (a killed process nobody waits for stays a zombie on a long-running server).
+        start_new_session=True,
     )
+
+    def terminate() -> None:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    stderr_chunks: list[bytes] = []
+
+    def drain_stderr() -> None:
+        kept = 0
+        while True:
+            try:
+                chunk = process.stderr.read(4096)
+            except (OSError, ValueError):  # closed under us
+                return
+            if not chunk:
+                return
+            if kept < STDERR_KEEP_BYTES:
+                stderr_chunks.append(chunk)
+                kept += len(chunk)
+
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
+    timer = threading.Timer(CONVERT_TIMEOUT_SECONDS, terminate)
+    timer.start()
+    chunks: list[bytes] = []
+    total = 0
     try:
-        stdout, stderr = process.communicate(timeout=300)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate()
-        raise RuntimeError("conversion timed out")
-    if len(stdout) > CONVERT_MAX_BYTES:
-        raise RuntimeError(f"conversion produced more than {CONVERT_MAX_BYTES // 1024 // 1024} MB")
+        while True:
+            chunk = process.stdout.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > CONVERT_MAX_BYTES:
+                terminate()
+                raise RuntimeError(
+                    f"conversion produced more than {_human_bytes(CONVERT_MAX_BYTES)}"
+                )
+            chunks.append(chunk)
+        process.wait()
+    finally:
+        timer.cancel()
+        reader.join(timeout=2)
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
     if process.returncode != 0:
-        raise RuntimeError((stderr.decode("utf-8", "replace") or "conversion failed").strip()[:400])
-    return stdout.decode("utf-8", "replace")
+        if process.returncode < 0:
+            raise RuntimeError("conversion timed out")
+        detail = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
+        raise RuntimeError((detail or "conversion failed")[:400])
+    return b"".join(chunks).decode("utf-8", "replace")
 
 
 def _anonymize_text(text: str, catalogs, patterns, save_map: bool) -> dict:
@@ -156,8 +269,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, status: int, message: str) -> None:
-        self._json({"error": message}, status)
+    def _error(self, status: int, message: str, retry_after: int | None = None) -> None:
+        body = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _static(self, name: str, content_type: str) -> None:
         path = WEB_DIR / name
@@ -217,6 +339,16 @@ class Handler(BaseHTTPRequestHandler):
             f"http://localhost:{STATE['port']}",
         ):
             self._error(403, "origin not allowed")
+            return False
+        # Rate limit AFTER authentication: an unauthenticated flood is refused by the token check
+        # above (cheap), while a runaway of our own page is what can actually do work.
+        limiter = STATE.get("limiter")
+        if limiter is not None and not limiter.allow():
+            self._error(
+                429,
+                "too many requests — slow down and try again",
+                retry_after=limiter.retry_after(),
+            )
             return False
         return True
 
@@ -471,6 +603,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=1407)
     parser.add_argument(
+        "--rate-limit",
+        type=int,
+        default=DEFAULT_RATE_LIMIT,
+        metavar="PER_MINUTE",
+        help=f"requests per minute allowed on /api/* (default: {DEFAULT_RATE_LIMIT}; 0 disables the limit)",
+    )
+    parser.add_argument(
         "--allow-lan",
         action="store_true",
         help="permit a non-loopback bind — the UI has NO authentication, so this exposes your "
@@ -496,6 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     STATE["token"] = secrets.token_urlsafe(24)
     STATE["nonce"] = secrets.token_urlsafe(16)
     STATE["port"] = args.port
+    STATE["limiter"] = RateLimiter(args.rate_limit)
     server = LocalServer((args.host, args.port), Handler)
     host_display = "127.0.0.1" if loopback else args.host
     print(f"anon-tool UI on http://{host_display}:{args.port}  (Ctrl-C to stop)", flush=True)

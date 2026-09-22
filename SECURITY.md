@@ -20,6 +20,11 @@ in `docs/DESIGN.md` §7:
 - Requests must carry the correct `Host` header and a per-run token delivered through a CSP nonce;
   a foreign `Origin` is refused. No client-supplied filesystem path is ever used: uploads land in
   a per-request temp directory under generated names and are deleted afterwards.
+- `/api/*` is rate limited (token bucket, `--rate-limit`, default 120/min, 0 disables), and the
+  converter's output is capped while it is produced, not after buffering it.
+- The one third-party component installed at build time (`firecrawl-anydoc`) is pinned by digest
+  (`requirements-anydoc.txt`, `pip install --require-hashes`), so a replaced wheel fails the build
+  instead of running.
 
 ## In scope
 
@@ -38,6 +43,10 @@ in `docs/DESIGN.md` §7:
 - **images/screenshots** — pixels are not scannable, so a screenshot of a client document passes;
 - **`bash`-style reads** in the Pi guard are outside its default perimeter (`--anon-guard=all`
   extends it to shell output);
+- **the guard's own false positives**: the guard scans with the same engine, so a heuristic that
+  over-matches blocks a legitimate read (in this repository that happens on its own source and
+  docs). The remedy is `~/.anon/allow.txt` or a narrower heuristic, never a workaround;
+- **a check slower than the timeout or bigger than the cap** is refused, not read (fail-closed).
 - a document whose only placeholder would collide with another run's map is now
   detected and refused; the tag is 6 hex digits (16.7M values), so a collision stays negligible
   but is not mathematically impossible (the per-map tag makes it fail loudly), but the tag is part of the

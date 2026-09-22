@@ -7,8 +7,11 @@
 # the DECs point at it), so it stays the runtime source of truth; this repo is the versioned
 # copy. Same shape as pi-customization's sync-to-repo.sh, with a different data policy:
 #
-#   mirrored  : anon.py, deanon.py, tests/, catalogs/, web/, docs/DESIGN.md
-#   repo-only : README.md, LICENSE, Dockerfile, docker-compose.yml, scripts/, .gitignore
+#   mirrored  : anon.py, deanon.py, convert.py, tests/, catalogs/, web/   (live -> repo)
+#   repo-only : README.md, LICENSE, Dockerfile, docker-compose.yml, scripts/, docs/, .gitignore
+#   generated : requirements-anydoc.txt — written by scripts/pin-converter.py IN the repo, and the
+#               live copy is refreshed from it below: convert.py reads the file next to itself, so
+#               this one file travels repo -> live, the opposite of everything else here.
 #   NEVER     : maps/, entities.txt, allow.txt, *.map.json, *.redacted.*, __pycache__
 #
 # The deterministic gate runs before the commit: a commit with a red test suite is refused.
@@ -36,6 +39,9 @@ done
 for d in tests catalogs web; do
   [ -d "$LIVE/$d" ] && rsync -a --delete "$LIVE/$d/" "$REPO/$d/"
 done
+
+# The hashed pin is generated in the repo; the live copy is what convert.py reads.
+[ -f "$REPO/requirements-anydoc.txt" ] && cp "$REPO/requirements-anydoc.txt" "$LIVE/requirements-anydoc.txt"
 
 # --- deterministic gate: refuse to commit a red suite --------------------
 if [ -f "$REPO/tests/ui_load_check.mjs" ]; then
