@@ -75,6 +75,13 @@ A second pass over the code, hunting the *classes* of the first eleven rather th
   write could make `truncated` false while the list was capped); and an unreadable map was skipped
   from the listing while still counted in `total`. All three fixed, with tests.
 
+## Closed in the third pass (2026-09-22)
+
+| # | What it was | How it is closed | Evidence |
+|---|---|---|---|
+| 23 | False-positive sweep over a real corpus — the prerequisite of 20. | `scripts/fp-sweep.py` scans a known-**clean** corpus (this repo, the Pi extensions, the installed Pi package) with the real `detect()` and aggregates every match per rule type. Private configs (Home Assistant, MikroTik) are excluded by default: they hold legitimate real values, so a match there is a true positive, not a false one. Dictionary types are reported separately; a type that is a built-in rule is never reclassified as dictionary, so a pattern false positive cannot be hidden. | Clean corpus: **48 files, 85 pattern matches** — HOST 40, URL 18, INDIRIZZO 9, IP 6, KEY 5, EMAIL 5, TARGA 1, TEL 1. The signal that mattered was KEY. |
+| 20 | The KEY rule redacted ordinary code (calls, member references) — the friction of this repository. | The assignment rule now rejects a right-hand side that is a CALL (regex lookahead `(?!\()`, kept whole by `(?![…])` against backtracking). A DOTTED value is deliberately KEPT: `password = my_secret.phrase` can be a real password, and a missed secret is worse than a block (an adversarial review rejected an earlier dotted-underscore heuristic as an unjustified shape-classifier). | KEY on the clean corpus went **11 -> 5** (the CALL shapes are gone); the 5 are two doc comments in `anon.py` plus three code references it keeps. Tests: `RoundTripTest::test_code_calls_are_not_secrets`, `::test_a_dotted_value_is_still_redacted`, plus the leak cases added to `test_real_secret_shapes_are_redacted`. |
+
 ## To-do — the whole list, in the order I would take it
 
 One ordered list. The **IDs are stable references, not an order**: 1-11 are the items closed above,
@@ -84,8 +91,8 @@ old reference can never point at a different item.
 
 | Order | # | Next action | Why now | Size |
 |---|---|---|---|---|
-| 1 | 20 | **Tighten the KEY rule**: reject a value that is a dotted expression or a call when the left side mentions token/secret/key/password (`git log -p docs/OPEN-ISSUES.md` has the two shapes that tripped it — they are kept out of this file on purpose). | It is why the guard blocks this repository's own source and tests: every session here pays the redacted-copy tax. Over-loosening risks a missed secret, so it must be driven by the corpus in item 23. | medium |
-| 2 | 23 | **False-positive sweep over a real corpus**: measure, per pattern and per catalog, what gets redacted and what gets wrongly redacted. | The prerequisite of 20, and the only honest way to tune host and near-miss thresholds, which are still chosen by reasoning. `scripts/bench-check.py` already gives the timing harness; the corpus is what is missing. | large |
+| 1 | 20 | **Tighten the KEY rule** — CLOSED in the third pass (see below). | | — |
+| 2 | 23 | **False-positive sweep over a real corpus** — CLOSED in the third pass (see below). | | — |
 | 3 | 21 | **`@context off`** in the dictionary, plus a line documenting the ordering rule. | A `@context` applies to every following entry: an invisible ordering constraint that can silently under-redact. | small |
 | 4 | 24 | **Tag collision**: verify empirically over N maps that 6 hex digits are enough, or derive the tag from the map id. | The tag is what makes a wrong map fail loudly; it is random today and only reasoned about. | small |
 | 5 | 17 | **Optional local-model detector** (DESIGN §8): a localhost endpoint that *suggests* candidates which a human approves. | The structural answer to contextual references — the biggest declared hole. The engine stays the only writer, so determinism is untouched. | large |

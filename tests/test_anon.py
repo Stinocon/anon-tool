@@ -226,8 +226,18 @@ class RoundTripTest(unittest.TestCase):
             "db_secret: abc123xyz789",
             "api_key=myexamplekey1234",
             "password: correct-horse-battery-staple",
+            "password = my_secret.phrase",
+            "password = correct_horse.battery",
+            "password = abcdefgh (production)",
         ):
             self.assertEqual(len(anon.detect(snippet, self.entities)), 1, f"missed secret in {snippet!r}")
+
+    def test_a_secret_touching_a_parenthesis_is_the_declared_miss(self) -> None:
+        # The call lookahead rejects `value(` with no space. A literal secret written that way is the
+        # declared, accepted miss; the alternative (`value (annotation)`) is kept by the test above,
+        # and `token = re.compile(...)` (the case that motivated the rule) is rejected by
+        # test_code_calls_are_not_secrets.
+        self.assertEqual(anon.detect("password = abcdefgh(production)", self.entities), [])
 
     def test_placeholder_secrets_are_not_redacted(self) -> None:
         for snippet in (
@@ -238,6 +248,23 @@ class RoundTripTest(unittest.TestCase):
             "token: your-token",
         ):
             self.assertEqual(anon.detect(snippet, self.entities), [], f"false positive on {snippet!r}")
+
+    def test_code_calls_are_not_secrets(self) -> None:
+        # Item #20: the KEY rule used to redact ordinary code — a right-hand side that is a CALL is
+        # a reference, not the literal secret.
+        for snippet in (
+            "first_token=unicodedata.normalize(form, tokens[0]),",
+            "const secret = scanForSecrets(candidate);",
+            "token = re.compile(r'x')",
+        ):
+            self.assertEqual(anon.detect(snippet, self.entities), [], f"false positive on {snippet!r}")
+
+    def test_a_dotted_value_is_still_redacted(self) -> None:
+        # The declared trade-off of item #20: a dotted value is NOT treated as a code reference
+        # (`my_secret.phrase` is a plausible real password), so it stays redacted. A dotted member
+        # in source (`window.ANON_TOKEN`) is an accepted false positive: a missed secret is worse.
+        for snippet in ("password: admin.secret", "password = my_secret.phrase", "password = correct_horse.battery"):
+            self.assertEqual(len(anon.detect(snippet, self.entities)), 1, f"missed secret in {snippet!r}")
 
     def test_host_followed_by_a_file_extension(self) -> None:
         """`db01.azienda.it.log`: the trailing labels must be dropped, not the whole match."""

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
@@ -389,7 +389,12 @@ RULES: tuple[Rule, ...] = (
             r"(?i:(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])?(?:api[_-]?key|apikey|secret|"
             r"client[_-]?secret|password|passwd|pwd|token|access[_-]?token|refresh[_-]?token)"
             r"\b\s*[:=]\s*[\"']?)"
-            r"([A-Za-z0-9._\-+/=]{8,})"
+            # Reject a right-hand side that is a CALL (`token = re.compile(...)`): the `(` comes
+            # immediately after the value, which a literal secret does not do. The first lookahead
+            # keeps the token whole, so backtracking cannot truncate it to make the call check pass.
+            # Deliberately NOT rejected: a dotted value (`variant.first_token`, `admin.secret`) — it
+            # can be a real password, and a missed secret is worse than a false positive (item #20).
+            r"([A-Za-z0-9._\-+/=]{8,})(?![A-Za-z0-9._\-+/=])(?!\()"
         ),
         capture=1,
         validator=_valid_secret,

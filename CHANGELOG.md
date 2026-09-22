@@ -10,6 +10,29 @@ enforces that they agree.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-22
+
+### Added
+
+- `scripts/fp-sweep.py`: measures the engine's false positives over a real, known-clean corpus,
+  aggregated per rule type. Deterministic (a counter over `detect()` matches), never an LLM.
+
+### Fixed
+
+- **The KEY rule redacted ordinary code** (item #20). A right-hand side that is a CALL
+  (`token = re.compile(...)`, `secret = scanForSecrets(x)`, `unicodedata.normalize(...)`) is now
+  rejected by the pattern, so a code reference is no longer mistaken for a literal secret. A DOTTED
+  value is deliberately KEPT (`password = my_secret.phrase`, `admin.secret`): it can be a real
+  password, and a missed secret is worse than a false positive.
+
+### Measured
+
+- On the clean sweep corpus (48 files: this repo, the Pi extensions, the installed Pi package), the
+  KEY rule went from **11 matches to 5**; the 5 are two documentation comments in `anon.py` and
+  three code references it deliberately keeps (`variant.first_token`, `window.ANON_TOKEN`,
+  `__ANON_TOKEN__`). Private configs (real IPs/passwords) are excluded — a match there is a true
+  positive. See `docs/OPEN-ISSUES.md`, item #20.
+
 ## [1.4.0] - 2026-09-22
 
 ### Added
