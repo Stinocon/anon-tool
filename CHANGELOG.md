@@ -10,6 +10,14 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Added
+
+- `OfflineContractTest`: an AST **canary** — no engine script (`anon.py`, `deanon.py`,
+  `convert.py`) may gain a *static* import of a network stack, and the two document paths may not
+  import `subprocess`. It is a canary, not a proof: a dynamic or transitive import slips past, and
+  `convert.py --install` reaches the network through pip on purpose. The test says so itself, so
+  the gate is not read as a stronger guarantee than it is.
+
 ## [1.6.0] - 2026-09-22
 
 ### Added

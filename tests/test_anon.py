@@ -10,6 +10,7 @@ public placeholder values (`example.com`, RFC 5737 IPs).
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -1307,6 +1308,83 @@ class DeanonContainerTest(unittest.TestCase):
         ).stdout
         for value in ("Contoso S.r.l.", "mario.rossi@contoso.it", "10.42.7.19"):
             self.assertIn(value, back, "the real value must be back in the delivered document")
+
+
+class OfflineContractTest(unittest.TestCase):
+    """No engine script may gain a network import by accident (DEC-0012 §2).
+
+    This is a CANARY, not a proof. It checks the AST for a STATIC import of a network stack — the
+    one-line regression, which is the shape that actually happens — not the behavioural claim "the
+    engine makes no network call". A dynamic import (`__import__("socket")`), a transitive one (a
+    helper that imports socket) or an exec'd string would slip past, and `convert.py --install`
+    legitimately reaches the network through pip: an import denylist cannot prove a behaviour.
+
+    `web/server.py` is out of scope by design — it IS an HTTP server (DEC-0012 §1/§3). The document
+    paths (`anon.py`, `deanon.py`) are also checked for `subprocess`: today neither spawns
+    anything, and relaxing that should be a deliberate act rather than a drive-by edit.
+    """
+
+    SCRIPTS = ("anon.py", "deanon.py", "convert.py")
+    # A network STACK, not a network-shaped name: `urllib.parse` and `http.cookies` are parsers and
+    # constants, and must stay importable by the engine. A submodule is matched on its full dotted
+    # name, so `urllib.request` fails where `urllib.parse` passes.
+    NETWORK_MODULES = {
+        "socket",
+        "socketserver",
+        "ssl",
+        "ftplib",
+        "smtplib",
+        "poplib",
+        "imaplib",
+        "telnetlib",
+        "urllib.request",
+        "http.client",
+        "http.server",
+        "xmlrpc.client",
+        "xmlrpc.server",
+        "requests",
+        "httpx",
+        "aiohttp",
+        "urllib3",
+        "pycurl",
+        "websocket",
+    }
+
+    def _imports(self, path: Path) -> set[str]:
+        """Every dotted module name the file imports statically."""
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError as exc:  # convert.py is never imported by the suite: fail cleanly here
+            self.fail(f"{path.name} does not parse: {exc}")
+        names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module)
+        return names
+
+    def _engine_scripts(self) -> list[Path]:
+        found = [HOME / name for name in self.SCRIPTS if (HOME / name).is_file()]
+        # The slim install (`make up-slim`) ships no convert.py on purpose: anon.py and deanon.py
+        # are the engine and must be there for the check to mean anything.
+        self.assertTrue({"anon.py", "deanon.py"} <= {p.name for p in found}, "engine scripts not found")
+        return found
+
+    def test_no_engine_script_imports_a_network_stack(self) -> None:
+        for path in self._engine_scripts():
+            leaked = {
+                name
+                for name in self._imports(path)
+                if any(name == banned or name.startswith(f"{banned}.") for banned in self.NETWORK_MODULES)
+            }
+            self.assertFalse(leaked, f"{path.name} imports a network stack: {sorted(leaked)}")
+
+    def test_the_document_paths_do_not_spawn_a_process(self) -> None:
+        for path in self._engine_scripts():
+            if path.name == "convert.py":
+                continue  # its job is to run the anydoc engine, and `--install` runs pip
+            self.assertNotIn("subprocess", self._imports(path), f"{path.name} spawns a process")
 
 
 if __name__ == "__main__":
