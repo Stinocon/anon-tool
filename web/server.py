@@ -31,6 +31,7 @@ import zipfile
 import json
 import os
 import signal
+import re
 import shutil
 import socketserver
 import subprocess
@@ -368,7 +369,14 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
         # strings in a single response. The document is published under the private store and
         # STREAMED from there, so this process holds one block at a time.
         result["container_name"] = f"{Path(filename).stem}.redacted{Path(filename).suffix}"
-        result["container_url"] = f"/api/download/{_publish_download(redacted_path, result['container_name'])}"
+        try:
+            published = _publish_download(redacted_path, result["container_name"])
+        except OSError:
+            # Same rule as a failed conversion: no artifact to fetch means the map must not stay.
+            if map_id:
+                (anon.DEFAULT_MAPS / f"{map_id}.map.json").unlink(missing_ok=True)
+            raise
+        result["container_url"] = f"/api/download/{published}"
     return result
 
 
@@ -647,11 +655,15 @@ class Handler(BaseHTTPRequestHandler):
         if directory not in resolved.parents or not resolved.is_file():
             raise ValueError("unknown download")
         size = resolved.stat().st_size
+        # `send_header` does NOT validate its value: a newline in a filename would split the
+        # response. Today the name comes from an upload header, which cannot carry one — but that
+        # is an assumption about a different component, and this is one line.
+        served = re.sub(r"[^A-Za-z0-9._-]", "_", Path(parts[1]).name)[:80] or "documento.bin"
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(size))
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Disposition", f'attachment; filename="{Path(parts[1]).name}"')
+        self.send_header("Content-Disposition", f'attachment; filename="{served}"')
         self.end_headers()
         with resolved.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile, 65536)
