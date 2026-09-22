@@ -160,6 +160,19 @@ The pass that closed the smaller items — each one either a measurement or a re
 | 22 | **`verify.py` could read a redacted copy of a decision AS the decision.** | `DEC-0012.redacted.md` sorts after `DEC-0012.md` and carries the same id, so the last one won and the real record was shadowed. `*.redacted.*` and `*.deanon.*` are now ignored. | Proven both ways: with the fix `DEC-0012` passes; a copy restored to the old condition reports `FAIL — missing evidence` from the decoy. The fix lives in `pi-customization/skills/memory/verify.py`. |
 | 18 | **The portable workbench carried no guard.** | Guard, skill and runtime harness shipped into `pi-workbench`, with `scripts/check-anon.sh` comparing sha256 against the live config — and saying so, visibly, when it cannot compare. | pi-workbench `15499a7`; its gates pass (`check-config-docs.sh`, `check-extensions.cjs`, `check-skill-frontmatter.cjs`, `check-anon-guard.cjs`, `check-anon.sh`). The README entries for the port are written and sit uncommitted in that repo, next to the operator's in-flight offload-rules work — deliberately not swept into my commit. |
 
+### From a live report (2026-09-22)
+
+Dropping a `.docx` on the Anonimizza tab did nothing: no button, no message, no progress. Two halves
+disagreed — a drop cannot populate a file INPUT, the drop handler stored nothing for a document, and
+the button read `#file-anon.files`. The picker worked, the gesture did not, and **no test noticed**
+because `tests/ui_load_check.mjs` only proved that the script parses: it discarded every listener
+(`addEventListener() {}`) and returned a fresh element per `getElementById`, so no gesture could be
+driven and no post-gesture state could be read. Both are fixed in the harness, and the drop now has
+four interaction checks. The same report asked for progress: the upload percentage comes from XHR
+(the one thing `fetch` cannot report), the conversion phase shows elapsed time instead of inventing
+a percentage, and the bar stays visible at least 700 ms. Verified by driving the running container
+through CDP with a real `.docx`, not only in the unit checks.
+
 ## To-do — the whole list, in the order I would take it
 
 One ordered list. The **IDs are stable references, not an order**: 1-11 are the items closed above,
@@ -186,7 +199,8 @@ old reference can never point at a different item.
 | 15 | 30 | **CI**: make the converter-install skip visible in the run summary, not only in the log — CLOSED in the fifth pass (see below). | | — |
 | 16 | 22 | **`verify.py` must ignore `*.redacted.*`** when scanning decisions — CLOSED in the fifth pass (see below). | | — |
 | 17 | 26 | **Guard throughput vs dictionary size.** The cap is derived from a measurement, but that measurement assumed a small dictionary. Measured today (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s · 1 000 → 0.93 · 4 000 → 0.37 · 7 900 → 0.20. At 1 000 entries the 12 MB cap already needs 13 s of a 20 s budget; at 4 000 it exceeds it. Either measure at run time or size the cap against a declared entry count. | 12 MB / 20 s were sized on this Mac with a few hundred entries; the margin is not a property of the guard, it is a property of the dictionary. | medium |
-| 18 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
+| 18 | 36 | **A symlinked FILE inside a `--batch` tree is followed**, even when the target is outside the tree or inside the private store: a link to `~/.anon/entities.txt` gets anonymized into the tree, and the guard that refuses `~/.anon` as a ROOT never sees it. (`rglob` does not descend directory symlinks, so this is the file case only.) Decide: refuse symlinks by default, or resolve and refuse when the target leaves the root. | Cheap to fix, and left visible rather than patched in a hurry — the two other batch findings of the same review (fail-open on an unscannable folder, `--out` collisions) are already fixed. | small |
+| 19 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
 
 ### Hygiene note kept from this pass
 
