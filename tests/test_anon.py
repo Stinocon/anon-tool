@@ -1079,7 +1079,7 @@ class DeanonContainerTest(unittest.TestCase):
         """A hand-edited map must reach `deanon: exit 2`, never an unhandled AttributeError."""
         document = self.tmp / "doc.txt"
         document.write_text("Referente: [EMAIL-1]\n", encoding="utf-8")
-        for shape in ("[1, 2, 3]", '"solo una stringa"', '{"entries": 5}'):
+        for shape in ("[1, 2, 3]", '"solo una stringa"', '{"entries": 5}', '{"entries": {"[EMAIL-1]": null}}'):
             broken = self.tmp / f"broken-{len(shape)}.map.json"
             broken.write_text(shape, encoding="utf-8")
             result = subprocess.run(

@@ -421,6 +421,10 @@ class WebUiTest(unittest.TestCase):
         wrong_shape.write_text("[1, 2, 3]", encoding="utf-8")
         wrong_types = self.tmp / "maps" / "20200103-000000-badbad.map.json"
         wrong_types.write_text('{"entries": 5, "counts": "no", "created": 7}', encoding="utf-8")
+        null_entry = self.tmp / "maps" / "20200105-000000-nullva.map.json"
+        null_entry.write_text('{"entries": {"[EMAIL-1]": null}}', encoding="utf-8")
+        nul_name = self.tmp / "maps" / "20200106-000000-nulnam.map.json"
+        nul_name.write_text('{"entries": {}, "source": "a\u0000b"}', encoding="utf-8")
         try:
             status, data = self.call("/api/maps")
             self.assertEqual(status, 200)
@@ -432,14 +436,17 @@ class WebUiTest(unittest.TestCase):
             self.assertTrue(odd["unreadable"])
             typed = next((item for item in data["maps"] if item["id"].startswith("20200103")), None)
             self.assertIsNotNone(typed, "a dict with wrong VALUE types must not 500 the endpoint")
-            self.assertEqual(typed["entries"], 0)
-            self.assertIsNone(typed["counts"])
-            self.assertIsNone(typed["created"])
+            # `entries` is not an object, so this is not a map at all: it is reported as unreadable
+            # rather than shown as "0 entries" (which would be a silent lie about its content).
+            self.assertTrue(typed["unreadable"])
             self.assertEqual(data["total"], len(data["maps"]), "total must match what is listed")
+            for prefix, why in (("20200105", "a null entry value"), ("20200106", "a NUL in source")):
+                item = next((entry for entry in data["maps"] if entry["id"].startswith(prefix)), None)
+                self.assertIsNotNone(item, f"{why} must not 500 the listing")
+            self.assertEqual(data["total"], len(data["maps"]))
         finally:
-            broken.unlink()
-            wrong_shape.unlink()
-            wrong_types.unlink()
+            for path in (broken, wrong_shape, wrong_types, null_entry, nul_name):
+                path.unlink()
 
     def test_a_wrong_shaped_request_body_is_a_400_not_a_500(self) -> None:
         """The body is client input: a JSON array must be refused, not crash the handler."""
@@ -456,6 +463,35 @@ class WebUiTest(unittest.TestCase):
                 status, payload = error.code, error.read().decode()
             self.assertEqual(status, 400, f"{body!r} -> {status}: {payload}")
             self.assertNotIn("AttributeError", payload)
+
+    def test_a_deeply_nested_body_is_a_400_not_a_500(self) -> None:
+        """`json.loads` raises RecursionError (not ValueError) on a deeply nested body."""
+        body = b"[" * 5000 + b"]" * 5000
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/anonymize", data=body, method="POST"
+        )
+        request.add_header(TOKEN_HEADER, self.token)
+        request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status, payload = response.status, response.read().decode()
+        except urllib.error.HTTPError as error:
+            status, payload = error.code, error.read().decode()
+        self.assertEqual(status, 400, f"{status}: {payload[:200]}")
+        self.assertNotIn("RecursionError", payload)
+
+    def test_a_malformed_entry_value_is_refused_on_reveal(self) -> None:
+        """`entries` can be a dict while its VALUES are still wrong: validated one level deeper."""
+        broken = self.tmp / "maps" / "20200107-000000-nullva.map.json"
+        broken.write_text('{"entries": {"[EMAIL-1]": null}}', encoding="utf-8")
+        try:
+            status, payload = self.call(
+                "/api/maps/reveal", payload={"id": "20200107-000000-nullva", "confirm": True}
+            )
+            self.assertEqual(status, 400, payload)
+            self.assertNotIn("AttributeError", str(payload))
+        finally:
+            broken.unlink()
 
     def test_a_wrong_shaped_map_is_refused_on_reveal(self) -> None:
         """`load_map` is reachable from the API too: a non-object map must be a 400, not a 500."""

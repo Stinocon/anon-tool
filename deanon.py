@@ -215,21 +215,70 @@ def count_placeholders(text: str, entries: dict[str, dict[str, str]]) -> tuple[i
     return known, unknown
 
 
-def load_map(path: Path) -> dict[str, dict[str, str]]:
-    """The placeholder → real-value mapping, validated by SHAPE.
-
-    A map is an operator-editable file, so every level is checked before use: a JSON file that is
-    not an object, or whose `entries` is not an object, is a clean `ValueError` (exit 2 at the
-    CLI, 400 over HTTP) — not an `AttributeError` that escapes as a 500 and leaks a traceback
-    name into the response.
-    """
+def _read_map_object(path: Path) -> dict:
+    """The map file parsed and required to be a JSON object (the schema's outer level)."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path}: not an anon map (top-level JSON is {type(data).__name__}, not an object)")
-    entries = data.get("entries")
+    return data
+
+
+def _validate_entries(path: Path, entries: object) -> dict[str, dict[str, str]]:
+    """The `entries` object, validated ONE level deeper than a shape check.
+
+    A map is an operator-editable file, and every consumer (CLI restore, `/api/deanonymize`,
+    `/api/maps/reveal`, the UI listing) must see the same guarantees. Checking `isinstance(…, dict)`
+    here and then calling `.get()` on the VALUES is how the same defect came back three times, so
+    the validation is done once, at this boundary, for every entry:
+
+        {"[EMAIL-1-a3f9]": {"type": "EMAIL", "original": "someone@example.com"}}
+
+    A null/string/list value, or an `original` that is not a string or null, is a `ValueError`
+    naming the offending key — never an `AttributeError` in the middle of a restore.
+    """
     if not isinstance(entries, dict):
         raise ValueError(f"{path}: not an anon map (missing 'entries')")
-    return entries
+    validated: dict[str, dict[str, str]] = {}
+    for key, value in entries.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            raise ValueError(f"{path}: malformed map entry {key!r} (expected an object)")
+        original = value.get("original")
+        if original is not None and not isinstance(original, str):
+            raise ValueError(f"{path}: malformed 'original' for {key!r} (expected a string or null)")
+        kind = value.get("type")
+        # `type` is informational (the UI shows it); a missing or odd value is normalized rather
+        # than refused, because refusing a map that restores correctly would be the wrong trade.
+        validated[key] = {"type": kind if isinstance(kind, str) else "ALTRO", "original": original}
+    return validated
+
+
+def load_map(path: Path) -> dict[str, dict[str, str]]:
+    """The placeholder → real-value mapping, validated (see `_validate_entries`)."""
+    return _validate_entries(path, _read_map_object(path).get("entries"))
+
+
+def load_map_metadata(path: Path) -> dict[str, object]:
+    """The listing fields of a map, validated — the ONE reader the web UI uses as well.
+
+    Returns `{id, created, source, counts, entries}` with types a caller can rely on. `source` is
+    reduced to a basename WITHOUT `pathlib`: a hand-edited string containing an embedded NUL made
+    `Path()` raise, which turned a read-only listing into a 500.
+    """
+    data = _read_map_object(path)
+    source = data.get("source")
+    basename = ""
+    if isinstance(source, str):
+        basename = source.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    created = data.get("created")
+    counts = data.get("counts")
+    return {
+        "id": str(data.get("id") or path.stem.replace(".map", "")),
+        "created": created if isinstance(created, str) else None,
+        "source": basename,
+        "counts": counts if isinstance(counts, dict) else None,
+        # Validated with the same function the restore path uses, not with a second, weaker check.
+        "entries": len(_validate_entries(path, data.get("entries"))),
+    }
 
 
 def _write_atomic(output: Path, chunks: list[tuple[zipfile.ZipInfo, bytes]]) -> None:

@@ -321,7 +321,12 @@ class Handler(BaseHTTPRequestHandler):
         raw = self._read_body()
         if not raw:
             return {}
-        payload = json.loads(raw.decode("utf-8"))
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, RecursionError) as exc:
+            # `json.loads` raises RecursionError on a deeply nested body, and UnicodeDecodeError on
+            # a body that is not UTF-8; neither is a ValueError, so both used to become a 500.
+            raise ValueError(f"malformed JSON body: {type(exc).__name__}") from exc
         # A body is client input: a JSON array or scalar is a malformed request, not a 500.
         if not isinstance(payload, dict):
             raise ValueError("the request body must be a JSON object")
@@ -456,29 +461,12 @@ class Handler(BaseHTTPRequestHandler):
         out = []
         for path in paths[:limit] if limit is not None else paths:
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                # The metadata reader VALIDATES the map with the same rules the restore path uses
+                # (one boundary, see deanon.load_map_metadata). A LISTING must still never fail:
+                # one unreadable file is reported as unreadable and the rest is served.
+                out.append(deanon_engine.load_map_metadata(path))
+            except Exception:  # noqa: BLE001 - the point: no file can turn a listing into a 500
                 out.append({"id": path.stem.replace(".map", ""), "unreadable": True, "entries": 0})
-                continue
-            if not isinstance(data, dict):
-                # Valid JSON, wrong shape (`[1,2,3]`): treated like any other unreadable map, so a
-                # hand-edited file cannot turn a read-only listing into a 500.
-                out.append({"id": path.stem.replace(".map", ""), "unreadable": True, "entries": 0})
-                continue
-            # Every field is validated by TYPE as well: `{"entries": 5}` is a dict, and `len(5)`
-            # would raise where the caller expects metadata.
-            entries = data.get("entries")
-            counts = data.get("counts")
-            created = data.get("created")
-            out.append(
-                {
-                    "id": str(data.get("id") or path.stem.replace(".map", "")),
-                    "created": created if isinstance(created, str) else None,
-                    "source": Path(str(data.get("source") or "")).name,
-                    "counts": counts if isinstance(counts, dict) else None,
-                    "entries": len(entries) if isinstance(entries, dict) else 0,
-                }
-            )
         return out
 
     def _anonymize(self) -> None:

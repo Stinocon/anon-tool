@@ -49,6 +49,16 @@ A second pass over the code, hunting the *classes* of the first eleven rather th
 - **The address corpus test leaked its temp directory.**
 - **CI installed the converter by version**, not through the pinned requirements file, so CI could
   run a different wheel than the image ships. It now uses `--require-hashes -r requirements-anydoc.txt`.
+- **A map file is operator-editable input, and the class took FOUR rounds — so the answer is
+  structural, not a fifth patch.** Two more shapes survived the first fix (an entry VALUE that is
+  null, and a `source` string with an embedded NUL reaching `Path()`), and a deeply nested request
+  body raised `RecursionError` out of `json.loads` instead of a `ValueError`. Instead of guarding
+  the next instance, the map is now validated ONCE at the boundary: `deanon._validate_entries`
+  checks every entry (key string, value object, `original` string-or-null) and both readers —
+  `load_map` (CLI restore, reveal, deanonymize) and `load_map_metadata` (the UI listing) — go
+  through it, with the listing turning any failure into `unreadable` so no file can 500 a read.
+  `_read_json` also maps `RecursionError`/`UnicodeDecodeError` to a 400. This is the point where a
+  second round of instance patching would have been the wrong method.
 - **A map file is operator-editable input, so every JSON read is now validated by shape AND type.**
   Closed one step further than the first report, after the same class reappeared twice: a top-level
   non-object map 500'd the listing, then `{"entries": 5}` did it again through `len(5)`, and the
