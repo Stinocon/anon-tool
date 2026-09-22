@@ -1053,19 +1053,28 @@ class UnreadableContainer(ValueError):
     """
 
 
-# Tags a value may be split ACROSS. Word fragments a run for formatting reasons, and that split is
-# internal to one text container: `</w:t></w:r><w:r><w:t>` is the same sentence. `</w:p><w:p>` or
-# `</dc:title><dc:creator>` is not: joining across it would take text from a DIFFERENT element, so a
-# match that needs such a boundary is refused instead of rewritten.
-RUN_LEVEL_TAGS = re.compile(
-    r"^</?(?:w:r|w:t|w:rPr|w:proofErr|w:noProof|w:lastRenderedPageBreak|"
-    r"a:r|a:t|a:rPr|a:endParaRPr|text:span|text:s)\b"
+# Tags that do NOT start a new text container, i.e. everything a word processor normally uses to
+# split a value: a run boundary, a tab, a line break, a bookmark, a proofing mark, a hyperlink or a
+# content control wrapped around part of the name. `</w:t></w:r><w:r><w:t>` is the same sentence, and
+# so is `Contoso<w:tab/>S.r.l.` in a letterhead.
+#
+# The rule is stated in the permissive direction ON PURPOSE: ANY tag not in this list makes the
+# boundary structural, and a match that needs one is REFUSED rather than rewritten — `</w:p><w:p>` or
+# `</dc:title><dc:creator>` means the "value" is made of two different elements, and emptying the
+# second fragment would destroy text that belongs to the document, not to the match. A first version
+# listed only the run-level tags and refused ordinary footers, which is the other way to be wrong.
+INLINE_TAGS = re.compile(
+    r"^</?(?:w:r|w:t|w:rPr|w:proofErr|w:noProof|w:lastRenderedPageBreak|w:instrText|w:fldSimple|"
+    r"w:tab|w:br|w:cr|w:softHyphen|w:noBreakHyphen|w:sym|w:bookmarkStart|w:bookmarkEnd|"
+    r"w:commentRangeStart|w:commentRangeEnd|w:hyperlink|w:sdt|w:sdtContent|w:ins|w:del|w:smartTag|"
+    r"a:r|a:t|a:rPr|a:endParaRPr|a:br|a:fld|"
+    r"text:span|text:s|text:tab|text:line-break)\b"
 )
 
 
-def masked_index(xml: str) -> tuple[str, array.array, set[int]]:
+def masked_index(xml: str) -> tuple[str, array.array, dict[int, str]]:
     """(the text a reader sees, with ONE SPACE where each tag was; source offset per character, -1
-    for the inserted separator; the indices of separators that are NOT a run-level boundary).
+    for the inserted separator; the structural separators, index -> the tag responsible).
 
     `visible_index` CONCATENATES fragments, which is what a self-delimiting token (`[EMAIL-1]`)
     needs, and it stays that way for the restore direction. Detecting a real VALUE needs the
@@ -1218,11 +1227,13 @@ def anonymize_container(
                     raw = [position for position in offsets[start:end] if position >= 0]
                     if not raw:
                         continue
-                    if any(index in structural for index in range(start, end)):
+                    crossed = sorted({structural[index] for index in range(start, end)
+                                      if index in structural})
+                    if crossed:
                         raise UnreadablePart(
-                            f"REFUSED — a value of type {ptype} spans a structural boundary in "
-                            f"{info.filename}: rewriting it would take text from another element. "
-                            "Nothing was written."
+                            f"REFUSED — a value of type {ptype} spans a structural boundary "
+                            f"({', '.join(crossed)}) in {info.filename}: rewriting it would take "
+                            "text from another element. Nothing was written."
                         )
                     placeholder = alloc.for_value(ptype, "".join(text[position] for position in raw))
                     runs = group_runs(raw)
@@ -1418,7 +1429,7 @@ def xml_protect(value: str) -> str:
     return _sax_escape(value, {'"': "&quot;", "'": "&apos;"})
 
 
-def _walk_parts(xml: str, separator: str) -> tuple[str, array.array, set[int]]:
+def _walk_parts(xml: str, separator: str) -> tuple[str, array.array, dict[int, str]]:
     """(visible text, the source offset of every one of its characters, the structural separators).
 
     One implementation for both directions. Two details are about NOT spending the text over again:
@@ -1429,7 +1440,9 @@ def _walk_parts(xml: str, separator: str) -> tuple[str, array.array, set[int]]:
     """
     chunks: list[str] = []
     offsets = array.array("i")
-    structural: set[int] = set()
+    # index -> the tag that made the boundary structural, so the refusal can name it: a REFUSED an
+    # operator cannot act on is a dead end, and a dead end is what pushes people to switch the tool off.
+    structural: dict[int, str] = {}
     position = 0
     length = 0
     for match in MARKUP_RE.finditer(xml):
@@ -1438,8 +1451,10 @@ def _walk_parts(xml: str, separator: str) -> tuple[str, array.array, set[int]]:
         offsets.extend(range(position, match.start()))
         length += len(chunk)
         if separator:
-            if not all(RUN_LEVEL_TAGS.match(tag) for tag in MARKUP_RE.findall(match.group(0))):
-                structural.add(length)
+            offender = next((tag for tag in MARKUP_RE.findall(match.group(0))
+                             if not INLINE_TAGS.match(tag)), None)
+            if offender is not None:
+                structural[length] = offender
             chunks.append(separator)
             offsets.append(-1)
             length += 1

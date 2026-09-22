@@ -183,6 +183,17 @@ proving docx/xlsx/odt/pptx in place, and the doc sweep. Commit `bb45726` and aft
 Left: the adversarial review of the container pass (mandatory, different model). Legacy
 `.doc/.xls/.ppt`, PDF and images remain refused by design.
 
+### The structural-boundary refusal was too broad (2026-09-22, same day)
+
+The fix for the MEDIUM finding below refused a real document on the first try: a footer where the
+company name is split by a `<w:tab/>` between the name and its legal form. The rule had been stated
+as "only run-level tags may be crossed", which is wrong in the other direction — a tab, a line break,
+a bookmark, a hyperlink or a content control are all INSIDE one text container, and an ordinary
+letterhead uses them. `INLINE_TAGS` now lists what a word processor actually splits a value with,
+ANY other tag is structural, and the refusal names the tag (`w:p`, `dc:title`) so the operator has
+something to act on. Four fixtures (tab, break, bookmark, content control) fail if the list is
+narrowed back to the run-level set.
+
 ### Adversarial review of the container pass (2026-09-22) — every finding accounted for
 
 Review by a different model on the engine + UI of the container pass. Four real defects, all fixed

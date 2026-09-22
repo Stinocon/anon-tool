@@ -25,6 +25,14 @@ enforces that they agree.
 
 ### Fixed
 
+- **A refusal on an ordinary footer, corrected the same day.** The rule that refuses a match spanning
+  a structural boundary was stated too narrowly: it accepted only run-level tags, so a company name
+  split by a `<w:tab/>`, a `<w:br/>`, a bookmark or a content control — all of them inside ONE text
+  container — made the whole document "not rewritable" and it fell back to Markdown alone. The
+  classification is now stated in the permissive direction (`INLINE_TAGS`, everything a word
+  processor actually splits a value with) and the refusal message NAMES the tag that blocked it
+  (`w:p`, `dc:title`, ...) instead of leaving the operator with a dead end. Four fixtures cover the
+  realistic splits; they fail if the list is narrowed back.
 - **`--batch` no longer follows a symlink out of the tree it was pointed at.** `is_file()` follows
   links, so a link inside the folder could pull in a file nobody put in scope — including a map from
   the private store, where the real values live. A candidate whose target is inside `~/.anon` or

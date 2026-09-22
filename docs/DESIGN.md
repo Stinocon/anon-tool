@@ -215,9 +215,14 @@ calls it implicitly; the engine itself keeps zero network capability.
   is Word splitting a run, and that one is fine to cross; `</w:p><w:p>` or
   `</dc:title><dc:creator>` is not — the rewrite would put the placeholder in the first fragment and
   EMPTY the others, destroying text that belongs to another element, and the map would store the
-  separator spaces as part of the value. Boundaries are classified (`RUN_LEVEL_TAGS`) and a match
-  reaching across a structural one is refused with nothing written (found in adversarial review,
-  with a two-paragraph fixture that used to lose its second paragraph);
+  separator spaces as part of the value. The classification is stated in the permissive direction
+  (`INLINE_TAGS`): run boundaries, tabs, line breaks, bookmarks, hyperlinks, content controls and
+  proofing marks do NOT start a new container, so a value split by any of them is rewritten — that is
+  what an ordinary letterhead does (`Contoso<w:tab/>S.r.l.`, a two-line address). ANY other tag makes
+  the boundary structural and the match is refused with nothing written, naming the tag: a first
+  version listed only the run-level tags and refused ordinary footers, which is the other way to be
+  wrong. Found in adversarial review (a two-paragraph fixture that used to lose its second
+  paragraph), and corrected the same day on a real document;
 - **bounds on what a container may expand to**: a part over 64 MB, a part expanding more than 200x
   its compressed size, or parts totalling over 256 MB are refused before decompression, and
   `--check` (the guard's path on a `read`) uses the 12 MB `SCAN_MAX_BYTES` budget instead. Without a

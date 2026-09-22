@@ -1796,6 +1796,43 @@ class ContainerRedactionTest(unittest.TestCase):
         self.assertIn("REFUSED", res.stderr)
         self.assertFalse((self.tmp / "bomba.redacted.docx").exists(), "nothing is written")
 
+    def test_a_name_split_by_a_tab_or_a_break_in_a_footer_is_still_redacted(self) -> None:
+        """The realistic split: not every boundary between two fragments of a name is structural.
+
+        A letterhead writes `Contoso<w:tab/>S.r.l.`, a two-line address breaks with `<w:br/>`, and a
+        bookmark or a content control can sit anywhere — all of them are inside ONE text container,
+        so the value must be redacted. The first version of this rule listed only the run-level tags
+        and refused ordinary documents, which is the other way to get it wrong.
+        """
+        cases = {
+            "tab": "<w:t>Contoso</w:t><w:tab/><w:t>S.r.l.</w:t>",
+            "break": "<w:t>Contoso</w:t><w:br/><w:t>S.r.l.</w:t>",
+            "bookmark": ("<w:t>Contoso</w:t><w:bookmarkStart w:id=\"1\" w:name=\"x\"/>"
+                         "<w:bookmarkEnd w:id=\"1\"/><w:t>S.r.l.</w:t>"),
+            "content control": ("<w:t>Contoso</w:t></w:r><w:sdt><w:sdtContent>"
+                                "<w:r><w:t>S.r.l.</w:t></w:r></w:sdtContent></w:sdt>"),
+        }
+        for label, body in cases.items():
+            with self.subTest(label):
+                src = self.pack(f"footer-{label.replace(' ', '-')}.docx",
+                                {"word/footer1.xml": f"<w:p><w:r>{body}</w:r></w:p>"})
+                res = self.run_anon(str(src), "--quiet")
+                self.assertEqual(res.returncode, 0, (label, res.stderr))
+                out = self.tmp / f"footer-{label.replace(' ', '-')}.redacted.docx"
+                self.assertTrue(zipfile.is_zipfile(out), label)
+                text = self.all_text(out)
+                self.assertNotIn("Contoso", text, label)
+                self.assertIn("AZIENDA-1-", text, label)
+
+    def test_a_refusal_names_the_tag_that_blocked_it(self) -> None:
+        """A REFUSED must be actionable: the operator has to know WHAT to look at."""
+        src = self.pack("bloccato.docx", {"word/footer1.xml":
+            "<w:p><w:r><w:t>Contoso</w:t></w:r></w:p><w:p><w:r><w:t>S.r.l.</w:t></w:r></w:p>"})
+        res = self.run_anon(str(src), "--quiet")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("REFUSED", res.stderr)
+        self.assertIn("w:p", res.stderr, "the message must name the boundary that caused the refusal")
+
     def test_a_match_reaching_across_a_paragraph_is_refused_not_rewritten(self) -> None:
         """A value that only matches by joining TWO elements must be refused.
 
