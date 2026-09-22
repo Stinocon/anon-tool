@@ -29,7 +29,7 @@ contradiction, so the engine is:
 - **local** — stdlib only, no `socket`/`urllib`/`http` imports, no telemetry;
 - **auditable** — a 700-line module with a 400-line test suite, not a model.
 
-An LLM may be *attached later* as a **candidate suggester** on a local endpoint (see §8): it would
+An LLM may be *attached later* as a **candidate suggester** on a local endpoint (see §7): it would
 propose "this looks like a person's name", a human approves, and the deterministic engine applies
 the substitution. The engine stays the only thing that ever writes.
 
@@ -50,6 +50,11 @@ One engine, several front-ends. **The web UI does not reimplement any detection 
 imports the same module. Two copies of redaction logic diverge, and divergence in a privacy tool
 is a silent hole. This is why the CLI, the Pi guard, the skill and the web app all inherit the
 same tests and the same adversarial reviews.
+
+The web app is the only front-end with a network surface, so its perimeter — bind address, token,
+`Host`/`Origin`, no client paths, the caps, the container hardening — is stated where a reader
+looking for a threat model goes: [`../SECURITY.md`](../SECURITY.md). This document stays on the
+engine.
 
 ## 4. Losslessness
 
@@ -164,29 +169,7 @@ fiscale** (16 chars + check character), **partita IVA** (11 digits + Luhn), **IB
 license plates, addresses. A checksum-validated match has almost no false positives — the
 opposite of a word list.
 
-## 7. Trust boundary of the local web app (implemented)
-
-The web UI is the only part with a network surface, so its perimeter is explicit:
-
-- **bind `127.0.0.1`** only; `0.0.0.0` is refused unless an explicit `--allow-lan` flag prints a
-  warning. No authentication is acceptable *because* it is loopback — that is the boundary.
-- **anti-CSRF / DNS-rebinding**: any page in the user's browser can `POST` to `127.0.0.1:1407`.
-  Mitigations: `Host` allowlist, a per-run token required as a custom header (delivered to the page through a CSP nonce, so a foreign origin can never read it), and an `Origin` check when the header is present.
-- **no client-supplied paths**: uploads land in a per-request temp directory under generated
-  names and are deleted afterwards; the server never reads or writes an arbitrary path; results
-  are streamed back as a download instead of written into the filesystem.
-- size limits on uploads (160 MB) and on `/api/*` requests per minute (token bucket, `--rate-limit`),
-  no shell, no `eval`, no content or value logging;
-- the socket has a 30 s read timeout, so a client that announces a body and stalls cannot pin a
-  worker thread; the external converter runs in its own process group, is killed as a group, is
-  bounded in time (300 s, `ANON_CONVERT_TIMEOUT`) and in output — the cap is applied WHILE the
-  output is produced (`ANON_CONVERT_MAX_BYTES`, default 160 MB), never after buffering it;
-- the container runs as a non-root user, with a read-only root filesystem, `no-new-privileges`,
-  and only the data volume (`/data`) plus a tmpfs writable.
-- `/api/maps` exposes counts only; the placeholder→real-value mapping is shown only behind an
-  explicit, warned action.
-
-## 8. Planned seam for a local model
+## 7. Planned seam for a local model
 
 When a local model is available, it plugs in as a **detector**, never as the anonymizer:
 
@@ -198,13 +181,20 @@ engine.suggest(text) ->  [candidates from a detector backend]  -> human approves
 A detector backend is a localhost endpoint (OpenAI-compatible or similar). Nothing in the engine
 calls it implicitly; the engine itself keeps zero network capability.
 
-## 9. Known limits (deliberate)
+## 8. Known limits (deliberate)
 
 - contextual references ("the client from Brescia") — a human read is still required;
 - proper names absent from the dictionary are not redacted;
 - images/screenshots are not scannable (pixels), so a screenshot of a client document passes;
 - office containers cannot be anonymized directly — they are converted to Markdown first, and
   `anon.py` refuses binary input rather than producing a corrupted file *named* "redacted";
+- **what that conversion does not carry**, measured rather than assumed
+  (`scripts/convert-fidelity.py`, which proves each feature is in the fixture before looking for it
+  in the Markdown — a guessed signature is how a measurement lies): 11 of 17 features are preserved.
+  Headers and footers, comments, tracked deletions and the core properties (title, **author**) are
+  not. Those are texts the engine therefore never redacts, and they survive in the original `.docx`
+  and in any PDF exported from it. The workflow consequence is in the `anon` skill: deliver the
+  regenerated Markdown, or strip metadata and revision history from the container you deliver.
 - a file too large to scan is blocked (fail-closed), and so is a file whose check does not finish
   within the guard's timeout: the guard does not know whether it is sensitive, so it refuses rather
   than guesses (12 MB / 20 s, sized from `scripts/bench-check.py`);

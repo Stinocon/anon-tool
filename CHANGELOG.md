@@ -10,6 +10,61 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Anonimizza button never armed for a DROPPED document** (only the file picker worked): the
+  drop stored nothing, and the button read the file INPUT's `files`, which a drop does not
+  populate. Both paths now go through one `acceptAnonFile`, and a dropped document reports its name
+  and size. Covered by new interaction checks in `tests/ui_load_check.mjs`, which now dispatches
+  real drop events instead of only proving that the script parses.
+- A file the server would refuse is now refused in the browser, before spending the transfer, with
+  the limit named in the message (the cap comes from `/api/state`, so the page cannot drift from it).
+- `--batch --check` reported a folder containing only `.docx` as clean (fail-open): unscannable
+  files are findings now, exactly like the single-file check.
+- `--stdout` had stopped writing the map (regression from the `write_run` refactor): the pipeline
+  could no longer be reversed. Restored, with a test.
+- `--batch --out DIR` flattened every output to its basename, so `a/nota.txt` and `b/nota.txt`
+  overwrote each other; the relative path is preserved. An `--out` equal to (or a parent of) the
+  scanned folder is refused instead of producing a silent no-op.
+- `_is_own_output` matched `.redacted.` anywhere, skipping real sources such as
+  `note.redacted.draft.txt`, and missed `X.REDACTED.MD`: it is anchored to the final extension and
+  case-insensitive now.
+
+### Added
+
+- `anon.py --dry-run`: reports what WOULD be redacted, per type, and where it would be written,
+  creating no file and allocating no tag. `--check` answers "is this sensitive?"; this answers the
+  question that comes first.
+- `anon.py DIR --batch`: anonymizes a folder, writing `*.redacted.*` next to each source and never
+  over it. It skips what it cannot do safely — binary/unscannable files (never copied under a
+  `redacted` name), anything over 12 MB (rather than half-processing it), and its own
+  `*.redacted.*`/`*.map.json` outputs, so a second run cannot nest placeholders — and refuses a
+  directory inside `~/.anon` outright. `--batch --check` is the folder-shaped gate (exit 1 if any
+  file is sensitive); `--batch --out DIR` keeps the source folder clean.
+- A progress bar on the Anonimizza tab: the upload percentage (XHR reports what `fetch` cannot),
+  then an elapsed-time sweep while the server converts and anonymizes — kept visible for at least
+  700 ms, so a fast run does not merely flicker.
+- `ANON_MAX_UPLOAD_BYTES` (default 160 MB, plumbed through `docker-compose.yml`): the upload cap is
+  the operator's decision. Raising it does not raise the conversion timeout, nor the 12 MB the Pi
+  guard is willing to read.
+- `scripts/convert-fidelity.py` measures what `.docx -> Markdown` loses, proving each feature is
+  in the fixture before looking for it in the Markdown: **11 of 17** features survive. Headers,
+  footers, comments, tracked deletions and the core properties (title, **author**) are not carried
+  — so the engine never redacts them and they stay in the original `.docx` and in any PDF exported
+  from it. The workflow consequence is in the `anon` skill.
+- `docs/brand/ui-anonymize.png` and the README's Web UI section: a real capture of the UI, from a
+  server running on a temporary `ANON_HOME` with synthetic data (never the container's real one).
+- CI: the converter-install outcome is now an output, a `::warning` and a line in the run summary
+  ("NOT installed — the docx/pdf tests were skipped"), instead of a skip visible only in the log.
+  CI also runs the doc-number gate.
+
+### Changed
+
+- `docs/DESIGN.md` states the engine only: the local web app's perimeter (bind address, token,
+  `Host`/`Origin`, the caps, the container hardening) moved into `SECURITY.md`, where the threat
+  model already pointed at it. One document per audience, and the perimeter is no longer written
+  in two places.
+
 ## [1.7.0] - 2026-09-22
 
 ### Added

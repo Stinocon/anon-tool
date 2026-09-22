@@ -163,6 +163,46 @@ button[disabled] { opacity: 0.45; cursor: not-allowed; }
 .status.ok { color: var(--ok); }
 .status.error { color: var(--danger); }
 
+/* --------------------------------------------------------------- progress */
+.progress { margin-top: var(--space-3); }
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-size: var(--fs-micro);
+  line-height: 6px;
+  text-align: right;
+  transition: width 120ms linear;
+}
+.progress-label {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+/* The conversion has no intermediate progress to report: the bar sweeps instead of pretending to
+   know a percentage, and the label carries the elapsed seconds. */
+.progress.is-waiting .progress-fill {
+  width: 35% !important;
+  animation: progress-sweep 1.4s ease-in-out infinite;
+}
+@keyframes progress-sweep {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress.is-waiting .progress-fill { animation: none; margin-left: 0; width: 35% !important; }
+}
+
 .chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip {
   font-size: var(--fs-xs); font-family: var(--mono); background: var(--accent-bg);

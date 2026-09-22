@@ -47,8 +47,18 @@ function makeElement(tag = "div") {
     files: [],
     attributes: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
-    addEventListener() {},
+    // Listeners are RECORDED, not discarded: without this the harness can only prove that app.js
+    // parses, never that a gesture does what it says (the drag-and-drop bug this now covers was
+    // invisible to every other check).
+    listeners: {},
+    addEventListener(type, handler) {
+      (this.listeners[type] ||= []).push(handler);
+    },
     removeEventListener() {},
+    dispatchEvent(event) {
+      for (const handler of this.listeners[event.type] || []) handler(event);
+      return true;
+    },
     append(...nodes) { this.children.push(...nodes); this.lastChild = nodes[nodes.length - 1]; },
     appendChild(node) { this.children.push(node); this.lastChild = node; return node; },
     click() {},
@@ -60,11 +70,18 @@ function makeElement(tag = "div") {
   return element;
 }
 
+const elements = new Map();
 globalThis.document = {
   // The real DOM always has documentElement: the theme code writes to it before first paint.
   documentElement: makeElement("html"),
   body: makeElement("body"),
-  getElementById: (id) => (declaredIds.has(id) ? makeElement(id) : null),
+  // ONE element per id, cached: `getElementById` returning a fresh stub each call would make every
+  // post-gesture assertion vacuous (the handler mutates one object, the assertion reads another).
+  getElementById: (id) => {
+    if (!declaredIds.has(id)) return null;
+    if (!elements.has(id)) elements.set(id, makeElement(id));
+    return elements.get(id);
+  },
   querySelectorAll: () => [],
   querySelector: () => null,
   createElement: (tag) => makeElement(tag),
@@ -88,14 +105,72 @@ const stubPayload = (url) => {
   return {
     version: "test", schema: "anon/1", catalogs: [], patterns: ["identity"],
     maps_count: 0, converter: false, entities_path: "/tmp/entities.txt",
+    max_upload_bytes: 160 * 1024 * 1024,
   };
 };
 globalThis.fetch = async (url) => ({ ok: true, status: 200, json: async () => stubPayload(url) });
 
+/** A file the browser would hand to a drop handler (only what the app actually reads). */
+const makeFile = (name, size, text = "") => ({ name, size, text: async () => text });
+
+const failures = [];
+const check = (label, ok, detail) => {
+  if (!ok) failures.push(`${label}${detail ? ` — ${detail}` : ""}`);
+  console.log(`${ok ? "PASS" : "FAIL"}  ${label}${!ok && detail ? ` — ${detail}` : ""}`);
+};
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
 try {
   await import(path.join(webDir, "app.js"));
   // Let the initial async chain (refresh → refreshMaps → loadEntities) settle.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await settle();
+
+  // --- a dropped DOCUMENT must arm the button (it did not: the drop never populated the input) ---
+  const dropAnon = document.getElementById("drop-anon");
+  const runAnon = document.getElementById("run-anon");
+  dropAnon.dispatchEvent({
+    type: "drop",
+    preventDefault() {},
+    dataTransfer: { files: [makeFile("verbale.docx", 2 * 1024 * 1024)] },
+  });
+  await settle();
+  check("a dropped .docx enables Anonimizza", runAnon.disabled === false, `disabled=${runAnon.disabled}`);
+  check(
+    "the drop is reported in the status line",
+    /verbale\.docx/.test(document.getElementById("anon-status").textContent),
+    document.getElementById("anon-status").textContent,
+  );
+
+  // --- a file the server would refuse must be refused HERE, with the limit named ---
+  dropAnon.dispatchEvent({
+    type: "drop",
+    preventDefault() {},
+    dataTransfer: { files: [makeFile("enorme.docx", 500 * 1024 * 1024)] },
+  });
+  await settle();
+  const oversizedStatus = document.getElementById("anon-status").textContent;
+  check(
+    "an oversized document is refused with the limit in the message",
+    /160 MB/.test(oversizedStatus) && /500/.test(oversizedStatus),
+    oversizedStatus,
+  );
+
+  // --- a dropped TEXT file fills the textarea and arms the button ---
+  dropAnon.dispatchEvent({
+    type: "drop",
+    preventDefault() {},
+    dataTransfer: { files: [makeFile("nota.txt", 40, "Cliente Contoso.\n")] },
+  });
+  await settle();
+  check(
+    "a dropped .txt fills the textarea and enables Anonimizza",
+    /Contoso/.test(document.getElementById("text-anon").value) && runAnon.disabled === false,
+  );
+
+  if (failures.length) {
+    console.error(`ui_load_check: ${failures.length} interaction check(s) failed`);
+    process.exit(1);
+  }
   console.log(`ui_load_check: app.js loaded clean against ${declaredIds.size} declared ids`);
   process.exit(0);
 } catch (error) {

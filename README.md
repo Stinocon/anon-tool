@@ -74,6 +74,9 @@ These are declared limits, not oversights:
 ```bash
 python3 anon.py report.txt                       # -> report.redacted.txt + a map in ~/.anon/maps/
 python3 anon.py report.txt --check --json        # is this safe to read? (exit 1 if not)
+python3 anon.py report.txt --dry-run             # what WOULD be redacted, and where — writes nothing
+python3 anon.py ./cliente --batch --dry-run      # the same for a whole folder, before touching it
+python3 anon.py ./cliente --batch                 # -> *.redacted.* next to each source (never over it)
 python3 anon.py report.txt --audit               # is an ALREADY redacted file really redacted?
 python3 deanon.py final.docx <map.json>          # put the real values back (text or .docx/.xlsx/.odt)
 python3 convert.py report.docx > report.md       # docx/pdf -> Markdown, locally
@@ -94,7 +97,24 @@ Four tabs, one primary action each: **Anonimizza**, **Deanonimizza**, **Verifica
 Pattern groups and catalogs sit behind an *Opzioni* disclosure, so the default flow is: drop a
 document, anonymize, read the result. Dark theme by default, with a light alternative.
 
+![The Anonimizza tab: a document goes in, typed placeholders come out](docs/brand/ui-anonymize.png)
+
+The capture is of a **synthetic** document (no real values): the placeholders are typed and carry
+the tag of the map that produced them (`[AZIENDA-1-91810c]`), and that map is what restores the
+real values — it stays in `~/.anon/maps/`, never in the browser.
+
 `make up | down | logs | native | test | smoke` wraps the same operations.
+
+The upload cap is a default, not a wall: `ANON_MAX_UPLOAD_BYTES` (160 MB, exposed to the page
+through `/api/state` so the UI can refuse an oversized file before spending the transfer) raises it
+deliberately. Raising it does not raise the converter's own `ANON_CONVERT_TIMEOUT`, nor the 12 MB
+the Pi guard is willing to read from a redacted Markdown.
+
+`--batch` walks a directory and refuses what it cannot do safely: binary or unscannable files are
+reported and skipped (never copied under a `redacted` name), files over 12 MB are skipped rather
+than half-processed, its own `*.redacted.*` outputs are skipped so a second run cannot nest
+placeholders, and a directory inside the private store is refused outright. `--batch --check` is the
+folder-shaped gate (exit 1 if anything is sensitive); `--out DIR` keeps the sources' folder clean.
 
 The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard all read the same
 `entities.txt` and write to the same map directory: one source of truth.
@@ -180,12 +200,17 @@ The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 ## Development
 
 ```bash
-make test      # engine suite, web integration, UI load check
+make test      # engine suite, web integration, UI load check, doc-number gate
 make smoke     # build the container and exercise every endpoint
 make up-slim   # the text-only container variant (port 1408)
 
-# How fast can the engine check a file? The Pi guard's size cap is derived from this measurement.
+# How fast can the engine check a file? The Pi guard's size cap is derived from this measurement,
+# and the number depends on the dictionary size — run it with the dictionary you actually use.
 python3 scripts/bench-check.py --mb 8 --entities 200
+# Is 6 hex digits enough for the per-map tag? Measured, not argued.
+python3 scripts/tag-collision.py
+# What does .docx -> Markdown lose? (headers, metadata, comments, tracked changes)
+python3 scripts/convert-fidelity.py
 # Refresh the converter's hashed pin after a version bump.
 python3 scripts/pin-converter.py > requirements-anydoc.txt
 ```

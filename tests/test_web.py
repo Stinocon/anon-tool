@@ -11,6 +11,7 @@ loopback-only, unauthenticated UI an acceptable trade-off.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import json
 import os
 import re
@@ -238,6 +239,32 @@ class ConverterCapTest(unittest.TestCase):
         self.assertEqual(status, 500, body)
         self.assertIn("more than 1 KB", body)
         self.assertLess(elapsed, 20, "the cap must abort the child, not wait for it")
+
+
+class UploadCapTest(unittest.TestCase):
+    """The upload cap is a DEFAULT, not a constant: an operator with a genuinely huge document
+    raises it deliberately (ANON_MAX_UPLOAD_BYTES) instead of turning the tool off. Loading the
+    module under a patched environment is enough — the cap is a module-level constant."""
+
+    def _cap(self) -> int:
+        spec = importlib.util.spec_from_file_location("anon_web_cap", SERVER)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return int(module.MAX_BODY_BYTES)
+
+    def test_the_cap_defaults_to_160_mb_and_follows_the_environment(self) -> None:
+        original = os.environ.get("ANON_MAX_UPLOAD_BYTES")
+        try:
+            os.environ.pop("ANON_MAX_UPLOAD_BYTES", None)
+            self.assertEqual(self._cap(), 160 * 1024 * 1024)
+            os.environ["ANON_MAX_UPLOAD_BYTES"] = str(500 * 1024 * 1024)
+            self.assertEqual(self._cap(), 500 * 1024 * 1024)
+        finally:
+            if original is None:
+                os.environ.pop("ANON_MAX_UPLOAD_BYTES", None)
+            else:
+                os.environ["ANON_MAX_UPLOAD_BYTES"] = original
 
 
 class WebUiTest(unittest.TestCase):
@@ -577,6 +604,13 @@ class WebUiTest(unittest.TestCase):
         )
         self.assertEqual(status, 200, small)
         self.assertFalse(small["findings_truncated"], "the flag must be false, not merely absent")
+
+    def test_state_reports_the_upload_cap(self) -> None:
+        """The UI refuses an oversized file before spending the transfer, so it must learn the cap
+        from the server instead of keeping its own copy (the hard-coded hint drifted silently)."""
+        status, info = self.call("/api/state")
+        self.assertEqual(status, 200, info)
+        self.assertEqual(info["max_upload_bytes"], 160 * 1024 * 1024)
 
     def test_the_map_count_is_not_capped_by_the_listing(self) -> None:
         """`/api/state` counted through the capped list: 300 maps would have reported 100."""

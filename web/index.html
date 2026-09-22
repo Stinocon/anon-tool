@@ -47,7 +47,7 @@
       <label class="drop" id="drop-anon">
         <input type="file" id="file-anon" hidden>
         <span class="drop-title">Trascina qui il documento</span>
-        <span class="muted small">doc · docx · pdf · txt · md · json · yaml · csv — fino a 160 MB, oppure incolla il testo qui sotto</span>
+        <span class="muted small">doc · docx · pdf · txt · md · json · yaml · csv — fino a <span id="upload-limit">160 MB</span>, oppure incolla il testo qui sotto</span>
       </label>
       <textarea id="text-anon" rows="6" placeholder="…incolla qui il testo da anonimizzare" spellcheck="false" aria-label="Testo da anonimizzare"></textarea>
 
@@ -72,6 +72,11 @@
         <button id="run-anon" class="primary" disabled>Anonimizza</button>
         <button id="clear-anon" class="ghost" hidden>Pulisci</button>
         <span id="anon-status" class="status" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="progress" id="anon-progress" hidden>
+        <div class="progress-track"><div class="progress-fill" id="anon-progress-fill"></div></div>
+        <span class="progress-label" id="anon-progress-label" role="status" aria-live="polite"></span>
       </div>
     </div>
 

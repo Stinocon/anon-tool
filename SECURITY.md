@@ -7,8 +7,7 @@ do not open a public issue for a vulnerability.
 
 ## Threat model — what this tool is and is not
 
-anon-tool is a **local** tool. Its whole security value is a boundary, and the boundary is stated
-in `docs/DESIGN.md` §7:
+anon-tool is a **local** tool. Its whole security value is a boundary, and the boundary is:
 
 - The engine (`anon.py`, `deanon.py`) is deterministic and stdlib-only: **no network capability**,
   no LLM, no telemetry. Anonymization that required a model would first have to hand the model the
@@ -17,11 +16,21 @@ in `docs/DESIGN.md` §7:
   the container publishes `127.0.0.1:1407:1407`, never `1407:1407`. Exposing the port to a network
   exposes your documents and your entity dictionary — that is a configuration decision, not a bug,
   and it is why the server refuses a non-loopback bind unless `--allow-lan` is passed explicitly.
-- Requests must carry the correct `Host` header and a per-run token delivered through a CSP nonce;
-  a foreign `Origin` is refused. No client-supplied filesystem path is ever used: uploads land in
-  a per-request temp directory under generated names and are deleted afterwards.
-- `/api/*` is rate limited (token bucket, `--rate-limit`, default 120/min, 0 disables), and the
-  converter's output is capped while it is produced, not after buffering it.
+- Requests must carry the correct `Host` header (an allowlist) and a per-run token delivered
+  through a CSP nonce; a foreign `Origin` is refused when the header is present. This is what
+  stands between a hostile page in your own browser and the API.
+- **No client-supplied filesystem path is ever used**: uploads land in a per-request temp directory
+  under generated names and are deleted afterwards; results are streamed back as a download instead
+  of being written into the filesystem. `/api/maps` exposes counts only, and the
+  placeholder→real-value mapping is shown only behind an explicit, warned action with a timeout.
+- size limits on uploads (160 MB, `ANON_MAX_UPLOAD_BYTES`) and on `/api/*` requests per minute (token bucket,
+  `--rate-limit`, default 120/min, 0 disables), no shell, no `eval`, no content or value logging.
+- the socket has a 30 s read timeout, so a client that announces a body and stalls cannot pin a
+  worker thread; the external converter runs in its own process group, is killed as a group, is
+  bounded in time (300 s, `ANON_CONVERT_TIMEOUT`) and in output — the cap is applied WHILE the
+  output is produced (`ANON_CONVERT_MAX_BYTES`, default 160 MB), never after buffering it.
+- the container runs as a non-root user, with a read-only root filesystem, `no-new-privileges`,
+  and only the data volume (`/data`) plus a tmpfs writable.
 - The one third-party component installed at build time (`firecrawl-anydoc`) is pinned by digest
   (`requirements-anydoc.txt`, `pip install --require-hashes`), so a replaced wheel fails the build
   instead of running.
@@ -36,7 +45,7 @@ in `docs/DESIGN.md` §7:
   values that do not belong to that document;
 - any way the engine silently fails open without a visible indicator.
 
-## Out of scope (declared limits, see `docs/DESIGN.md` §9)
+## Out of scope (declared limits, see `docs/DESIGN.md` §8)
 
 - **contextual references** ("the client from Brescia") — redaction is deterministic pattern
   matching plus a curated dictionary; a human read of the redacted document is still required;

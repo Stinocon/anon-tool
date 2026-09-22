@@ -1112,6 +1112,17 @@ def _fold_entity(value: str) -> str:
 
 NEAR_MISS_WORD_LIMIT = 400
 NEAR_MISS_VOCAB_LIMIT = 200
+
+# `--batch` walks a directory, so it needs its own ceiling: the guard's 12 MB is the size the tool
+# promises to scan inside its budget (scripts/bench-check.py), and a folder is not a licence to
+# exceed it silently. A bigger file is reported as skipped, never half-processed.
+BATCH_MAX_BYTES = 12 * 1024 * 1024
+# Our own outputs must never be treated as input: re-anonymizing `x.redacted.md` would nest
+# placeholders and re-number them, and deleting nothing is not the fix.
+OWN_OUTPUT_SUFFIXES = (".redacted", ".deanon")
+# Anchored to the FINAL extension and case-insensitive: a bare substring test skipped real sources
+# (`note.redacted.draft.txt`) and missed `X.REDACTED.MD`.
+OWN_OUTPUT_RE = re.compile(r"\.(?:redacted|deanon)\.[^.]*$", re.IGNORECASE)
 NEAR_MISS_CUTOFF = 0.86
 WORD_RE = re.compile(r"[^\W\d_][\w'’\-]*", re.UNICODE)
 
@@ -1483,6 +1494,222 @@ def _emit_check(
     return 1 if (found or unscannable) else 0
 
 
+def _is_own_output(name: str) -> bool:
+    """True for a file this tool produced: `x.redacted.md`, `X.REDACTED.MD`, `x.deanon.docx`,
+    `x.map.json`.
+
+    Re-anonymizing our own output would re-number and nest the placeholders; a map is never input.
+    """
+    return bool(OWN_OUTPUT_RE.search(name)) or name.lower().endswith(".map.json")
+
+
+def write_run(
+    src: Path,
+    redacted: str,
+    entries: dict[str, dict[str, str]],
+    counts: dict[str, int],
+    tag: str,
+    args: argparse.Namespace,
+    *,
+    dry_run: bool,
+    out_path: Path | None = None,
+) -> tuple[Path | None, Path | None]:
+    """Write the redacted copy and its map; with `dry_run`, compute the paths and write NOTHING.
+
+    One function for both the single-file and the batch path: two copies of "where does the output
+    go, and what does the map contain" is exactly the duplication that drifts.
+    """
+    to_stdout = args.stdout and out_path is None
+    out: Path | None = None
+    if not to_stdout:
+        out = out_path if out_path is not None else (Path(args.out).expanduser() if args.out else _default_output(src))
+    map_path: Path | None = None
+    if entries:
+        map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
+        map_path = Path(args.map).expanduser() if args.map else DEFAULT_MAPS / f"{map_id}.map.json"
+    if dry_run:
+        return out, map_path
+    if to_stdout:
+        # `--stdout` redirects the TEXT; it does not opt out of writing the map, or the pipeline
+        # that just consumed the redacted text on stdout could never be reversed.
+        sys.stdout.write(redacted)
+        if not redacted.endswith("\n"):
+            sys.stdout.write("\n")
+    else:
+        _write_private(out, redacted)
+    if map_path is not None:
+        payload = {
+            "tag": tag_of(entries),
+            "version": VERSION,
+            "id": map_path.stem.removesuffix(".map"),
+            "source": str(src.resolve()),
+            "output": str(out) if out is not None else "(stdout)",
+            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "counts": counts,
+            "entries": entries,
+        }
+        _write_private(map_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return out, map_path
+
+
+def _emit_dry_run(
+    src: Path,
+    out: Path | None,
+    map_path: Path | None,
+    entries: dict[str, dict[str, str]],
+    counts: dict[str, int],
+    args: argparse.Namespace,
+) -> int:
+    """`--check` answers "is this sensitive?". This answers "what would change, and where would it
+    land?" — the question that comes first, and the only safe first step on a whole folder."""
+    if args.json:
+        print(json.dumps({
+            **_envelope("anon.py --dry-run"),
+            "dry_run": True,
+            "file": str(src),
+            "sensitive": bool(entries),
+            "would_write": str(out) if out else "(stdout)",
+            "would_map": str(map_path) if map_path else None,
+            "entries": len(entries),
+            "counts": counts,
+        }, ensure_ascii=False))
+        return 0
+    if not args.quiet:
+        if entries:
+            summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            print(f"anon: dry run — nothing written; would redact {len(entries)} span(s) [{summary}]")
+            if out is not None:
+                print(f"anon: would write -> {out}")
+            print(f"anon: would map   -> {map_path}")
+        else:
+            print(f"anon: dry run — nothing sensitive in {src}; nothing would be written")
+    return 0
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    """Anonymize a directory, one document at a time, never touching a source in place.
+
+    What it REFUSES is the point: binary/unscannable files are reported and skipped (never copied
+    under a `redacted` name), our own outputs are skipped (re-anonymizing them would nest the
+    placeholders), and anything over `BATCH_MAX_BYTES` is skipped rather than half-processed. With
+    `--dry-run` it reports the same plan and writes nothing; with `--check` it only gives verdicts
+    and exits 1 if any file is sensitive, which is the folder-shaped gate.
+    """
+    root = Path(args.file).expanduser()
+    if not root.is_dir():
+        raise ValueError(f"--batch needs a directory, not {root}")
+    if args.stdout:
+        raise ValueError("--batch writes files: --stdout does not apply")
+    if args.map:
+        raise ValueError("--batch writes one map per document: --map does not apply")
+    resolved = root.resolve()
+    private = ANON_HOME.resolve()
+    if resolved == private or private in resolved.parents:
+        raise ValueError(f"refusing a batch inside the private store ({ANON_HOME})")
+    out_dir = Path(args.out).expanduser() if args.out else None
+    if out_dir is not None:
+        out_resolved = out_dir.resolve()
+        if out_resolved == resolved or out_resolved in resolved.parents:
+            # Otherwise every candidate file looks like "inside the output directory" and the run
+            # reports 0 file(s) / 0 skipped — a no-op that looks like success.
+            raise ValueError("--out must not be the folder being scanned, nor a parent of it")
+        if not (args.dry_run or args.check):
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+    entities = resolve_entities(args)          # resolved once: the folder shares one dictionary
+    families = resolve_families(args)
+    rows: list[dict[str, object]] = []
+    skipped: list[tuple[Path, str]] = []
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        if out_dir is not None and out_dir.resolve() in path.resolve().parents:
+            continue  # never re-scan what we just wrote
+        if _is_own_output(path.name):
+            skipped.append((path, "own output"))
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            skipped.append((path, "unreadable"))
+            continue
+        if size > BATCH_MAX_BYTES:
+            skipped.append((path, f"over {BATCH_MAX_BYTES // (1024 * 1024)} MB"))
+            continue
+        if sniff(path) is not None:
+            if args.check:
+                # Fail CLOSED, exactly like the single-file check: "unscannable" is not "clean".
+                # Reporting a folder of .docx as clean is the one answer that must never happen.
+                rows.append({"file": str(path), "total": 1, "entries": 0, "counts": {},
+                             "redacted": None, "map": None, "unscannable": True})
+            else:
+                skipped.append((path, "not text (convert it first)"))
+            continue
+        text = read_text(path)
+        if args.check:
+            found = detect(text, entities, include_heuristics=not args.no_hosts, families=families)
+            by_type: dict[str, int] = {}
+            for _start, _end, ptype in found:
+                by_type[ptype] = by_type.get(ptype, 0) + 1
+            rows.append({"file": str(path), "total": len(found), "entries": 0, "counts": by_type,
+                         "redacted": None, "map": None})
+            continue
+        tag = new_tag() if args.dry_run else allocate_tag([DEFAULT_MAPS])
+        redacted, entries, counts = anonymize(
+            text, entities, include_heuristics=not args.no_hosts, families=families, tag=tag,
+        )
+        # The relative path is preserved: flattening to the basename made `a/nota.txt` and
+        # `b/nota.txt` overwrite each other in --out, silently, with two maps pointing at one file.
+        planned = None
+        if out_dir is not None:
+            relative = path.relative_to(root)
+            planned = out_dir / relative.parent / _default_output(path).name
+        out, map_path = write_run(
+            path, redacted, entries, counts, tag, args, dry_run=args.dry_run, out_path=planned,
+        )
+        rows.append({
+            "file": str(path), "total": len(entries), "entries": len(entries), "counts": counts,
+            "redacted": str(out) if out else None, "map": str(map_path) if map_path else None,
+        })
+
+    placeholders = sum(int(row["entries"]) for row in rows)
+    changed = sum(1 for row in rows if int(row["entries"]))
+    if args.json:
+        print(json.dumps({
+            **_envelope("anon.py --batch"),
+            "batch": True,
+            "dry_run": bool(args.dry_run),
+            "check": bool(args.check),
+            "root": str(root),
+            "files": rows,
+            "skipped": [{"file": str(path), "reason": reason} for path, reason in skipped],
+            "totals": {"scanned": len(rows), "changed": changed, "placeholders": placeholders,
+                       "skipped": len(skipped)},
+        }, ensure_ascii=False))
+    elif not args.quiet:
+        for row in rows:
+            name = Path(str(row["file"])).name
+            summary = ", ".join(f"{k}x{v}" for k, v in sorted(dict(row["counts"]).items()))  # type: ignore[arg-type]
+            if args.check:
+                if row.get("unscannable"):
+                    print(f"SENSITIVE  {name}  (non scansionabile: convertilo prima, la redazione non l'ha visto)")
+                else:
+                    print(f"{'SENSITIVE' if row['total'] else 'clean    '}  {name}" + (f"  {summary}" if summary else ""))
+            elif row["redacted"]:
+                verb = "would write" if args.dry_run else "->"
+                print(f"  {name}  [{summary}]  {verb} {Path(str(row['redacted'])).name}")
+            else:
+                print(f"  {name}  clean")
+        for path, reason in skipped:
+            print(f"  skipped  {path.name}  ({reason})")
+        verb = "would redact" if args.dry_run else "redacted"
+        print(
+            f"anon: {len(rows)} file(s), {changed} {verb}, {placeholders} placeholder(s), "
+            f"{len(skipped)} skipped"
+        )
+    if args.check and any(int(row["total"]) for row in rows):
+        return 1
+    return 0
+
+
 def cmd_anonymize(args: argparse.Namespace) -> int:
     src = Path(args.file).expanduser()
     if not src.is_file():
@@ -1506,7 +1733,9 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
     # --map run draw a tag that an existing ~/.anon/maps map already uses, which is the silent
     # substitution the tag exists to prevent.
     destination = Path(args.map).expanduser().parent if args.map else DEFAULT_MAPS
-    tag = allocate_tag([DEFAULT_MAPS, destination], getattr(args, "tag", None))
+    # A dry run writes nothing, so it does not need a collision-free tag: the preview only shows
+    # the SHAPE (`[EMAIL-1-a3f9d1]`), and the real run draws its own.
+    tag = new_tag() if args.dry_run else allocate_tag([DEFAULT_MAPS, destination], getattr(args, "tag", None))
     redacted, entries, counts = anonymize(
         text,
         entities,
@@ -1515,31 +1744,10 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
         tag=tag,
     )
 
-    if args.stdout:
-        sys.stdout.write(redacted)
-        if not redacted.endswith("\n"):
-            sys.stdout.write("\n")
+    out, map_path = write_run(src, redacted, entries, counts, tag, args, dry_run=args.dry_run)
 
-    out = None
-    if not args.stdout:
-        out = Path(args.out).expanduser() if args.out else _default_output(src)
-        _write_private(out, redacted)
-
-    map_path = None
-    if entries:
-        map_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
-        map_path = Path(args.map).expanduser() if args.map else DEFAULT_MAPS / f"{map_id}.map.json"
-        payload = {
-            "tag": tag_of(entries),
-            "version": VERSION,
-            "id": map_id,
-            "source": str(src.resolve()),
-            "output": str(out) if out else "(stdout)",
-            "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "counts": counts,
-            "entries": entries,
-        }
-        _write_private(map_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    if args.dry_run:
+        return _emit_dry_run(src, out, map_path, entries, counts, args)
 
     if args.json:
         print(json.dumps({
@@ -1662,6 +1870,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="GLOB",
         help="extra path glob treated as un-sensitive by --check (repeatable; same syntax as --allow)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what WOULD be redacted and where it would be written, writing nothing",
+    )
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="treat FILE as a directory and anonymize every eligible file in it",
+    )
     parser.add_argument("--check", action="store_true", help="report sensitive content, write nothing")
     parser.add_argument(
         "--audit",
@@ -1703,6 +1921,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.audit:
             return cmd_audit(args)
+        if args.batch:
+            return cmd_batch(args)
         return cmd_check(args) if args.check else cmd_anonymize(args)
     except ValueError as exc:
         print(f"anon: {exc}", file=sys.stderr)

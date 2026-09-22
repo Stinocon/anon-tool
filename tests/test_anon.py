@@ -1387,6 +1387,134 @@ class TagAllocatorTest(unittest.TestCase):
         self.assertEqual(anon.allocate_tag([Path("/nonexistent")], "pinned"), "pinned")
 
 
+class BatchTest(unittest.TestCase):
+    """`--dry-run` and `--batch`: the folder workflow, without a source ever being touched."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-batch-"))
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        (self.home / "entities.txt").write_text("AZIENDA|Acme\nPERSONA|Mario Rossi\n", encoding="utf-8")
+        self.folder = self.tmp / "cliente"
+        (self.folder / "sub").mkdir(parents=True)
+        self.env = {**os.environ, "ANON_HOME": str(self.home)}
+        (self.folder / "verbale.txt").write_text(
+            "Cliente Acme, referente Mario Rossi <mario.rossi@acme.it>.\n", encoding="utf-8"
+        )
+        (self.folder / "sub" / "nota.md").write_text("nessun dato qui\n", encoding="utf-8")
+        (self.folder / "allegato.docx").write_bytes(b"PK\x03\x04" + b"\x07" * 64)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_anon(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ANON_PY), *args],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+
+    def snapshot(self) -> set[str]:
+        return {str(p.relative_to(self.tmp)) for p in self.tmp.rglob("*") if p.is_file()}
+
+    def test_dry_run_reports_the_plan_and_writes_nothing(self) -> None:
+        src = self.folder / "verbale.txt"
+        before = self.snapshot()
+        res = self.run_anon(str(src), "--dry-run", "--json")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.snapshot(), before, "a dry run must not create a single file")
+        report = json.loads(res.stdout)
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["entries"], 3)  # AZIENDA, PERSONA, EMAIL
+        self.assertTrue(report["would_write"].endswith("verbale.redacted.txt"))
+        self.assertFalse((src.parent / "verbale.redacted.txt").exists())
+
+    def test_batch_redacts_text_and_skips_binaries_and_its_own_outputs(self) -> None:
+        first = self.run_anon(str(self.folder), "--batch")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        redacted = (self.folder / "verbale.txt").parent / "verbale.redacted.txt"
+        self.assertTrue(redacted.is_file())
+        self.assertNotIn("mario.rossi@acme.it", redacted.read_text(encoding="utf-8"))
+        # the source is untouched, byte for byte
+        self.assertIn("mario.rossi@acme.it", (self.folder / "verbale.txt").read_text(encoding="utf-8"))
+        self.assertFalse((self.folder / "allegato.redacted.docx").exists(), "a binary is never copied")
+        self.assertIn("skipped", first.stdout)
+
+        second = self.run_anon(str(self.folder), "--batch")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn("own output", second.stdout, "re-running must not re-anonymize the outputs")
+
+    def test_batch_dry_run_writes_nothing_at_all(self) -> None:
+        before = self.snapshot()
+        res = self.run_anon(str(self.folder), "--batch", "--dry-run")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("would write", res.stdout)
+
+    def test_batch_check_is_a_folder_gate(self) -> None:
+        res = self.run_anon(str(self.folder), "--batch", "--check")
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("SENSITIVE", res.stdout)
+        self.assertNotIn("mario.rossi@acme.it", res.stdout, "the verdict never echoes the value")
+        self.assertFalse((self.folder / "verbale.redacted.txt").exists())
+
+    def test_batch_writes_into_a_separate_output_directory(self) -> None:
+        out = self.tmp / "out"
+        res = self.run_anon(str(self.folder), "--batch", "--out", str(out))
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertTrue((out / "verbale.redacted.txt").is_file())
+        self.assertFalse((self.folder / "verbale.redacted.txt").exists(), "the source folder stays clean")
+
+    def test_batch_refuses_what_it_cannot_do_safely(self) -> None:
+        inside = self.run_anon(str(self.home), "--batch")
+        self.assertEqual(inside.returncode, 2)
+        self.assertIn("private store", inside.stderr)
+        self.assertEqual(self.run_anon(str(self.folder), "--batch", "--stdout").returncode, 2)
+        self.assertEqual(self.run_anon(str(self.folder), "--batch", "--map", "/tmp/x.json").returncode, 2)
+        self.assertEqual(self.run_anon(str(self.folder / "verbale.txt"), "--batch").returncode, 2)
+
+
+    def test_batch_check_fails_closed_on_an_unscannable_file(self) -> None:
+        """A folder whose only content is a .docx is NOT clean: the redaction never saw it."""
+        only_binary = self.tmp / "solo_binari"
+        only_binary.mkdir()
+        (only_binary / "verbale.docx").write_bytes(b"PK\x03\x04" + b"\x07" * 64)
+        res = self.run_anon(str(only_binary), "--batch", "--check")
+        self.assertEqual(res.returncode, 1, "an unscannable folder must not exit 0")
+        self.assertIn("non scansionabile", res.stdout)
+
+    def test_stdout_still_writes_the_map(self) -> None:
+        """`--stdout` redirects the text; it must not opt out of the map, or the pipeline cannot
+        be reversed."""
+        src = self.folder / "verbale.txt"
+        res = self.run_anon(str(src), "--stdout")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("[AZIENDA-1-", res.stdout)
+        maps = list((self.home / "maps").glob("*.map.json"))
+        self.assertEqual(len(maps), 1, "the map must exist even when the text went to stdout")
+
+    def test_is_own_output_is_anchored_and_case_insensitive(self) -> None:
+        self.assertTrue(anon._is_own_output("verbale.redacted.md"))
+        self.assertTrue(anon._is_own_output("VERBALE.REDACTED.MD"))
+        self.assertTrue(anon._is_own_output("x.map.json"))
+        # a real source that merely mentions the word must still be processed
+        self.assertFalse(anon._is_own_output("note.redacted.draft.txt"))
+        self.assertFalse(anon._is_own_output("x.deanon-notes.md"))
+
+    def test_batch_refuses_an_out_directory_that_is_the_scanned_folder(self) -> None:
+        res = self.run_anon(str(self.folder), "--batch", "--out", str(self.folder))
+        self.assertEqual(res.returncode, 2)
+        self.assertIn("--out", res.stderr)
+
+    def test_batch_out_keeps_subdirectories_apart(self) -> None:
+        twin = self.folder / "sub" / "verbale.txt"
+        twin.write_text("Cliente Acme.\n", encoding="utf-8")
+        out = self.tmp / "out2"
+        res = self.run_anon(str(self.folder), "--batch", "--out", str(out))
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertTrue((out / "verbale.redacted.txt").is_file())
+        self.assertTrue((out / "sub" / "verbale.redacted.txt").is_file(), "same name, different folder")
+
+
 class OfflineContractTest(unittest.TestCase):
     """No engine script may gain a network import by accident (DEC-0012 §2).
 

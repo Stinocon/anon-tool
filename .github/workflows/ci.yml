@@ -20,11 +20,21 @@ jobs:
 
       # The converter is optional for the engine and required for the docx/pdf tests.
       # A failure to install must not silence the suite: those tests skip themselves when it is
-      # missing, and the run stays honest about what it did not exercise. Installed through the
-      # hashed pin, exactly like the image and the native venv (a version pin alone would let the
-      # CI run a different wheel than the one the container ships).
+      # missing. Installed through the hashed pin, exactly like the image and the native venv (a
+      # version pin alone would let CI run a different wheel than the one the container ships).
+      #
+      # The outcome is recorded and echoed into the run summary: a skip that is visible only in the
+      # log reads as "everything ran" to anyone reading the checks list, which is how a green run
+      # ends up claiming coverage it did not have.
       - name: Install the document converter
-        run: pip install --require-hashes -r requirements-anydoc.txt || echo "converter unavailable — its tests will skip"
+        id: converter
+        run: |
+          if pip install --require-hashes -r requirements-anydoc.txt; then
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=converter unavailable::docx/pdf tests will SKIP in this run"
+          fi
 
       - name: Engine suite
         run: python3 tests/test_anon.py
@@ -34,3 +44,21 @@ jobs:
 
       - name: UI loads without throwing
         run: node tests/ui_load_check.mjs
+
+      - name: Numbers in the docs match the code
+        run: python3 scripts/check-doc-numbers.py
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## ci"
+            echo
+            if [ "${{ steps.converter.outputs.installed }}" = "true" ]; then
+              echo "- document converter: **installed** — the docx/pdf path was exercised"
+            else
+              echo "- document converter: **NOT installed** — the docx/pdf tests were **skipped**,"
+              echo "  so this run did NOT exercise the conversion path (see the *Install* step's log)"
+            fi
+            echo "- gates run: engine suite, web integration, UI load, documentation numbers"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,7 +10,8 @@ CONSTANT to the place that reports it.
 Scope is deliberate:
 
   * checked: the documents that state CURRENT behaviour — `README.md`, `docs/DESIGN.md`,
-    `SECURITY.md` — plus the user-facing copy in `web/app.js`;
+    `SECURITY.md` (the web perimeter and its caps live there) — plus the user-facing copy in
+    `web/app.js`;
   * NOT checked: `CHANGELOG.md` and `docs/OPEN-ISSUES.md`, which record HISTORY. A changelog entry
     saying "the cap was 2 MB" is correct about that release and must not be rewritten.
 
@@ -101,9 +102,9 @@ def main() -> int:
 
     # 4. the web server's caps, each anchored to its own sentence
     megabytes = server.MAX_BODY_BYTES // MB
-    claim("upload cap", rf"size limits on uploads \({megabytes} MB\)", "docs/DESIGN.md")
-    claim("converter output cap", rf"default {server.CONVERT_MAX_BYTES // MB} MB\)", "docs/DESIGN.md")
-    claim("converter timeout", rf"{server.CONVERT_TIMEOUT_SECONDS} s, `ANON_CONVERT_TIMEOUT`", "docs/DESIGN.md")
+    claim("upload cap", rf"size limits on uploads \({megabytes} MB[^)]*\)", "SECURITY.md")  # the env var may be named after the number
+    claim("converter output cap", rf"default {server.CONVERT_MAX_BYTES // MB} MB\)", "SECURITY.md")
+    claim("converter timeout", rf"{server.CONVERT_TIMEOUT_SECONDS} s, `ANON_CONVERT_TIMEOUT`", "SECURITY.md")
     claim("rate limit (README)", rf"default {server.DEFAULT_RATE_LIMIT}/min", "README.md")
     claim("rate limit (SECURITY)", rf"default {server.DEFAULT_RATE_LIMIT}/min", "SECURITY.md")
 

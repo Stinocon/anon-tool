@@ -22,6 +22,9 @@ services:
     environment:
       ANON_HOME: /data
       ANON_CONVERTER: /app/convert.py
+      # Upload cap for the UI: 160 MB by default, raised here on purpose for a genuinely huge
+      # document. The conversion stays bounded by ANON_CONVERT_TIMEOUT / ANON_CONVERT_MAX_BYTES.
+      ANON_MAX_UPLOAD_BYTES: ${ANON_MAX_UPLOAD_BYTES:-167772160}
     read_only: true
     tmpfs:
       - /tmp # the converter needs scratch space

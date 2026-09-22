@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null };
+const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -25,6 +25,88 @@ async function request(path, options) {
 function setStatus(element, message, kind = "") {
   element.textContent = message || "";
   element.className = `status${kind ? ` ${kind}` : ""}`;
+}
+
+/* ------------------------------------------------------------- avanzamento */
+const humanSize = (bytes) => {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1) return `${mb >= 100 ? Math.round(mb) : mb.toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} kB`;
+};
+
+let progressTimer = null;
+let progressShownAt = 0;
+const PROGRESS_MIN_MS = 700; // a bar that blinks for 200ms is worse than none: keep it perceptible
+
+function progressStart(label) {
+  progressShownAt = Date.now();
+  $("anon-progress").hidden = false;
+  $("anon-progress").classList.remove("is-waiting");
+  $("anon-progress-fill").style.width = "2%";
+  $("anon-progress-fill").textContent = "";
+  $("anon-progress-label").textContent = label;
+}
+
+function progressPercent(fraction) {
+  const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  $("anon-progress-fill").style.width = `${percent}%`;
+  $("anon-progress-fill").textContent = `${percent}%`;
+}
+
+/** The conversion and the anonymization happen inside ONE request, so there is no percentage to
+    report while they run. The bar stops claiming one and shows elapsed time instead of a lie. */
+function progressWait(label) {
+  $("anon-progress").classList.add("is-waiting");
+  const started = Date.now();
+  const tick = () => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    $("anon-progress-label").textContent = `${label} — ${seconds}s`;
+  };
+  tick();
+  clearInterval(progressTimer);
+  progressTimer = setInterval(tick, 1000);
+}
+
+function progressStop() {
+  clearInterval(progressTimer);
+  progressTimer = null;
+  const shown = Date.now() - progressShownAt;
+  if (shown < PROGRESS_MIN_MS) {
+    // Hide LATER, not now: the point is that the operator sees the phases, not that the element
+    // is gone as fast as possible.
+    setTimeout(progressStop, PROGRESS_MIN_MS - shown);
+    return;
+  }
+  $("anon-progress").hidden = true;
+  $("anon-progress").classList.remove("is-waiting");
+  $("anon-progress-fill").style.width = "0%";
+  $("anon-progress-fill").textContent = "";
+  $("anon-progress-label").textContent = "";
+}
+
+/** POST that reports upload progress — `fetch` cannot. */
+function requestWithProgress(path, headers, body, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    xhr.setRequestHeader("X-Anon-Token", TOKEN);
+    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded / event.total);
+    };
+    xhr.onload = () => {
+      let payload = {};
+      try {
+        payload = JSON.parse(xhr.responseText);
+      } catch {
+        payload = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
+      else reject(new Error(payload.error || `richiesta fallita (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("caricamento interrotto (rete)"));
+    xhr.send(body);
+  });
 }
 
 function show(button, busy, busyLabel = "Elaborazione…") {
@@ -140,8 +222,8 @@ function optionsSummary() {
 }
 
 function refreshButtons() {
-  $("run-anon").disabled = !$("text-anon").value.trim() && !$("file-anon").files.length;
-  $("clear-anon").hidden = !$("text-anon").value && !$("file-anon").files.length;
+  $("run-anon").disabled = !$("text-anon").value.trim() && !state.anonFile;
+  $("clear-anon").hidden = !$("text-anon").value && !state.anonFile;
   $("run-deanon").disabled = !state.deanonFile || !state.selectedMap;
   $("run-audit").disabled = !$("text-audit").value.trim();
   $("save-entities").disabled = $("entities-text").value === state.entitiesLoaded;
@@ -157,6 +239,9 @@ async function boot() {
     ? "Il convertitore per docx/pdf è disponibile: puoi caricare anche quei formati."
     : "Nessun convertitore: carica solo txt, md, json, yaml, csv.";
   $("entities-path").textContent = info.entities_path;
+  // The upload cap belongs to the server: the UI states it instead of keeping its own copy.
+  state.maxUploadBytes = info.max_upload_bytes || null;
+  if (state.maxUploadBytes) $("upload-limit").textContent = humanSize(state.maxUploadBytes);
 
   const catalogs = info.catalogs || [];
   $("catalogs").innerHTML = "";
@@ -233,7 +318,7 @@ async function loadMaps() {
 /* ------------------------------------------------------------ anonimizza */
 $("run-anon").addEventListener("click", async () => {
   const button = $("run-anon");
-  const file = $("file-anon").files[0];
+  const file = state.anonFile;
   const text = $("text-anon").value;
   show(button, true);
   setStatus($("anon-status"), "elaborazione…");
@@ -241,16 +326,21 @@ $("run-anon").addEventListener("click", async () => {
     let result;
     let baseName;
     if (file && isDocument(file.name)) {
-      result = await request("/api/anonymize-document", {
-        method: "POST",
-        headers: {
+      progressStart(`caricamento di ${file.name} — ${humanSize(file.size)}…`);
+      result = await requestWithProgress(
+        "/api/anonymize-document",
+        {
           "X-Filename": file.name,
           "X-Catalogs": selected(".catalog").join(","),
           "X-Patterns": selected(".pattern").join(","),
           "Content-Type": "application/octet-stream",
         },
-        body: await file.arrayBuffer(),
-      });
+        await file.arrayBuffer(),
+        (fraction) => {
+          if (fraction >= 1) progressWait("conversione e anonimizzazione in corso…");
+          else progressPercent(fraction);
+        },
+      );
       baseName = `${stripExtension(file.name)}.redacted.md`;
     } else {
       result = await request("/api/anonymize", {
@@ -280,6 +370,7 @@ $("run-anon").addEventListener("click", async () => {
     setStatus($("anon-status"), String(error.message || error), "error");
   } finally {
     show(button, false);
+    progressStop();
     refreshButtons();
   }
 });
@@ -289,6 +380,8 @@ let pending = { text: "", name: "redatto.txt" };
 $("clear-anon").addEventListener("click", () => {
   $("text-anon").value = "";
   $("file-anon").value = "";
+  state.anonFile = null;
+  progressStop();
   $("anon-result").hidden = true;
   setStatus($("anon-status"), "");
   refreshButtons();
@@ -504,15 +597,37 @@ $("download-entities").addEventListener("click", () =>
   download(`${state.entitiesFile}.txt`, $("entities-text").value));
 
 /* ---------------------------------------------------------------- inputs */
-dropzone($("drop-anon"), $("file-anon"), async (file) => {
+/**
+ * ONE place that decides what a dropped/picked file means. The two paths used to disagree: the
+ * picker populated `#file-anon` and the drop did not, so a dropped .docx armed nothing and the
+ * button stayed disabled — the gesture simply did nothing, with no message saying why.
+ */
+async function acceptAnonFile(file) {
   if (isDocument(file.name)) {
+    if (state.maxUploadBytes && file.size > state.maxUploadBytes) {
+      state.anonFile = null;
+      progressStop();
+      setStatus(
+        $("anon-status"),
+        `${file.name} — ${humanSize(file.size)} supera il limite di ${humanSize(state.maxUploadBytes)}: ` +
+          "il server lo rifiuterebbe, quindi non viene caricato. Usa la CLI sul file, o spezzalo.",
+        "error",
+      );
+      return;
+    }
+    state.anonFile = file;
     $("text-anon").value = "";
-    setStatus($("anon-status"), `${file.name} — sarà convertito dal server`);
-  } else {
-    $("text-anon").value = await file.text();
-    $("file-anon").value = "";
-    setStatus($("anon-status"), `${file.name} caricato`, "ok");
+    setStatus($("anon-status"), `${file.name} — ${humanSize(file.size)}, sarà convertito dal server`, "ok");
+    return;
   }
+  state.anonFile = null;
+  $("file-anon").value = "";
+  $("text-anon").value = await file.text();
+  setStatus($("anon-status"), `${file.name} caricato`, "ok");
+}
+
+dropzone($("drop-anon"), $("file-anon"), async (file) => {
+  await acceptAnonFile(file);
   refreshButtons();
 });
 dropzone($("drop-deanon"), $("file-deanon"), (file) => {

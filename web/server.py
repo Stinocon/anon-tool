@@ -59,7 +59,12 @@ def _dictionary_path(raw: object) -> tuple[str, Path]:
         raise ValueError(f"unknown dictionary '{name}' — expected one of {', '.join(anon.DICTIONARIES)}")
     return name, path
 
-MAX_BODY_BYTES = 160 * 1024 * 1024
+MAX_BODY_BYTES = int(os.environ.get("ANON_MAX_UPLOAD_BYTES") or 160 * 1024 * 1024)
+# 160 MB is a default, not a law of nature: the operator can raise it (ANON_MAX_UPLOAD_BYTES) when a
+# document legitimately is that big, knowing what it costs — the conversion is bounded in TIME by
+# CONVERT_TIMEOUT_SECONDS and in output by CONVERT_MAX_BYTES, and the redacted Markdown a Pi session
+# can read is capped at 12 MB by the guard. A cap the operator cannot move is a cap they will work
+# around by turning the tool off.
 TOKEN_HEADER = "X-Anon-Token"
 # The converter runs as a child process, so both bounds are enforced from the parent: the output
 # is read in blocks and the child is killed the moment the cap is passed.
@@ -464,6 +469,9 @@ class Handler(BaseHTTPRequestHandler):
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),
             "entities_paths": {name: str(path) for name, path in anon.DICTIONARIES.items()},
+            # The upload cap belongs to the server and the UI states it (it refuses a bigger file
+            # before spending the transfer): a hard-coded copy on the page would drift from this.
+            "max_upload_bytes": MAX_BODY_BYTES,
         }
 
     def _map_files(self) -> list[Path]:
