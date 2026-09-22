@@ -696,6 +696,44 @@ class WebUiTest(unittest.TestCase):
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    @unittest.skipUnless(DOCX_AVAILABLE, "document converter not installed")
+    def test_a_filename_with_a_space_or_an_accent_can_be_downloaded(self) -> None:
+        """The download URL is used by a BROWSER, which percent-encodes it, while the server hands
+        the path over still encoded. Without the quote/unquote pair a document called
+        "mia relazione.docx" — an ordinary name — answered 400 and could not be downloaded at all."""
+        work = Path(tempfile.mkdtemp(prefix="anon-web-name-"))
+        try:
+            for name in ("mia relazione.docx", "relazione-perché.docx", "100%.docx"):
+                markdown = work / "body.md"
+                markdown.write_text("Cliente Contoso\n", encoding="utf-8")
+                docx = work / "body.docx"
+                subprocess.run(["pandoc", str(markdown), "-o", str(docx)], check=True)
+                status, result = self.call("/api/anonymize-document", None,
+                                           headers={"X-Filename": name, "X-Catalogs": "",
+                                                    "X-Patterns": "identity",
+                                                    "Content-Type": "application/octet-stream"},
+                                           raw=docx.read_bytes())
+                self.assertEqual(status, 200, (name, result))
+                # Fetched exactly as returned: the URL already carries the encoding a browser sends.
+                status_doc, blob = self.call_bytes(result["container_url"])
+                self.assertEqual(status_doc, 200, (name, result["container_url"]))
+                self.assertTrue(zipfile.is_zipfile(io.BytesIO(blob)), f"{name}: not a container")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_the_download_refuses_a_missing_token_and_a_traversal(self) -> None:
+        """Two ways of asking for a document that is not yours to ask for."""
+        import urllib.request as urlrequest
+
+        plain = urlrequest.Request(f"http://127.0.0.1:{self.port}/api/download/deadbeefdeadbeef/x.docx")
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            urlrequest.urlopen(plain, timeout=10)  # no token header
+        self.assertEqual(denied.exception.code, 403)
+        for path in ("/api/download/../../../etc/passwd", "/api/download/nope",
+                     "/api/download/deadbeefdeadbeef/../../maps", "/api/download/zzzz/x.docx"):
+            status, _body = self.call_bytes(path)
+            self.assertEqual(status, 400, path)
+
     def test_an_unreadable_container_is_refused_and_writes_no_map(self) -> None:
         """A file that claims to be a container but cannot be opened must not be guessed at.
 

@@ -1516,6 +1516,20 @@ class BatchTest(unittest.TestCase):
         self.assertTrue((out / "sub" / "verbale.redacted.txt").is_file(), "same name, different folder")
 
 
+    def test_batch_check_also_skips_a_symlink_out_of_the_tree(self) -> None:
+        """The gate mode must skip it too: `--check` on a folder that silently follows a link would
+        report on files the operator never named."""
+        outside = self.tmp / "fuori2" / "segreto.txt"
+        outside.parent.mkdir()
+        outside.write_text("Cliente Acme\n", encoding="utf-8")
+        (self.folder / "scorciatoia2.txt").symlink_to(outside)
+        res = self.run_anon(str(self.folder), "--batch", "--check", "--json")
+        report = json.loads(res.stdout)
+        scanned = {Path(row["file"]).name for row in report["files"]}
+        self.assertNotIn("scorciatoia2.txt", scanned)
+        self.assertIn("scorciatoia2.txt",
+                      {Path(row["file"]).name for row in report["skipped"]})
+
     def test_a_symlink_out_of_the_tree_is_skipped_not_followed(self) -> None:
         """A folder walk scans the FOLDER. `is_file()` follows symlinks, so a link inside the tree
         used to pull in a file the operator never put in scope — including a map from the private

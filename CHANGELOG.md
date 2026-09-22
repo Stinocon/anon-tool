@@ -17,8 +17,11 @@ enforces that they agree.
   `GET /api/download/<id>` in 64 KB blocks, so the server holds one block at a time instead of
   building ~1.33x the file as a string on top of the file, the Markdown and the decoded copies.
 - **The index over the visible text no longer costs tens of bytes per character**: the text is built
-  from chunks and joined once, the offsets live in an `array('i')`. Measured on a 16.2 MB XML part:
-  peak RSS 470 MB -> 121 MB (about 37 -> 9.6 bytes per character), ~20% more time.
+  from chunks and joined once, the offsets live in an `array('i')`. `python3 scripts/bench-index.py`
+  on a 16.2 MB XML part (12.6 MB of visible text): peak RSS **544 MB -> 100 MB** (about 43 -> 8 bytes
+  per visible character, whole-process RSS, not the index alone), at ~23% more time. The script runs
+  both implementations, each in its own process, so the number can be re-measured instead of
+  remembered.
 
 ### Fixed
 

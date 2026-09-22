@@ -223,8 +223,9 @@ calls it implicitly; the engine itself keeps zero network capability.
   `--check` (the guard's path on a `read`) uses the 12 MB `SCAN_MAX_BYTES` budget instead. Without a
   cap, `zipfile` inflates a part into memory before anyone looks at it. The index over the visible
   text is the second half of that: built from chunks and joined once, with the offsets in an
-  `array('i')` (measured: a 16.2 MB XML part peaks at 121 MB instead of 470 MB). Over the cap the
-  answer is the fail-closed one;
+  `array('i')` (`scripts/bench-index.py`: a 16.2 MB XML part peaks at 100 MB instead of 544 MB, at
+  ~23% more time; the figure is whole-process RSS, not the index alone). Over the cap the answer is
+  the fail-closed one;
 - **a text part that cannot be decoded is refused, never passed through.** A NUL byte is not proof
   of binary: a UTF-16/32 part *without* a BOM was classified binary, never scanned, and — because
   the verification used the same classification — reported as "0 leftovers" while the value sat
@@ -237,8 +238,9 @@ calls it implicitly; the engine itself keeps zero network capability.
   anywhere else, so the reverse direction restores the original exactly. Stripping metadata would be
   irreversible and is a separate, explicit choice;
 - **the document is fetched, not carried**: the redacted container is published under
-  `~/.anon/downloads/` (0600, pruned after an hour) and streamed from `GET /api/download/...` in
-  64 KB blocks. Base64 inside the JSON response would build ~1.33x the file as a string on top of
+  `~/.anon/downloads/<token>/` (directory 0700, file 0600, pruned after an hour) and streamed from
+  `GET /api/download/<token>/<name>` in 64 KB blocks; the URL is percent-encoded, because a browser
+  encodes the path and the server is handed it still encoded. Base64 inside the JSON response would build ~1.33x the file as a string on top of
   the file, the Markdown and the decoded copies — several hundred MB of strings for one upload;
 - **one redaction, two artifacts.** The UI redacts the container once (one allocation, one map, one
   tag) and derives the Markdown from the already redacted file. Redacting the Markdown and the

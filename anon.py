@@ -2066,6 +2066,9 @@ def cmd_batch(args: argparse.Namespace) -> int:
         # outside the scan root, or at the private store, whose maps hold the real values. Scanning
         # it would process — and copy under a `redacted` name — something the operator never put in
         # scope. The tree is the scope, so a target outside it is skipped and said to be.
+        # A HARD link is the honest limit of this check: it is not dereferenceable, so it resolves
+        # inside the root and is processed. Benign — the output is redacted, and creating one needs
+        # write access to the tree — but the boundary is here, not at "any link".
         target = path.resolve()
         if target == private or private in target.parents:
             skipped.append((path, "symlink into the private store"))

@@ -33,6 +33,7 @@ import os
 import signal
 import re
 import shutil
+from urllib.parse import quote, unquote
 import socketserver
 import subprocess
 import sys
@@ -288,7 +289,7 @@ def _downloads_dir() -> Path:
     download directory that only grows is a disk leak.
     """
     directory = anon.DEFAULT_MAPS.parent / "downloads"
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     return directory
 
 
@@ -303,8 +304,14 @@ def _publish_download(redacted: Path, name: str) -> str:
     now = time.time()
     for stale in _downloads_dir().glob("*"):
         try:
-            if now - stale.stat().st_mtime > DOWNLOAD_TTL_SECONDS:
+            if now - stale.stat().st_mtime <= DOWNLOAD_TTL_SECONDS:
+                continue
+            if stale.is_dir():
                 shutil.rmtree(stale, ignore_errors=True)
+            else:
+                # rmtree on a file raises NotADirectoryError, which the except below would swallow:
+                # the entry would stay for ever while the code looked like it pruned.
+                stale.unlink(missing_ok=True)
         except OSError:
             continue
     return f"{token}/{published.name}"
@@ -376,7 +383,10 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
             if map_id:
                 (anon.DEFAULT_MAPS / f"{map_id}.map.json").unlink(missing_ok=True)
             raise
-        result["container_url"] = f"/api/download/{published}"
+        # Quoted here, unquoted in `_download`: a browser percent-encodes the path, and
+        # `BaseHTTPRequestHandler` hands the raw (still encoded) path over. Without this pair a
+        # filename with a space, an accent, a `%` or a `#` could not be downloaded at all.
+        result["container_url"] = f"/api/download/{quote(published, safe='/')}"
     return result
 
 
@@ -646,7 +656,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _download(self, name: str) -> None:
         """Stream a published document, in blocks, with its length declared up front."""
-        parts = name.split("/")
+        parts = unquote(name).split("/")
         directory = (anon.DEFAULT_MAPS.parent / "downloads").resolve()
         if len(parts) != 2 or not all(char in "0123456789abcdef" for char in parts[0]):
             raise ValueError("invalid download id")
@@ -663,6 +673,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(size))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Disposition", f'attachment; filename="{served}"')
         self.end_headers()
         with resolved.open("rb") as handle:

@@ -221,6 +221,8 @@ make up-slim   # the text-only container variant (port 1408)
 # How fast can the engine check a file? The Pi guard's size cap is derived from this measurement,
 # and the number depends on the dictionary size — run it with the dictionary you actually use.
 python3 scripts/bench-check.py --mb 8 --entities 200
+# What does indexing a container's visible text cost? Both implementations, measured.
+python3 scripts/bench-index.py --mb 16
 # Is 6 hex digits enough for the per-map tag? Measured, not argued.
 python3 scripts/tag-collision.py
 # What does .docx -> Markdown lose, and why the in-place path exists? (headers, metadata,

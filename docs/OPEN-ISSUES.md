@@ -213,11 +213,12 @@ Both residuals are closed:
 
 - the index no longer costs tens of bytes per character: the visible text is built from chunks and
   joined once, and the offsets live in an `array('i')`. Measured on a 16.2 MB XML part (12.6 MB of
-  visible text): **peak RSS 470 MB -> 121 MB**, i.e. ~37 -> ~9.6 bytes per character, at ~20% more
-  time. The offsets are still linear in the text — that is what a mapping is — but the multiplier
+  visible text): **peak RSS 544 MB -> 100 MB**, i.e. ~43 -> ~8 bytes per visible character, at ~23%
+  more time — reproduced by `scripts/bench-index.py`, which runs both implementations in separate
+  processes so the figure can be re-measured rather than trusted. The offsets are still linear in the text — that is what a mapping is — but the multiplier
   is no longer the problem;
 - the document no longer travels inside the JSON response: it is published under
-  `~/.anon/downloads/` (0600, pruned after an hour) and **streamed** from `GET /api/download/...` in
+  `~/.anon/downloads/<token>/` (directory 0700, file 0600, pruned after an hour) and **streamed** from `GET /api/download/...` in
   64 KB blocks, so the server holds one block at a time instead of ~1.33x the file as a string on
   top of the file, the Markdown and the decoded copies. The docker smoke now downloads the document
   through that endpoint and inspects its parts.
@@ -247,7 +248,7 @@ old reference can never point at a different item.
 | 15 | 30 | **CI**: make the converter-install skip visible in the run summary, not only in the log — CLOSED in the fifth pass (see below). | | — |
 | 16 | 22 | **`verify.py` must ignore `*.redacted.*`** when scanning decisions — CLOSED in the fifth pass (see below). | | — |
 | 17 | 26 | **Guard throughput vs dictionary size.** The cap is derived from a measurement, but that measurement assumed a small dictionary. Measured today (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s · 1 000 → 0.93 · 4 000 → 0.37 · 7 900 → 0.20. At 1 000 entries the 12 MB cap already needs 13 s of a 20 s budget; at 4 000 it exceeds it. Either measure at run time or size the cap against a declared entry count. | 12 MB / 20 s were sized on this Mac with a few hundred entries; the margin is not a property of the guard, it is a property of the dictionary. | medium |
-| 18 | 36 | ~~**A symlinked FILE inside a `--batch` tree is followed** even when the target is outside the tree or inside the private store.~~ **Fixed**: the walk resolves each candidate and skips it — saying which reason — when the target is inside the private store or leaves the scan root. A test with both kinds of link fails against the old code. The scope is the tree the operator named; a link is a way of naming something else. | `--batch` was fixed, but silently FOLLOWING a link is the same class of mistake: the tool processed a file nobody put in scope, and the private store's maps are exactly what must not leave it. | small |
+| 18 | 36 | ~~**A symlinked FILE inside a `--batch` tree is followed** even when the target is outside the tree or inside the private store.~~ **Fixed**: the walk resolves each candidate and skips it — saying which reason — when the target is inside the private store or leaves the scan root. A test with both kinds of link fails against the old code. The scope is the tree the operator named; a link is a way of naming something else. A HARD link is not covered (it is not dereferenceable): it resolves inside the root, so it is processed — benign, because the output is redacted and creating one needs write access to the tree, but it is the honest boundary of the fix. | `--batch` was fixed, but silently FOLLOWING a link is the same class of mistake: the tool processed a file nobody put in scope, and the private store's maps are exactly what must not leave it. | small |
 | 19 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
 
 ### Hygiene note kept from this pass
