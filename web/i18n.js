@@ -17,6 +17,14 @@
 
 const EN = {
   "#lang-label": { inner: "Language" },
+  "#run-anon": { inner: "Anonymize" },
+  "#clear-anon": { inner: "Clear" },
+  "#drop-audit-hint": { inner: "or paste the text below" },
+  "#audit-reveal-label": { inner: "show the candidates" },
+  "#audit-reveal-hint": { inner: "— they are the sensitive data" },
+  "#entities-opt-generic": { inner: "entities.txt — generic" },
+  "#entities-opt-people": { inner: "people.txt — people" },
+  "#entities-opt-clients": { inner: "clients.txt — companies and offices" },
   "#badge-local": { inner: "local only", title: "The server listens on 127.0.0.1 only: no other device can reach it." },
   "#tab-anon": { inner: "Anonymize" },
   "#tab-deanon": { inner: "Restore" },
@@ -108,21 +116,102 @@ const EN_PLACEHOLDERS = {
   "#suggest-text": "…paste the text the local model should read",
 };
 
-/* Strings app.js composes: they cannot come from the markup. */
-const EN_DYNAMIC = {
-  options: "Options",
-  "theme.dark": "Theme: dark",
-  "theme.light": "Theme: light",
-  "theme.toLight": "Switch to the light theme",
-  "theme.toDark": "Switch to the dark theme",
-};
-
-const IT_DYNAMIC = {
-  options: "Opzioni",
-  "theme.dark": "Tema: scuro",
-  "theme.light": "Tema: chiaro",
-  "theme.toLight": "Passa al tema chiaro",
-  "theme.toDark": "Passa al tema scuro",
+/* Strings app.js composes: they cannot come from the markup. `{name}` is substituted. */
+const DYNAMIC = {
+  it: {
+    options: "Opzioni",
+    "theme.dark": "Tema: scuro",
+    "theme.light": "Tema: chiaro",
+    "theme.toDark": "Passa al tema scuro",
+    "theme.toLight": "Passa al tema chiaro",
+    "converter.badge.yes": "docx e pdf",
+    "converter.badge.no": "solo testo",
+    "converter.yes": "Il convertitore per docx/pdf è disponibile: puoi caricare anche quei formati.",
+    "converter.no": "Nessun convertitore: carica solo txt, md, json, yaml, csv.",
+    "suggest.configured": "configurato",
+    "suggest.unconfigured": "non configurato",
+    "suggest.localModel": "modello locale",
+    "progress.converting": "conversione e anonimizzazione in corso…",
+    "progress.processing": "elaborazione…",
+    "progress.checking": "controllo…",
+    "progress.downloading": "scarico del documento…",
+    "status.copied": "copiato",
+    "status.downloaded": "documento scaricato",
+    "status.notRewritable": "documento non riscrivibile, redatto il solo testo ({detail})",
+    "status.rulesApplied": "{n} regole applicate",
+    "status.willConvert": "{name} — {size}, sarà convertito dal server",
+    "status.tooLarge": "{name} — {size} supera il limite di {limit}: il server lo rifiuterebbe, quindi non viene caricato. Usa la CLI sul file, o spezzalo.",
+    "deanon.replaced": "sostituzioni",
+    "deanon.remaining": "placeholder rimasti",
+    "deanon.unknown": "token non noti",
+    "deanon.map": "mappa di",
+    "deanon.outcome": "esito",
+    "deanon.complete": "completo",
+    "deanon.incomplete": "INCOMPLETO — non consegnabile",
+    "audit.clean": "Pulito — nessun contenuto sensibile, nessuna variante sospetta",
+    "audit.sensitive": "Sensibile — {n} elemento/i ancora in chiaro: non farlo leggere a un modello",
+    "audit.suspect": "Sospetto — nessun residuo diretto, ma alcune parole somigliano a entità dichiarate",
+    "audit.cappedLabel": "limite scansione",
+    "audit.capped": "elenco parziale: la ricerca dei candidati si è fermata ai limiti (400 parole / 200 entità)",
+    "audit.placeholders": "{n} presenti — coerente con un documento già redatto",
+    "entities.unsaved": "Ci sono modifiche non salvate: cambiare file le perde. Continuare?",
+    "entities.saved": "salvato — {n} entità attive",
+    "entities.tooLong": "il server lo rifiuterebbe, quindi non viene caricato. Usa la CLI sul file, o spezzalo.",
+    "suggest.paste": "incolla prima il testo",
+    "suggest.reading": "il modello locale sta leggendo…",
+    "suggest.overlap": "— già rilevato dal motore",
+    "suggest.none": "nessuna proposta selezionata",
+    "suggest.found": "{n} proposte",
+    "suggest.truncated": " — inviati {sent} caratteri su {total}",
+    "maps.truncated": "Mostrate le prime {shown} mappe su {total}. Le più vecchie si ripuliscono con `anon.py --prune-maps <giorni>`.",
+  },
+  en: {
+    options: "Options",
+    "theme.dark": "Theme: dark",
+    "theme.light": "Theme: light",
+    "theme.toDark": "Switch to the dark theme",
+    "theme.toLight": "Switch to the light theme",
+    "converter.badge.yes": "docx and pdf",
+    "converter.badge.no": "text only",
+    "converter.yes": "The docx/pdf converter is available: you can upload those formats too.",
+    "converter.no": "No converter: upload txt, md, json, yaml, csv only.",
+    "suggest.configured": "configured",
+    "suggest.unconfigured": "not configured",
+    "suggest.localModel": "local model",
+    "progress.converting": "converting and anonymizing…",
+    "progress.processing": "working…",
+    "progress.checking": "checking…",
+    "progress.downloading": "downloading the document…",
+    "status.copied": "copied",
+    "status.downloaded": "document downloaded",
+    "status.notRewritable": "the document cannot be rewritten, only its text was redacted ({detail})",
+    "status.rulesApplied": "{n} rules applied",
+    "status.willConvert": "{name} — {size}, it will be converted by the server",
+    "status.tooLarge": "{name} — {size} exceeds the {limit} limit: the server would refuse it, so it is not uploaded. Use the CLI on the file, or split it.",
+    "deanon.replaced": "replacements",
+    "deanon.remaining": "placeholders left",
+    "deanon.unknown": "unknown tokens",
+    "deanon.map": "map from",
+    "deanon.outcome": "outcome",
+    "deanon.complete": "complete",
+    "deanon.incomplete": "INCOMPLETE — not deliverable",
+    "audit.clean": "Clean — no sensitive content, no suspicious variant",
+    "audit.sensitive": "Sensitive — {n} item(s) still in the clear: do not let a model read it",
+    "audit.suspect": "Suspicious — no direct residual, but some words resemble declared entities",
+    "audit.cappedLabel": "scan bound",
+    "audit.capped": "partial list: the candidate search stopped at its bounds (400 words / 200 entities)",
+    "audit.placeholders": "{n} present — consistent with an already redacted document",
+    "entities.unsaved": "There are unsaved changes: switching file loses them. Continue?",
+    "entities.saved": "saved — {n} active entries",
+    "entities.tooLong": "the server would refuse it, so it is not uploaded. Use the CLI on the file, or split it.",
+    "suggest.paste": "paste the text first",
+    "suggest.reading": "the local model is reading…",
+    "suggest.overlap": "— already found by the engine",
+    "suggest.none": "no proposal selected",
+    "suggest.found": "{n} proposals",
+    "suggest.truncated": " — {sent} of {total} characters sent",
+    "maps.truncated": "Showing the first {shown} maps of {total}. The older ones are pruned with `anon.py --prune-maps <days>`.",
+  },
 };
 
 const STORAGE_KEY = "anon-lang";
@@ -176,13 +265,29 @@ function apply(language) {
   } catch (error) {
     /* a blocked localStorage must not break the page */
   }
+  // The strings app.js composes are not in the markup, so a language change has to tell it to
+  // redraw them. An event, not a direct call: this module must not know about app.js.
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    try {
+      window.dispatchEvent(new Event("anon:lang-changed"));
+    } catch (error) {
+      /* an environment without Event (the test harness) simply does not redraw */
+    }
+  }
   return current;
 }
 
-/** The string for a key app.js composes (options summary, theme button). */
-function t(key) {
-  const table = current === "en" ? EN_DYNAMIC : IT_DYNAMIC;
-  return table[key] !== undefined ? table[key] : key;
+/** The string for a key app.js composes. `{name}` placeholders are substituted. */
+function t(key, params) {
+  const table = DYNAMIC[current] || DYNAMIC.it;
+  let value = table[key];
+  if (value === undefined) value = DYNAMIC.it[key] !== undefined ? DYNAMIC.it[key] : key;
+  if (params) {
+    for (const [name, replacement] of Object.entries(params)) {
+      value = value.replaceAll(`{${name}}`, String(replacement));
+    }
+  }
+  return value;
 }
 
 function init() {

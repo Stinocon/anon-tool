@@ -264,11 +264,11 @@ async function boot() {
   const info = await request("/api/state");
   $("version").textContent = `v${info.version} · ${info.schema}`;
   const converter = $("converter-badge");
-  converter.textContent = info.converter ? "docx e pdf" : "solo testo";
+  converter.textContent = info.converter ? i18n.t("converter.badge.yes") : i18n.t("converter.badge.no");
   converter.className = info.converter ? "badge badge-ok" : "badge badge-warn";
   converter.title = info.converter
-    ? "Il convertitore per docx/pdf è disponibile: puoi caricare anche quei formati."
-    : "Nessun convertitore: carica solo txt, md, json, yaml, csv.";
+    ? i18n.t("converter.yes")
+    : i18n.t("converter.no");
   $("entities-path").textContent = info.entities_path;
   // The upload cap belongs to the server: the UI states it instead of keeping its own copy.
   state.maxUploadBytes = info.max_upload_bytes || null;
@@ -280,9 +280,12 @@ async function boot() {
   state.suggest = Boolean(info.suggest);
   $("suggest-fields").hidden = !state.suggest;
   $("suggest-off").hidden = state.suggest;
-  $("suggest-state").textContent = state.suggest ? "configurato" : "non configurato";
+  $("suggest-state").textContent = state.suggest ? i18n.t("suggest.configured") : i18n.t("suggest.unconfigured");
   $("suggest-state").className = state.suggest ? "badge badge-ok" : "badge badge-warn";
-  if (state.suggest) $("suggest-backend").textContent = info.suggest_backend || "modello locale";
+  if (state.suggest) $("suggest-backend").textContent = info.suggest_backend || i18n.t("suggest.localModel");
+
+  state.converter = Boolean(info.converter);
+  state.suggestBackend = info.suggest_backend || "";
 
   const catalogs = info.catalogs || [];
   $("catalogs").innerHTML = "";
@@ -312,8 +315,7 @@ async function loadMaps() {
     // The list is capped: saying "100 mappe" when there are 300 would be a silent lie.
     const note = document.createElement("p");
     note.className = "map-empty";
-    note.textContent = `Mostrate le prime ${maps.length} mappe su ${total}. Le più vecchie si ripuliscono con ` +
-      "`anon.py --prune-maps <giorni>`.";
+    note.textContent = i18n.t("maps.truncated", { shown: maps.length, total });
     list.append(note);
   }
   if (!maps.length) {
@@ -362,7 +364,7 @@ $("run-anon").addEventListener("click", async () => {
   const file = state.anonFile;
   const text = $("text-anon").value;
   show(button, true);
-  setStatus($("anon-status"), "elaborazione…");
+  setStatus($("anon-status"), i18n.t("progress.processing"));
   try {
     let result;
     let baseName;
@@ -378,7 +380,7 @@ $("run-anon").addEventListener("click", async () => {
         },
         await file.arrayBuffer(),
         (fraction) => {
-          if (fraction >= 1) progressWait("conversione e anonimizzazione in corso…");
+          if (fraction >= 1) progressWait(i18n.t("progress.converting"));
           else progressPercent(fraction);
         },
       );
@@ -415,9 +417,9 @@ $("run-anon").addEventListener("click", async () => {
       ? `${pending.containerName} — stesso tag e stessa mappa del testo qui sotto`
       : "";
     if (result.container_error) {
-      setStatus($("anon-status"), `documento non riscrivibile, redatto il solo testo (${result.container_error})`, "warn");
+      setStatus($("anon-status"), i18n.t("status.notRewritable", { detail: result.container_error }), "warn");
     } else {
-      setStatus($("anon-status"), `${result.rules_applied} regole applicate`, "ok");
+      setStatus($("anon-status"), i18n.t("status.rulesApplied", { n: result.rules_applied }), "ok");
     }
     $("mapping").innerHTML = '<span class="muted small">non ancora mostrata</span>';
     $("anon-result").scrollIntoView({ block: "nearest" });
@@ -446,15 +448,15 @@ $("clear-anon").addEventListener("click", () => {
 });
 $("copy-redacted").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("redacted").value);
-  setStatus($("anon-status"), "copiato", "ok");
+  setStatus($("anon-status"), i18n.t("status.copied"), "ok");
 });
 $("download-redacted").addEventListener("click", () => download(pending.name, pending.text));
 $("download-document").addEventListener("click", async () => {
   if (!pending.containerUrl) return;
-  setStatus($("anon-status"), "scarico del documento…");
+  setStatus($("anon-status"), i18n.t("progress.downloading"));
   try {
     await downloadFromServer(pending.containerUrl, pending.containerName);
-    setStatus($("anon-status"), "documento scaricato", "ok");
+    setStatus($("anon-status"), i18n.t("status.downloaded"), "ok");
   } catch (error) {
     setStatus($("anon-status"), String(error.message || error), "error");
   }
@@ -505,7 +507,7 @@ $("hide-map").addEventListener("click", () => relockMapping());
 $("run-deanon").addEventListener("click", async () => {
   const button = $("run-deanon");
   show(button, true);
-  setStatus($("deanon-status"), "elaborazione…");
+  setStatus($("deanon-status"), i18n.t("progress.processing"));
   try {
     const result = await request("/api/deanonymize", {
       method: "POST",
@@ -521,11 +523,11 @@ $("run-deanon").addEventListener("click", async () => {
     box.hidden = false;
     box.innerHTML = "";
     const rows = [
-      ["sostituzioni", String(report.replaced ?? 0), false],
-      ["placeholder rimasti", String(report.remaining ?? 0), (report.remaining ?? 0) > 0],
-      ["token non noti", String(report.unknown_placeholders ?? 0), (report.unknown_placeholders ?? 0) > 0],
-      ["mappa di", report.map_source || "?", false],
-      ["esito", report.complete ? "completo" : "INCOMPLETO — non consegnabile", !report.complete],
+      [i18n.t("deanon.replaced"), String(report.replaced ?? 0), false],
+      [i18n.t("deanon.remaining"), String(report.remaining ?? 0), (report.remaining ?? 0) > 0],
+      [i18n.t("deanon.unknown"), String(report.unknown_placeholders ?? 0), (report.unknown_placeholders ?? 0) > 0],
+      [i18n.t("deanon.map"), report.map_source || "?", false],
+      [i18n.t("deanon.outcome"), report.complete ? i18n.t("deanon.complete") : i18n.t("deanon.incomplete"), !report.complete],
     ];
     for (const [key, value, bad] of rows) {
       const row = document.createElement("div");
@@ -551,7 +553,7 @@ $("run-deanon").addEventListener("click", async () => {
 $("run-audit").addEventListener("click", async () => {
   const button = $("run-audit");
   show(button, true);
-  setStatus($("audit-status"), "controllo…");
+  setStatus($("audit-status"), i18n.t("progress.checking"));
   try {
     const result = await request("/api/audit", {
       method: "POST",
@@ -568,10 +570,10 @@ $("run-audit").addEventListener("click", async () => {
     verdict.className = `verdict ${result.verdict}`;
     verdict.textContent =
       result.verdict === "clean"
-        ? "Pulito — nessun contenuto sensibile, nessuna variante sospetta"
+        ? i18n.t("audit.clean")
         : result.verdict === "sensitive"
-          ? `Sensibile — ${result.total} elemento/i ancora in chiaro: non farlo leggere a un modello`
-          : "Sospetto — nessun residuo diretto, ma alcune parole somigliano a entità dichiarate";
+          ? i18n.t("audit.sensitive", { n: result.total })
+          : i18n.t("audit.suspect");
     chips($("audit-types"), result.types);
 
     const near = $("audit-near");
@@ -581,17 +583,15 @@ $("run-audit").addEventListener("click", async () => {
       // loud: a short list would otherwise read as "nothing suspicious" when it is only partial.
       const row = document.createElement("div");
       row.className = "row bad";
-      row.innerHTML = '<span class="k">limite scansione</span><span></span>';
-      row.lastChild.textContent =
-        "elenco parziale: la ricerca dei candidati si è fermata ai limiti (400 parole / 200 entità)";
+      row.innerHTML = `<span class="k">${i18n.t("audit.cappedLabel")}</span><span></span>`;
+      row.lastChild.textContent = i18n.t("audit.capped");
       near.append(row);
     }
     if (result.placeholders_present) {
       const row = document.createElement("div");
       row.className = "row";
       row.innerHTML = `<span class="k">placeholder</span><span></span>`;
-      row.lastChild.textContent =
-        `${result.placeholders_present} presenti — coerente con un documento già redatto`;
+      row.lastChild.textContent = i18n.t("audit.placeholders", { n: result.placeholders_present });
       near.append(row);
     }
     for (const item of result.near_miss || []) {
@@ -625,7 +625,7 @@ async function loadEntities() {
 $("entities-file").addEventListener("change", async (event) => {
   const next = event.target.value;
   if ($("entities-text").value !== state.entitiesLoaded) {
-    const go = confirm("Ci sono modifiche non salvate: cambiare file le perde. Continuare?");
+    const go = confirm(i18n.t("entities.unsaved"));
     if (!go) {
       event.target.value = state.entitiesFile;
       return;
@@ -678,7 +678,7 @@ function renderSuggestions(proposals) {
 
     const note = document.createElement("span");
     note.className = "muted small";
-    note.textContent = `×${proposal.count}` + (proposal.overlaps_detected ? " — già rilevato dal motore" : "");
+    note.textContent = `×${proposal.count}` + (proposal.overlaps_detected ? ` ${i18n.t("suggest.overlap")}` : "");
 
     row.append(check, select, value, note);
     list.append(row);
@@ -689,11 +689,11 @@ $("suggest-run").addEventListener("click", async () => {
   const button = $("suggest-run");
   const text = $("suggest-text").value;
   if (!text.trim()) {
-    setStatus($("suggest-status"), "incolla prima il testo", "error");
+    setStatus($("suggest-status"), i18n.t("suggest.paste"), "error");
     return;
   }
   button.disabled = true;
-  setStatus($("suggest-status"), "il modello locale sta leggendo…", "");
+  setStatus($("suggest-status"), i18n.t("suggest.reading"), "");
   try {
     const report = await request("/api/suggest", {
       method: "POST",
@@ -705,8 +705,10 @@ $("suggest-run").addEventListener("click", async () => {
       }),
     });
     renderSuggestions(report.candidates || []);
-    const truncated = report.truncated ? ` — inviati ${report.analyzed_chars} caratteri su ${report.chars}` : "";
-    setStatus($("suggest-status"), `${(report.candidates || []).length} proposte${truncated}`, "ok");
+    const truncated = report.truncated
+      ? i18n.t("suggest.truncated", { sent: report.analyzed_chars, total: report.chars })
+      : "";
+    setStatus($("suggest-status"), i18n.t("suggest.found", { n: (report.candidates || []).length }) + truncated, "ok");
   } catch (error) {
     // Un backend che non risponde e' un ERRORE, mai una lista vuota: la lista vuota si legge come
     // "niente da segnalare", che e' un'altra cosa.
@@ -736,7 +738,7 @@ $("suggest-add").addEventListener("click", () => {
     else skipped.push(proposal.value);
   }
   if (!chosen.length && !skipped.length) {
-    setStatus($("suggest-status"), "nessuna proposta selezionata", "error");
+    setStatus($("suggest-status"), i18n.t("suggest.none"), "error");
     return;
   }
   const area = $("entities-text");
@@ -761,7 +763,7 @@ $("save-entities").addEventListener("click", async () => {
       body: JSON.stringify({ text: $("entities-text").value }),
     });
     state.entitiesLoaded = $("entities-text").value;
-    setStatus($("entities-status"), `salvato — ${result.entries} entità attive`, "ok");
+    setStatus($("entities-status"), i18n.t("entities.saved", { n: result.entries }), "ok");
   } catch (error) {
     setStatus($("entities-status"), String(error.message || error), "error");
   } finally {
@@ -785,15 +787,18 @@ async function acceptAnonFile(file) {
       progressStop();
       setStatus(
         $("anon-status"),
-        `${file.name} — ${humanSize(file.size)} supera il limite di ${humanSize(state.maxUploadBytes)}: ` +
-          "il server lo rifiuterebbe, quindi non viene caricato. Usa la CLI sul file, o spezzalo.",
+        i18n.t("status.tooLarge", {
+          name: file.name,
+          size: humanSize(file.size),
+          limit: humanSize(state.maxUploadBytes),
+        }),
         "error",
       );
       return;
     }
     state.anonFile = file;
     $("text-anon").value = "";
-    setStatus($("anon-status"), `${file.name} — ${humanSize(file.size)}, sarà convertito dal server`, "ok");
+    setStatus($("anon-status"), i18n.t("status.willConvert", { name: file.name, size: humanSize(file.size) }), "ok");
     return;
   }
   state.anonFile = null;
@@ -821,6 +826,21 @@ for (const id of ["text-anon", "text-audit"]) $(id).addEventListener("input", re
 $("entities-text").addEventListener("input", refreshButtons);
 document.querySelectorAll(".pattern").forEach((input) => input.addEventListener("change", optionsSummary));
 
+/* The labels app.js composes are not in the markup: a language change has to redraw them. */
+function renderRuntimeLabels() {
+  const converter = $("converter-badge");
+  if (!converter) return;
+  converter.textContent = state.converter ? i18n.t("converter.badge.yes") : i18n.t("converter.badge.no");
+  converter.title = state.converter ? i18n.t("converter.yes") : i18n.t("converter.no");
+  $("suggest-state").textContent = state.suggest ? i18n.t("suggest.configured") : i18n.t("suggest.unconfigured");
+  if (state.suggest) {
+    $("suggest-backend").textContent = state.suggestBackend || i18n.t("suggest.localModel");
+  }
+}
+window.addEventListener("anon:lang-changed", () => {
+  applyTheme(document.documentElement.dataset.theme || "dark");
+  renderRuntimeLabels();
+});
 try {
   i18n.init();
 } catch (error) {

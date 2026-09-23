@@ -14,8 +14,11 @@ enforces that they agree.
 
 - The interface speaks Italian and English, with Italian as the default: a header selector, the
   choice kept in `localStorage`, the Italian text in `index.html` as source and fallback, and
-  `web/i18n.js` holding the English keyed by selector. A test fails when a key no longer matches an
-  element. Server messages and tooltips are still Italian (OPEN-ISSUES 38).
+  `web/i18n.js` holding the English keyed by selector. Every string `app.js` composes goes through
+  the same table (progress, verdicts, statuses, dialogs) and the labels redraw when the language
+  changes. Three tests guard it: a key with no element, a translation that drops a child id or an
+  interactive tag, and a key used in `app.js` with no translation. Server messages and tooltips are
+  still Italian (OPEN-ISSUES 38).
 - `docker-compose.model.yml` + `scripts/fetch-suggest-model.sh`: the local suggestion model
   (Qwen2.5-3B-Instruct Q4_K_M, verified by size and sha256) as a sidecar that SHARES the UI's
   network namespace, so it binds `127.0.0.1:8080` and the seam's loopback-only rule holds

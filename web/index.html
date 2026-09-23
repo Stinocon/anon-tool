@@ -135,12 +135,12 @@
       <label class="drop" id="drop-audit">
         <input type="file" id="file-audit" hidden>
         <span class="drop-title" id="drop-audit-title">Trascina qui il file da verificare</span>
-        <span class="muted small">oppure incolla il testo qui sotto</span>
+        <span class="muted small" id="drop-audit-hint">oppure incolla il testo qui sotto</span>
       </label>
       <textarea id="text-audit" rows="6" placeholder="…incolla qui il testo da verificare" spellcheck="false" aria-label="Testo da verificare"></textarea>
       <div class="actions">
         <button id="run-audit" class="primary" disabled>Verifica</button>
-        <label class="inline"><input type="checkbox" id="audit-reveal"> mostra i candidati <span class="muted small">— sono i dati sensibili</span></label>
+        <label class="inline"><input type="checkbox" id="audit-reveal"> <span id="audit-reveal-label">mostra i candidati</span> <span class="muted small" id="audit-reveal-hint">— sono i dati sensibili</span></label>
         <span id="audit-status" class="status" role="status" aria-live="polite"></span>
       </div>
       <div id="audit-result" hidden>
@@ -158,9 +158,9 @@
       <p class="muted" id="entities-format">Una riga per entità: <code>TIPO|valore</code>, oppure solo <code>valore</code>. Alias: <code>TIPO|valore|alias</code>. Direttive: <code>@type</code>, <code>@stem</code>, <code>@match case-sensitive</code>, <code>@context regex</code>.</p>
       <label for="entities-file" class="muted small" id="entities-file-label">File</label>
       <select id="entities-file" aria-label="File del dizionario">
-        <option value="entities">entities.txt — generico</option>
-        <option value="people">people.txt — persone</option>
-        <option value="clients">clients.txt — aziende e sedi</option>
+        <option value="entities" id="entities-opt-generic">entities.txt — generico</option>
+        <option value="people" id="entities-opt-people">people.txt — persone</option>
+        <option value="clients" id="entities-opt-clients">clients.txt — aziende e sedi</option>
       </select>
       <textarea id="entities-text" rows="16" spellcheck="false" aria-label="Dizionario"></textarea>
       <div class="actions">

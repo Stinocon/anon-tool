@@ -127,6 +127,24 @@ class StaticUiTest(unittest.TestCase):
             out[key] = source[start:end] if end > 0 else ""
         return out
 
+    def test_every_string_app_js_composes_has_both_languages(self) -> None:
+        """A `i18n.t("key")` with no entry in the table shows the KEY to the user ("suggest.paste").
+
+        Worse, a key present in Italian and missing in English shows Italian in an English session,
+        which is the defect this pass exists to remove. Both directions are asserted, so adding a
+        string to app.js without translating it fails the gate instead of shipping half-translated.
+        """
+        used = set(re.findall(r'i18n\.t\("([a-z][a-zA-Z0-9._-]+)"', self.JS))
+        self.assertGreater(len(used), 30, "app.js must compose its strings through the table")
+        body = self.I18N.split("const DYNAMIC = {", 1)[1] if "const DYNAMIC = {" in self.I18N else ""
+        self.assertNotEqual(body, "", "the dynamic table must exist")
+        italian = body.split("  en: {", 1)[0]
+        english = body.split("  en: {", 1)[1]
+        it_keys = set(re.findall(r'^\s{4}"?([a-z][\w.-]*)"?:', italian, re.M))
+        en_keys = set(re.findall(r'^\s{4}"?([a-z][\w.-]*)"?:', english, re.M))
+        self.assertEqual(sorted(used - it_keys), [], "keys used in app.js and missing from the table")
+        self.assertEqual(sorted(used - en_keys), [], "keys used in app.js without an English string")
+
     def test_a_translation_never_drops_an_interactive_child_or_a_live_value(self) -> None:
         """The English value must keep everything the Italian element carries.
 

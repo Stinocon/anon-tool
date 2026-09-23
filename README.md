@@ -47,8 +47,20 @@ is the same loopback for both — the invariant is honoured, not weakened, and n
 reasoning: measured through the seam, a 9B reasoning model spent 43 s and answered with a
 "Thinking Process" narrative instead of JSON, which the seam reported as an error — correctly. A
 small instruct model with a bounded `--max-tokens` is the right shape, and that is what ships.
-`make bench-model URL=… MODEL=…` measures any loopback endpoint, and the tests that need a model are
-gated behind `ANON_MODEL_URL`.
+`make bench-model URL=… MODEL=…` measures any loopback endpoint. **Measured end to end** (UI → server →
+model, this machine, 6 CPU threads): a 570-character Italian report answered in **37.3 s** with **5
+proposals** — Ancona, Milano, Prato, Bologna and one address — of which four were NOT found by the
+deterministic engine (it found the email and the phone). That is exactly the feature: the contextual
+reference the dictionary cannot know. The cost is the latency (21.6 tokens/s on the prompt, 6.7
+generating), so the panel is a step you run when you want it, not a step in the upload path. The
+tests that need a model are gated behind `ANON_MODEL_URL`; to run them against the containerized
+model, share its network namespace:
+
+```bash
+docker run --rm --network container:anon-tool -v "$PWD":/repo -w /repo --entrypoint python3 \
+  -e ANON_MODEL_URL=http://127.0.0.1:8080/v1/chat/completions -e ANON_MODEL_NAME=qwen2.5-3b-instruct \
+  anon-tool:local tests/test_suggest.py LocalModelTest
+```
 
 **The interface speaks Italian and English; Italian is the default.** The switcher sits in the
 header and the choice is remembered (`localStorage`, key `anon-lang`). The Italian text lives in

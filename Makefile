@@ -18,8 +18,8 @@ COMPOSE ?= docker compose
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
 
-up: ## start the container (loopback only)
-	$(COMPOSE) up -d --build
+up: ## start the container (loopback only). MODEL=1 keeps the suggestion model attached
+	$(COMPOSE) $(if $(MODEL),-f docker-compose.yml -f docker-compose.model.yml,) up -d --build
 	@echo "anon-tool on http://127.0.0.1:$(PORT)"
 
 up-slim: ## start the text-only variant (no converter, port $(SLIM_PORT))
@@ -28,8 +28,10 @@ up-slim: ## start the text-only variant (no converter, port $(SLIM_PORT))
 	ANON_SLIM_PORT=$(SLIM_PORT) $(COMPOSE) --profile slim up -d --build anon-tool-slim
 	@echo "anon-tool (slim) on http://127.0.0.1:$(SLIM_PORT)"
 
-down: ## stop the container
-	$(COMPOSE) down
+down: ## stop the container and the suggestion model, if it is running
+	# The model override is included on purpose: bringing down only the default project leaves the
+	# model container running (it shares the UI's network namespace, so an orphan keeps the socket).
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.model.yml down
 
 logs: ## follow the container log
 	$(COMPOSE) logs -f --tail=50
