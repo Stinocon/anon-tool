@@ -353,11 +353,30 @@ def _valid_address(value: str) -> bool:
     if street is None:
         return False
     # `d'Azeglio`, `dell'Università`, `l'Aquila`: the elided article is lowercase and the name is
-    # not, so the capitalization test looks at the part AFTER the apostrophe.
-    for token in street.split():
+    # not, so the capitalization test looks at the part AFTER the apostrophe. Testing every piece
+    # instead would make the ARTICLE the signal, and a capitalized contraction followed by ordinary
+    # prose (`via Un'ora di lavoro, 3`, `via All'incirca, 3`) is a sentence that reaches this rule
+    # with the shape of an address.
+    tokens = street.split()
+    for index, token in enumerate(tokens):
         head = token.rsplit("'", 1)[-1].rsplit("\u2019", 1)[-1]
         if head[:1].isupper():
             return True
+        # An accent written as a TRUNCATION APOSTROPHE (`Liberta'`, `Universita'`) leaves that part
+        # empty, and it is the most common spelling in a plain-text note. The two shapes are
+        # mechanically distinguishable: a MEDIAL apostrophe elides an article (the name is what
+        # follows), a TRAILING one truncates the name itself — so a token that ends with an
+        # apostrophe is read before it too. Only the LAST token, because the article of a name
+        # whose space is misplaced (`via L' anno scorso, 3`) also ends with an apostrophe; what
+        # stays is the residue below, declared rather than guessed at.
+        #
+        # Declared residue: a capitalized elided article left with nothing after it (`via Un' 3`)
+        # still reads as a truncated name. Closing it would take a list of Italian article forms,
+        # which is a second dictionary to keep true.
+        if index == len(tokens) - 1 and token.endswith(("'", "\u2019")):
+            truncated = token.rstrip("'\u2019").rsplit("'", 1)[-1].rsplit("\u2019", 1)[-1]
+            if truncated[:1].isupper():
+                return True
     return False
 
 
@@ -447,7 +466,19 @@ RULES: tuple[Rule, ...] = (
 )
 
 HEURISTIC_RULES: tuple[Rule, ...] = (
-    Rule("IP", re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])"), validator=_valid_ip, family="network"),
+    # The trailing guard rejects a longer dotted run (`.40.5`, `.beta`) but not the full stop that
+    # closes a sentence: `(?![\w.])` kept `il gateway e' 10.20.30.40.` unredacted, which is how an
+    # address is written in every report. `(?!\.\w)` is the guard the HOST rule below carries (its
+    # own `(?!\w\-)` also refuses a trailing hyphen, which an address cannot have): it accepts
+    # punctuation (`10.20.30.40.`, `10.20.30.40...`, `(10.20.30.40.)`) and still refuses a dotted run
+    # whose continuation is a label. Trade-off declared: a four-part NUMBER at the end of a sentence (`aggiornato alla 3.4.5.6.`) is redacted as an address — the two are the same shape,
+    # and for an anonymizer a false positive costs a placeholder where a false negative leaks.
+    Rule(
+        "IP",
+        re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w)(?!\.\w)"),
+        validator=_valid_ip,
+        family="network",
+    ),
     Rule(
         "IP",
         re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])"),

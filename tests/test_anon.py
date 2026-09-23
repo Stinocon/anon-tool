@@ -120,6 +120,34 @@ class RoundTripTest(unittest.TestCase):
         self.assertTrue(reference, "the fixture must actually match")
         self.assertEqual(fast, reference)
 
+    def test_an_address_at_the_end_of_a_sentence_is_still_an_address(self) -> None:
+        r"""A trailing period is sentence punctuation, not part of the token.
+
+        The IPv4 pattern ended with `(?![\w.])`, so `10.20.30.40.` — an address followed by the full
+        stop that closes the sentence, which is how it is written in every report — matched nothing
+        and stayed in the document. The HOST rule next to it already carried the guard
+        (`(?!\.\w)`, commented "allow a trailing sentence period"); the IP rule never got it. That
+        guard, not a narrower `(?!\.\d)`, is what belongs here: the point is to reject a longer
+        dotted run whose continuation is a LABEL, and `.beta`/`.rc1`/`.x86_64` are one as `.5` is —
+        `(?!\.\d)` still redacted `10.20.30.40.beta`, and failed this test on exactly that case.
+        """
+        entities = self.entities
+        for text in ("il gateway e' 10.20.30.40.", "vedi 192.168.1.1.", "IP: 10.20.30.40."):
+            types = {ptype for _, _, ptype in anon.detect(text, entities)}
+            self.assertIn("IP", types, f"the address at the end of {text!r} was not found")
+            redacted, entries, _ = anon.anonymize(text, entities)
+            self.assertNotIn("10.20.30.40", redacted)
+            self.assertNotIn("192.168.1.1", redacted)
+            self.assertTrue(entries)
+        # a four-octet prefix of a longer dotted run is still NOT an address, whether the
+        # continuation is numeric or alphabetic
+        for text in ("versione 10.20.30.40.5", "host 1.2.3.4.5.6", "versione 10.20.30.40.beta",
+                     "release 1.2.3.4.rc1", "build 10.0.0.1.x86_64"):
+            types = {ptype for _, _, ptype in anon.detect(text, entities)}
+            self.assertNotIn("IP", types, f"{text!r} is not an address")
+            redacted, _, _ = anon.anonymize(text, entities)
+            self.assertEqual(redacted, text, "a version-like run must not be half redacted")
+
     def test_the_fast_scan_survives_entries_sharing_a_first_token(self) -> None:
         """The sub-index must not narrow a bucket into a MISS.
 
@@ -954,11 +982,29 @@ class AddressCorpusTest(unittest.TestCase):
         "Sede legale: Via dell'Università 12",
         "Uffici in Corso d'Italia 5",
         "Via l'Aquila 4",
+        # L'accento scritto come apostrofo (la forma piu' comune in un testo semplice): il
+        # token finisce con l'apostrofo, e la parte da leggere e' quella PRIMA, non quella dopo.
+        "Recapito: via della Liberta' 27",
+        "Sede legale: Via dell'Universita' 2",
+        "Doppio apostrofo: via della Liberta'' 27",
     )
 
     NEGATIVE = (
         "in via del tutto eccezionale, 3 volte l'anno",
         "percorrere la via libera 4 corsie",
+        "sulla via dell'emergenza' 2 volte l'anno",  # apostrofo, ma tutto minuscolo
+        # L'apostrofo MEDIANO elide un articolo, non tronca il nome: leggere anche la parte PRIMA
+        # dell'apostrofo farebbe dell'ARTICOLO maiuscolo il segnale, e queste sono frasi comuni che
+        # arrivano alla regola con la forma di un indirizzo.
+        "via Un'ora di lavoro, 3",
+        "si procede via L'anno scorso, 3",
+        "via All'incirca, 3",
+        "via Dell'aria, 3",
+        # L'articolo separato dal nome (spazio o a-capo): il token finisce con l'apostrofo come una
+        # troncatura, ma non e' l'ULTIMO del nome, ed e' l'ultimo token l'unico che una troncatura
+        # puo' essere.
+        "si procede via L' anno scorso, 3",
+        "via Un' anno intero, 3",
         "il viale alberato 2 piani",
         "nessun indirizzo in questa riga",
         "via roma 12 in minuscolo (trade-off dichiarato: non redatto)",
