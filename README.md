@@ -233,8 +233,8 @@ python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
 - **The model never decides what is redacted**: a value it returns that is not in the document is
   dropped, and applying a proposal stays `anon.py`'s job.
 
-The panel appears only when the server was started with `--suggest-url/--suggest-model`. Note where
-it can work: **not in the container**. Inside it `127.0.0.1` is the container itself, and a
+The panel is always in the Dizionario tab and tells you whether the seam is configured; with no
+model it is inert and says how to enable it. Note where it can work: **not in the container**. Inside it `127.0.0.1` is the container itself, and a
 `host.docker.internal` URL is refused because it is not loopback — the rule that keeps the document
 on this machine also keeps the container from reaching a model on the host. Stop the container and run
 the server natively when you want the panel:

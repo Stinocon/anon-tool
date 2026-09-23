@@ -168,8 +168,16 @@
 
     <!-- Il pannello compare solo se il server è stato avviato con --suggest-url/--suggest-model:
          senza modello configurato non esiste, invece di esistere e fallire. -->
-    <div class="card" id="suggest-card" hidden>
-      <h2>Suggerimenti dal modello locale</h2>
+    <div class="card" id="suggest-card">
+      <h2>Suggerimenti dal modello locale <span class="badge" id="suggest-state">non configurato</span></h2>
+      <p class="muted small" id="suggest-off">
+        Un modello locale può <em>proporre</em> le stringhe da redigere che il dizionario non conosce.
+        Non è configurato: avvia il server con
+        <code>--suggest-url</code> e <code>--suggest-model</code> (vedi il README). Nel container
+        questo pannello non può funzionare — dentro, <code>127.0.0.1</code> è il container stesso e la
+        regola loopback rifiuta l'host — quindi va usato col server nativo.
+      </p>
+      <div id="suggest-fields" hidden>
       <p class="muted small">
         Il testo che incolli qui va a un endpoint <strong>su questa macchina</strong> (loopback): non
         esce da qui. Il modello <em>propone</em> stringhe da redigere; sei tu ad approvarle, e
@@ -192,6 +200,7 @@
       <div class="actions" id="suggest-actions" hidden>
         <button id="suggest-add" class="primary">Aggiungi al dizionario</button>
         <span class="muted small">poi premi <strong>Salva</strong> e rilancia l'anonimizzazione</span>
+      </div>
       </div>
     </div>
   </section>

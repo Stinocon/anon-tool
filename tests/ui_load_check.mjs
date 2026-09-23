@@ -168,11 +168,13 @@ try {
     /Contoso/.test(document.getElementById("text-anon").value) && runAnon.disabled === false,
   );
 
-  // Il seam verso il modello locale esiste solo se il server lo ha configurato: con
-  // `suggest: false` (lo stub) il pannello non deve comparire, invece di comparire e fallire.
+  // Il pannello si vede anche senza modello — dice come accenderlo — ma i suoi campi restano
+  // chiusi, così non si può lanciare qualcosa che non esiste.
   check(
-    "the local-model panel stays hidden when no model is configured",
-    document.getElementById("suggest-card").hidden === true,
+    "the local-model panel is visible and explains how to enable it",
+    document.getElementById("suggest-card").hidden === false &&
+      document.getElementById("suggest-off").hidden === false &&
+      document.getElementById("suggest-fields").hidden === true,
   );
 
   if (failures.length) {

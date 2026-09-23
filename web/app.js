@@ -256,11 +256,14 @@ async function boot() {
   state.maxUploadBytes = info.max_upload_bytes || null;
   if (state.maxUploadBytes) $("upload-limit").textContent = humanSize(state.maxUploadBytes);
 
-  // Il seam verso un modello locale esiste solo se il server e' stato avviato con
-  // --suggest-url/--suggest-model: senza modello il pannello non si mostra, invece di mostrarsi e
-  // fallire al primo clic.
+  // Il seam resta SPENTO finche' il server non e' avviato con --suggest-url/--suggest-model, ma il
+  // pannello si vede lo stesso e dice come accenderlo: una funzione che non si trova non esiste, e
+  // nascondere il pannello era il modo di non farla trovare.
   state.suggest = Boolean(info.suggest);
-  $("suggest-card").hidden = !state.suggest;
+  $("suggest-fields").hidden = !state.suggest;
+  $("suggest-off").hidden = state.suggest;
+  $("suggest-state").textContent = state.suggest ? "configurato" : "non configurato";
+  $("suggest-state").className = state.suggest ? "badge badge-ok" : "badge badge-warn";
   if (state.suggest) $("suggest-backend").textContent = info.suggest_backend || "modello locale";
 
   const catalogs = info.catalogs || [];

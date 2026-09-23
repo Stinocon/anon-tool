@@ -83,6 +83,15 @@ class StaticUiTest(unittest.TestCase):
         self.assertIn("REVEAL_TTL_MS", self.JS)
         self.assertIn('$("hide-map").addEventListener', self.JS)
 
+    def test_the_local_model_panel_is_discoverable(self) -> None:
+        """Unconfigured is a STATE, not a reason to hide the panel: a feature nobody can find is a
+        feature that does not exist. It stays visible, inert, and says how to turn it on."""
+        card = re.search(r'<div class="card" id="suggest-card"[^>]*>', self.HTML)
+        self.assertIsNotNone(card, "the panel must be in the Dizionario tab")
+        self.assertNotIn("hidden", card.group(0), "the panel is hidden again: it becomes undiscoverable")
+        self.assertIn('id="suggest-off"', self.HTML)
+        self.assertIn('id="suggest-fields"', self.HTML)
+
     def test_the_model_output_reaches_the_page_as_text_only(self) -> None:
         """A model answer is untrusted input: it must never be assigned as HTML.
 
