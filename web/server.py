@@ -539,6 +539,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._static("app.css", "text/css; charset=utf-8")
             elif path == "/app.js":
                 self._static("app.js", "text/javascript; charset=utf-8")
+            elif path == "/i18n.js":
+                self._static("i18n.js", "text/javascript; charset=utf-8")
             elif path == "/favicon.svg":
                 self._static("favicon.svg", "image/svg+xml")
             elif path == "/favicon.ico":

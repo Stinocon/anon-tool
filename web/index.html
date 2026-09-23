@@ -26,7 +26,12 @@
     <span class="muted small" id="version">…</span>
   </div>
   <div class="badges">
-    <span class="badge badge-ok" title="Il server ascolta solo su 127.0.0.1: nessun altro dispositivo può raggiungerlo.">solo locale</span>
+    <label class="muted small" for="lang" id="lang-label">Lingua</label>
+    <select id="lang" aria-label="Lingua dell'interfaccia">
+      <option value="it">Italiano</option>
+      <option value="en">English</option>
+    </select>
+    <span class="badge badge-ok" id="badge-local" title="Il server ascolta solo su 127.0.0.1: nessun altro dispositivo può raggiungerlo.">solo locale</span>
     <span class="badge" id="converter-badge">…</span>
     <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false"
             title="Passa al tema chiaro">Tema: scuro</button>
@@ -46,8 +51,8 @@
     <div class="card">
       <label class="drop" id="drop-anon">
         <input type="file" id="file-anon" hidden>
-        <span class="drop-title">Trascina qui il documento</span>
-        <span class="muted small">doc · docx · pdf · txt · md · json · yaml · csv — fino a <span id="upload-limit">160 MB</span>, oppure incolla il testo qui sotto</span>
+        <span class="drop-title" id="drop-anon-title">Trascina qui il documento</span>
+        <span class="muted small" id="drop-anon-hint">doc · docx · pdf · txt · md · json · yaml · csv — fino a <span id="upload-limit">160 MB</span>, oppure incolla il testo qui sotto</span>
       </label>
       <textarea id="text-anon" rows="6" placeholder="…incolla qui il testo da anonimizzare" spellcheck="false" aria-label="Testo da anonimizzare"></textarea>
 
@@ -55,17 +60,17 @@
         <summary id="options-summary">Opzioni</summary>
         <div class="options-grid">
           <fieldset>
-            <legend>Pattern</legend>
-            <label><input type="checkbox" class="pattern" value="identity" checked> <span>Identità</span> <span class="muted">email, URL, credenziali</span></label>
-            <label><input type="checkbox" class="pattern" value="network" checked> <span>Rete</span> <span class="muted">IP, telefoni, hostname</span></label>
-            <label><input type="checkbox" class="pattern" value="legal" checked> <span>Legale</span> <span class="muted">CF, P.IVA, IBAN, targa, indirizzi</span></label>
+            <legend id="opt-pattern-legend">Pattern</legend>
+            <label id="opt-identity"><input type="checkbox" class="pattern" value="identity" checked> <span>Identità</span> <span class="muted">email, URL, credenziali</span></label>
+            <label id="opt-network"><input type="checkbox" class="pattern" value="network" checked> <span>Rete</span> <span class="muted">IP, telefoni, hostname</span></label>
+            <label id="opt-legal"><input type="checkbox" class="pattern" value="legal" checked> <span>Legale</span> <span class="muted">CF, P.IVA, IBAN, targa, indirizzi</span></label>
           </fieldset>
           <fieldset>
-            <legend>Cataloghi <span class="muted">— spenti: redigono molto</span></legend>
-            <div id="catalogs" class="catalogs"><span class="muted small">caricamento…</span></div>
+            <legend id="opt-catalogs-legend">Cataloghi <span class="muted">— spenti: redigono molto</span></legend>
+            <div id="catalogs" class="catalogs"><span class="muted small" id="catalogs-loading">caricamento…</span></div>
           </fieldset>
         </div>
-        <p class="hint">Il <strong>dizionario custom</strong> è sempre attivo (scheda «Dizionario»).</p>
+        <p class="hint" id="entities-note">Il <strong>dizionario custom</strong> è sempre attivo (scheda «Dizionario»).</p>
       </details>
 
       <div class="actions">
@@ -93,8 +98,8 @@
         <span id="anon-map" class="muted small"></span>
       </div>
       <details class="options">
-        <summary>Che cosa è diventato cosa</summary>
-        <p class="warn">Questa è la <strong>mappa</strong>: mostra i valori reali. Non incollarla in una chat con un modello.</p>
+        <summary id="mapping-summary">Che cosa è diventato cosa</summary>
+        <p class="warn" id="mapping-warning">Questa è la <strong>mappa</strong>: mostra i valori reali. Non incollarla in una chat con un modello.</p>
         <button id="reveal-map" class="danger">Mostra i valori reali</button>
         <button id="hide-map" class="ghost" hidden>Nascondi i valori</button>
         <div id="mapping" class="mapping"></div>
@@ -105,14 +110,14 @@
   <!-- ============================================================== DEANONIMIZZA -->
   <section id="panel-deanon" role="tabpanel" aria-labelledby="tab-deanon" class="panel">
     <div class="card">
-      <h2>Rimetti i valori reali</h2>
-      <p class="muted">Carica il documento finale (quello con i placeholder) e scegli la mappa con cui è stato redatto. Ogni run ha la sua mappa.</p>
+      <h2 id="deanon-title">Rimetti i valori reali</h2>
+      <p class="muted" id="deanon-intro">Carica il documento finale (quello con i placeholder) e scegli la mappa con cui è stato redatto. Ogni run ha la sua mappa.</p>
       <label class="drop" id="drop-deanon">
         <input type="file" id="file-deanon" hidden>
-        <span class="drop-title">Trascina qui il documento finale</span>
-        <span class="muted small">txt · md · docx · xlsx · pptx · odt · json · yaml</span>
+        <span class="drop-title" id="drop-deanon-title">Trascina qui il documento finale</span>
+        <span class="muted small" id="drop-deanon-hint">txt · md · docx · xlsx · pptx · odt · json · yaml</span>
       </label>
-      <h3 class="sub">Mappa da usare</h3>
+      <h3 class="sub" id="deanon-map-title">Mappa da usare</h3>
       <div id="map-list" class="map-list" role="radiogroup" aria-label="Mappa"></div>
       <div class="actions">
         <button id="run-deanon" class="primary" disabled>Ripristina i valori reali</button>
@@ -125,11 +130,11 @@
   <!-- ================================================================== VERIFICA -->
   <section id="panel-audit" role="tabpanel" aria-labelledby="tab-audit" class="panel">
     <div class="card">
-      <h2>È davvero anonimizzato?</h2>
-      <p class="muted">Controllo deterministico <strong>prima</strong> di far leggere il documento a un modello: residui sensibili, placeholder rimasti, e nomi del dizionario scritti in modo diverso.</p>
+      <h2 id="audit-title">È davvero anonimizzato?</h2>
+      <p class="muted" id="audit-intro">Controllo deterministico <strong>prima</strong> di far leggere il documento a un modello: residui sensibili, placeholder rimasti, e nomi del dizionario scritti in modo diverso.</p>
       <label class="drop" id="drop-audit">
         <input type="file" id="file-audit" hidden>
-        <span class="drop-title">Trascina qui il file da verificare</span>
+        <span class="drop-title" id="drop-audit-title">Trascina qui il file da verificare</span>
         <span class="muted small">oppure incolla il testo qui sotto</span>
       </label>
       <textarea id="text-audit" rows="6" placeholder="…incolla qui il testo da verificare" spellcheck="false" aria-label="Testo da verificare"></textarea>
@@ -149,9 +154,9 @@
   <!-- ================================================================ DIZIONARIO -->
   <section id="panel-entities" role="tabpanel" aria-labelledby="tab-entities" class="panel">
     <div class="card">
-      <h2>Dizionario custom</h2>
-      <p class="muted">Una riga per entità: <code>TIPO|valore</code>, oppure solo <code>valore</code>. Alias: <code>TIPO|valore|alias</code>. Direttive: <code>@type</code>, <code>@stem</code>, <code>@match case-sensitive</code>, <code>@context regex</code>.</p>
-      <label for="entities-file" class="muted small">File</label>
+      <h2 id="entities-title">Dizionario custom</h2>
+      <p class="muted" id="entities-format">Una riga per entità: <code>TIPO|valore</code>, oppure solo <code>valore</code>. Alias: <code>TIPO|valore|alias</code>. Direttive: <code>@type</code>, <code>@stem</code>, <code>@match case-sensitive</code>, <code>@context regex</code>.</p>
+      <label for="entities-file" class="muted small" id="entities-file-label">File</label>
       <select id="entities-file" aria-label="File del dizionario">
         <option value="entities">entities.txt — generico</option>
         <option value="people">people.txt — persone</option>
@@ -163,13 +168,13 @@
         <button id="download-entities">Scarica il file</button>
         <span id="entities-status" class="status" role="status" aria-live="polite"></span>
       </div>
-      <p class="muted small">File: <code id="entities-path">~/.anon/entities.txt</code> — resta sulla tua macchina, fuori da ogni repository.</p>
+      <p class="muted small" id="entities-path-note">File: <code id="entities-path">~/.anon/entities.txt</code> — resta sulla tua macchina, fuori da ogni repository.</p>
     </div>
 
     <!-- Il pannello si vede SEMPRE, anche senza modello: dice come accenderlo. Senza configurazione
          resta inerte (i campi sono chiusi nell'HTML, non solo da JS), invece di non esistere. -->
     <div class="card" id="suggest-card">
-      <h2>Suggerimenti dal modello locale <span class="badge" id="suggest-state">non configurato</span></h2>
+      <h2 id="suggest-title-h"><span id="suggest-title">Suggerimenti dal modello locale</span> <span class="badge" id="suggest-state">non configurato</span></h2>
       <p class="muted small" id="suggest-off">
         Un modello locale può <em>proporre</em> le stringhe da redigere che il dizionario non conosce.
         Non è configurato: avvia il server con
@@ -178,13 +183,13 @@
         regola loopback rifiuta l'host — quindi va usato col server nativo.
       </p>
       <div id="suggest-fields" hidden>
-      <p class="muted small">
+      <p class="muted small" id="suggest-privacy">
         Il testo che incolli qui va a un endpoint <strong>su questa macchina</strong> (loopback): non
         esce da qui. Il modello <em>propone</em> stringhe da redigere; sei tu ad approvarle, e
         l'approvazione le aggiunge al dizionario qui sopra — l'unico posto da cui il motore redige.
         Il pannello non scrive nulla da solo.
       </p>
-      <p class="muted small">Modello: <code id="suggest-backend">—</code></p>
+      <p class="muted small"><span id="suggest-model-label">Modello:</span> <code id="suggest-backend">—</code></p>
       <textarea id="suggest-text" rows="6" spellcheck="false"
         placeholder="…incolla qui il testo da far leggere al modello locale"
         aria-label="Testo per i suggerimenti"></textarea>
@@ -199,7 +204,7 @@
       <div id="suggest-list" class="suggest-list"></div>
       <div class="actions" id="suggest-actions" hidden>
         <button id="suggest-add" class="primary">Aggiungi al dizionario</button>
-        <span class="muted small">poi premi <strong>Salva</strong> e rilancia l'anonimizzazione</span>
+        <span class="muted small" id="suggest-actions-hint">poi premi <strong>Salva</strong> e rilancia l'anonimizzazione</span>
       </div>
       </div>
     </div>
@@ -207,8 +212,8 @@
 </main>
 
 <footer class="foot muted small">
-  <p>Motore deterministico e locale · il tool non fa chiamate di rete · i valori reali restano in <code>~/.anon/maps/</code></p>
-  <p class="links">
+  <p id="footer-line">Motore deterministico e locale · il tool non fa chiamate di rete · i valori reali restano in <code>~/.anon/maps/</code></p>
+  <p class="links" id="footer-links">
     <a href="https://github.com/Stinocon/anon-tool" target="_blank" rel="noreferrer noopener">anon-tool</a>
     <span aria-hidden="true">·</span>
     <a href="https://github.com/Stinocon/pi-workbench" target="_blank" rel="noreferrer noopener">pi-workbench</a>
@@ -217,6 +222,7 @@
   </p>
 </footer>
 
+<script src="/i18n.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

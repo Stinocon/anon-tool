@@ -57,6 +57,7 @@ class StaticUiTest(unittest.TestCase):
 
     JS = (HOME / "web" / "app.js").read_text(encoding="utf-8")
     HTML = (HOME / "web" / "index.html").read_text(encoding="utf-8")
+    I18N = (HOME / "web" / "i18n.js").read_text(encoding="utf-8")
 
     def test_every_referenced_element_id_exists(self) -> None:
         declared = set(re.findall(r'id="([^"]+)"', self.HTML))
@@ -82,6 +83,34 @@ class StaticUiTest(unittest.TestCase):
         self.assertIn('id="hide-map"', self.HTML)
         self.assertIn("REVEAL_TTL_MS", self.JS)
         self.assertIn('$("hide-map").addEventListener', self.JS)
+
+    def test_every_translation_key_still_exists_in_the_html(self) -> None:
+        """A translation key that no longer matches an element is a DEFECT, not clutter.
+
+        The dictionary is keyed by selector, so renaming an id in the markup silently orphans its
+        English text and the interface shows Italian in an English session — a drift nobody would
+        notice by reading either file alone.
+        """
+        keys = set(re.findall(r'"(#[a-z0-9-]+)":', self.I18N))
+        ids = set(re.findall(r'id="([^"]+)"', self.HTML))
+        orphans = sorted(key for key in keys if key.lstrip("#") not in ids)
+        self.assertGreater(len(keys), 30, "the dictionary must not shrink to nothing")
+        self.assertEqual(orphans, [], f"translation keys without an element: {orphans}")
+
+    def test_the_language_selector_offers_italian_and_english(self) -> None:
+        """Default Italian: the markup holds the Italian text, and the English lives in i18n.js."""
+        select = re.search(r'<select id="lang"[^>]*>(.*?)</select>', self.HTML, re.S)
+        self.assertIsNotNone(select, "the language selector must be in the header")
+        self.assertIn('<option value="it">Italiano</option>', select.group(1))
+        self.assertIn('<option value="en">English</option>', select.group(1))
+        self.assertIn('src="/i18n.js"', self.HTML)
+        self.assertLess(
+            self.HTML.index('src="/i18n.js"'), self.HTML.index('src="/app.js"'),
+            "i18n.js must load before app.js, which uses it",
+        )
+        # La pagina servita è italiana: nessuna stringa inglese del dizionario finisce nell'HTML.
+        for english in ("Custom dictionary", "Drop the document here", "Put the real values back"):
+            self.assertNotIn(english, self.HTML)
 
     def test_the_local_model_panel_is_discoverable(self) -> None:
         """Unconfigured is a STATE, not a reason to hide the panel: a feature nobody can find is a

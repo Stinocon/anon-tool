@@ -36,6 +36,14 @@ telemetry, no credentials.
 
 The AI re-enters only *after* redaction, when you or an agent analyze the redacted text.
 
+**The interface speaks Italian and English; Italian is the default.** The switcher sits in the
+header and the choice is remembered (`localStorage`, key `anon-lang`). The Italian text lives in
+`web/index.html` and is the fallback, so a missing translation shows Italian rather than an empty
+label; the English lives in `web/i18n.js`, keyed by a selector per element — a paragraph that mixes
+text with `<strong>`/`<em>` is replaced whole, because word order differs between languages. A test
+fails when a key no longer matches an element. What is NOT translated yet: the messages the server
+produces (progress, errors) and the tooltips; the engine is language-neutral either way.
+
 **Italian first, not Italian only.** The checksum validators and the `legal` pattern group are
 built around Italian identifiers (codice fiscale, partita IVA, IBAN, plates, addresses), and two of
 the four shipped catalogs are Italian (municipalities, consumer mail domains). Everything else —
@@ -246,7 +254,7 @@ python3 ~/.anon/web/server.py --port 1407 \
 ```
 
 See `docs/DESIGN.md` §7 for the boundary and `docs/OPEN-ISSUES.md` #17 for what is still open
-(the model, and the UI in English).
+(the model — the interface is bilingual as of this pass).
 
 ## Security posture
 

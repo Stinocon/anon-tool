@@ -205,14 +205,32 @@ document.querySelectorAll(".tab").forEach((tab, index, all) => {
   });
 });
 
+/* ------------------------------------------------------------------ i18n
+ * i18n.js is loaded before this file. If it is missing (a stale cache, a partial deploy) the
+ * interface must stay Italian and usable, not throw on the first t(): the fallback returns the
+ * Italian string instead of the key, so a missing dictionary never shows "theme.dark" to a user. */
+const i18n = (() => {
+  if (window.AnonI18n) return window.AnonI18n;
+  const italian = {
+    options: "Opzioni",
+    "theme.dark": "Tema: scuro",
+    "theme.light": "Tema: chiaro",
+    "theme.toDark": "Passa al tema scuro",
+    "theme.toLight": "Passa al tema chiaro",
+  };
+  return { t: (key) => italian[key] ?? key, init: () => "it", apply: () => "it", current: "it" };
+})();
+
 /* ---------------------------------------------------------------- tema */
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   const button = $("theme-toggle");
   const light = theme === "light";
-  button.textContent = light ? "Tema: chiaro" : "Tema: scuro";
+  // Le stringhe passano dall'i18n: la lingua scelta vale anche qui, e il cambio lingua
+  // richiama applyTheme per non lasciare il pulsante in italiano su una pagina in inglese.
+  button.textContent = light ? i18n.t("theme.light") : i18n.t("theme.dark");
   button.setAttribute("aria-pressed", String(light));
-  button.title = light ? "Passa al tema scuro" : "Passa al tema chiaro";
+  button.title = light ? i18n.t("theme.toDark") : i18n.t("theme.toLight");
   try {
     localStorage.setItem("anon-theme", theme);
   } catch {
@@ -231,7 +249,7 @@ function optionsSummary() {
     patterns.length === 3 ? "tutti i pattern" : patterns.length ? `pattern: ${patterns.join(", ")}` : "nessun pattern",
     catalogs.length ? `cataloghi: ${catalogs.join(", ")}` : "nessun catalogo",
   ];
-  $("options-summary").textContent = `Opzioni — ${parts.join(" · ")}`;
+  $("options-summary").textContent = `${i18n.t("options")} — ${parts.join(" · ")}`;
 }
 
 function refreshButtons() {
@@ -802,5 +820,12 @@ dropzone($("drop-audit"), $("file-audit"), async (file) => {
 for (const id of ["text-anon", "text-audit"]) $(id).addEventListener("input", refreshButtons);
 $("entities-text").addEventListener("input", refreshButtons);
 document.querySelectorAll(".pattern").forEach((input) => input.addEventListener("change", optionsSummary));
+
+try {
+  i18n.init();
+} catch (error) {
+  /* the interface stays Italian: a broken dictionary must not stop the tool */
+}
+applyTheme(document.documentElement.dataset.theme || "dark");
 
 boot().catch((error) => setStatus($("anon-status"), `avvio fallito: ${error.message || error}`, "error"));

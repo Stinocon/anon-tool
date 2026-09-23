@@ -23,6 +23,7 @@ let html;
 try {
   html = readFileSync(path.join(webDir, "index.html"), "utf8");
   readFileSync(path.join(webDir, "app.js"), "utf8");
+  readFileSync(path.join(webDir, "i18n.js"), "utf8");
 } catch (error) {
   console.error(`ui_load_check: cannot read the web files (${error.message})`);
   process.exit(2);
@@ -138,6 +139,12 @@ check(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 try {
+  // Stesso ordine della pagina: index.html carica i18n.js prima di app.js.
+  await import(path.join(webDir, "i18n.js"));
+  check(
+    "i18n.js loads and exposes the languages",
+    Array.isArray(window.AnonI18n?.languages) && window.AnonI18n.languages.join(",") === "it,en",
+  );
   await import(path.join(webDir, "app.js"));
   // Let the initial async chain (refresh → refreshMaps → loadEntities) settle.
   await settle();
