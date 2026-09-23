@@ -109,12 +109,14 @@ def main() -> int:
     claim("rate limit (README)", rf"default {server.DEFAULT_RATE_LIMIT}/min", "README.md")
     claim("rate limit (SECURITY)", rf"default {server.DEFAULT_RATE_LIMIT}/min", "SECURITY.md")
 
-    # 5. the near-miss bounds, as told to the user
-    claim(
-        "near-miss bounds",
-        rf"{anon.NEAR_MISS_WORD_LIMIT} parole / {anon.NEAR_MISS_VOCAB_LIMIT} entità",
-        "web/app.js",
-    )
+    # 5. the near-miss bounds, as told to the user. The wording moved into the language table with
+    # the bilingual interface, and it exists in BOTH languages: binding only one would let the other
+    # go stale. The numbers stay the engine's constants.
+    for language, wording in (
+        ("it", rf"{anon.NEAR_MISS_WORD_LIMIT} parole / {anon.NEAR_MISS_VOCAB_LIMIT} entità"),
+        ("en", rf"{anon.NEAR_MISS_WORD_LIMIT} words / {anon.NEAR_MISS_VOCAB_LIMIT} entities"),
+    ):
+        claim(f"near-miss bounds ({language})", wording, "web/i18n.js")
 
     # 6. the counts stated for the shipped catalogs, bound to the files themselves
     catalogs = {name: ROOT / "catalogs" / f"{name}.txt" for name in ("it-cities", "vendors", "products")}
