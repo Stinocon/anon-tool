@@ -5,7 +5,7 @@
 # Direction:  live (${ANON_HOME:-~/.anon})  ->  repo.
 # The live directory is what actually runs (the Pi guard spawns ~/.anon/anon.py, the skill and
 # the DECs point at it), so it stays the runtime source of truth; this repo is the versioned
-# copy. Same shape as pi-customization's sync-to-repo.sh, with a different data policy:
+# copy. Same shape as the sync that ships this repo's Pi skill (pi-workbench), with a different data policy:
 #
 #   mirrored  : anon.py, deanon.py, convert.py, tests/, catalogs/, web/   (live -> repo)
 #   repo-only : README.md, LICENSE, Dockerfile, docker-compose.yml, scripts/, docs/, .gitignore

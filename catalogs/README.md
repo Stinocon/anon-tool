@@ -23,7 +23,7 @@ property of the file but of the block it opens, and `@context off` is how you cl
 @type CITTÀ
 @match case-sensitive
 @context (?:sede di)\s+
-Brescia          # only after "sede di"
+Ancona           # only after "sede di"
 @context off
 Prato            # bare: any `Prato` is a city name here
 ```
@@ -113,7 +113,7 @@ against the guard's 12 MB / 20 s).
 
 Redacting bare calling codes (`+39`, `+44`) has no real use case here:
 
-- `+39 030 1234567` is already redacted **as a whole** by the phone rule — and a prefix catalog
+- `+39 02 1234567` is already redacted **as a whole** by the phone rule — and a prefix catalog
   would compete with it, claiming `+39` first and leaving `030 1234567` visible: **worse than not
   having it**;
 - a country code alone does not identify anybody.

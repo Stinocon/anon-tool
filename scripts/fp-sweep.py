@@ -3,18 +3,20 @@
 
 Item #23 of docs/OPEN-ISSUES.md: the thresholds of the word-ish rules (KEY, HOST, URL, …) were
 chosen by reasoning, not by measurement. This tool gives the number. It scans a corpus of files
-that SHOULD be clean (source code and published docs of this project, of the Pi extensions and of
-the installed Pi package), runs the real engine's `detect()` over them, and aggregates every match
+that SHOULD be clean (this project's source and docs, the Pi extensions and the installed agent
+package), runs the real engine's `detect()` over them, and aggregates every match
 by rule type. On a clean corpus, each match is a candidate false positive.
 
-    python3 scripts/fp-sweep.py                       # the default corpus
+    python3 scripts/fp-sweep.py                       # the default corpus (use --root off this machine)
     python3 scripts/fp-sweep.py --root DIR --json     # a specific corpus, machine-readable
     python3 scripts/fp-sweep.py --show KEY --show HOST  # print the matching lines (code, not secrets)
     python3 scripts/fp-sweep.py --entities catalogs/vendors.txt --show FORNITORE  # size up a list
 
-Corpus hygiene: the default corpus deliberately EXCLUDES private configs (Home Assistant, MikroTik,
-.env) — those hold legitimate real values, so a match there is a true positive, not a false one —
-and the catalog files themselves, which are lists of the very words a catalog is meant to match.
+Corpus hygiene: the default corpus deliberately EXCLUDES private configs (a router config, a
+home-automation config, `.env`) — those hold legitimate real values, so a match there is a true
+positive, not a false one. The catalog files are excluded only while measuring a dictionary with
+`--entities`: they ARE lists of the very words a catalog matches, so a hit there says nothing — but
+their own pattern matches are signal, and the default sweep keeps them in.
 Pass `--root` to measure a different corpus and read the number accordingly.
 
 Deterministic: a counter over regex/dictionary matches, never an LLM judgement. It reads the

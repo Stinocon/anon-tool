@@ -279,7 +279,7 @@ class WebUiTest(unittest.TestCase):
         (cls.tmp / "catalogs").mkdir()
         (cls.tmp / "entities.txt").write_text("AZIENDA|Contoso\n", encoding="utf-8")
         (cls.tmp / "catalogs" / "cities.txt").write_text(
-            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nBrescia\n", encoding="utf-8"
+            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nAncona\n", encoding="utf-8"
         )
         cls.port = free_port()
         cls.env = {**os.environ, "ANON_HOME": str(cls.tmp)}
@@ -389,7 +389,7 @@ class WebUiTest(unittest.TestCase):
 
     def test_anonymize_and_reveal_and_deanonymize(self) -> None:
         status, result = self.call("/api/anonymize", {
-            "text": "Cliente Contoso S.r.l. e sede di Brescia, referente mario@contoso.it\n",
+            "text": "Cliente Contoso S.r.l. e sede di Ancona, referente mario@contoso.it\n",
             "catalogs": ["cities"],
             "patterns": ["identity", "network", "legal"],
         })

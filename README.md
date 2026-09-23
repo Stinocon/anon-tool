@@ -14,9 +14,10 @@
 
 ## Why this exists
 
-A vulnerability assessment that reads *"client X, three sites, the manager is Mr Y, 30 findings on
-`X-PROD-01` at 1.2.3.4"* is, in practice, a list of names. Strip the names and the addresses, keep
-the technical substance, and the document keeps all of its value while losing its identifiability.
+A maintenance report that reads *"Client X, three sites, the site manager is Mr Y, 30 open tickets
+on `X-PROD-01` at 1.2.3.4"* is, in practice, a list of names. Strip the names and the addresses, keep
+the technical substance — the counts, the models, the findings — and the document still says
+everything it had to say, without saying who it is about.
 
 `anon-tool` performs that substitution deterministically and locally: it replaces the identifying
 parts of a document with typed placeholders (`[EMAIL-1-a3f9d1]`, `[CLIENTE-2-a3f9d1]`), leaves a
@@ -34,6 +35,14 @@ Italian identifiers — and entirely local: standard library only, no network ca
 telemetry, no credentials.
 
 The AI re-enters only *after* redaction, when you or an agent analyze the redacted text.
+
+**Italian first, not Italian only.** The checksum validators and the `legal` pattern group are
+built around Italian identifiers (codice fiscale, partita IVA, IBAN, plates, addresses), and two of
+the four shipped catalogs are Italian (municipalities, consumer mail domains). Everything else —
+emails, IPs, hostnames, URLs, phone numbers, the dictionary format, the placeholder machinery — is
+language-neutral, and a catalog is just a text file with directives: another country's rules are a
+new pattern group plus a list, not a rewrite. The code, the CLI, the tests and this README are in
+English; the web UI is in Italian.
 
 ## What it guarantees
 
@@ -55,7 +64,7 @@ The AI re-enters only *after* redaction, when you or an agent analyze the redact
 
 These are declared limits, not oversights:
 
-- **Contextual references** ("the client from Brescia") are not detected. A redacted document still
+- **Contextual references** ("the client from Ancona") are not detected. A redacted document still
   needs a human read before it leaves your hands.
 - **Images and screenshots** cannot be scanned: pixels pass through, so do not paste a screenshot
   of a client document into a chat.
@@ -102,7 +111,7 @@ document, anonymize, read the result. Dark theme by default, with a light altern
 ![The Anonimizza tab: a document goes in, typed placeholders come out](docs/brand/ui-anonymize.png)
 
 The capture is of a **synthetic** document (no real values): the placeholders are typed and carry
-the tag of the map that produced them (`[AZIENDA-1-91810c]`), and that map is what restores the
+the tag of the map that produced them (`[AZIENDA-1-af6c8c]`), and that map is what restores the
 real values — it stays in `~/.anon/maps/`, never in the browser.
 
 Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
@@ -140,12 +149,12 @@ The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard a
 | `deanon.py` | inverse: restores the real values, in plain text and inside `.docx/.xlsx/.pptx/.odt` |
 | `convert.py` | document → Markdown, using a pinned [anydoc](https://github.com/firecrawl/anydoc) |
 | `web/` | local UI: stdlib HTTP server plus a vanilla front-end (no framework, no CDN, no build) |
-| `catalogs/` | built-in lists (Italian municipalities, consumer mail domains), opt-in |
+| `catalogs/` | opt-in lists: Italian municipalities and consumer mail domains, plus the IT vendor and product lists |
 | `~/.anon/maps/` | reversible maps — the only place the real values live, mode 0600, never in a repo |
 
-The Pi integration (a skill and a guard extension) lives in
-[pi-customization](https://github.com/Stinocon/pi-customization); the portable workbench it belongs
-to is [pi-workbench](https://github.com/Stinocon/pi-workbench).
+The Pi integration (a skill and an enforcement extension) ships in
+[pi-workbench](https://github.com/Stinocon/pi-workbench): the guard runs in the local harness and
+keeps un-redacted content out of the model context, and the skill carries the procedure.
 
 ## The dictionary
 
@@ -169,11 +178,11 @@ A catalog is the same file format as the custom dictionary, with directives:
 
 ```
 @type    CITTÀ
-@match   case-sensitive               # `Brescia` matches, `il prato è verde` does not
+@match   case-sensitive               # `Ancona` matches, `il prato è verde` does not
 @context (?:comune di|sede di)\s+     # only after a marker
 @context off                          # stop requiring one for the entries that follow
 @stem    on                           # `Pincopallino` also covers `Pincopallino1`, `-DB01`
-Brescia
+Ancona
 ```
 
 ```bash

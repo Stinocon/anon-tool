@@ -6,7 +6,7 @@
 #   occurrence would shred a report ("the stabilimento di [CITTÀ-1] has [CITTÀ-2] findings")
 #   without adding much protection. So this catalog:
 #     * is NOT applied unless you select it (`--catalogs it-cities`, or the checkbox in the UI);
-#     * matches case-SENSITIVELY (`Brescia` yes, `il prato è verde` no);
+#     * matches case-SENSITIVELY (`Ancona` yes, `il prato è verde` no);
 #     * only fires after a context marker (`comune di`, `sede di`, `stabilimento di`, ...).
 #
 # HOW TO EXTEND IT

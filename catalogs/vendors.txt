@@ -78,8 +78,8 @@
 #     python3 scripts/fp-sweep.py --entities catalogs/vendors.txt --show FORNITORE
 #   The number it reports is dominated by documents that NAME vendors — this project's own docs and
 #   this header included — so it is a list of things to look at, not a false-positive rate. Outside
-#   those, what is left is the corpus talking about its own subject: `MikroTik` in the operator's
-#   notes, `microsoft` inside the OOXML namespace `urn:schemas-microsoft-com:vml`, `Slack` in a
+#   those, what is left is the corpus talking about its own subject: `MikroTik` in an
+#   operator's notes, `microsoft` inside the OOXML namespace `urn:schemas-microsoft-com:vml`, `Slack` in a
 #   regex description. (A word list is the better tool for the block question; see below.) What the
 #   sweep removed is the entries whose word is the TECHNOLOGY rather than the firm: on the first
 #   candidate (measured before this file shipped, 54 clean source/doc files), `Docker` alone

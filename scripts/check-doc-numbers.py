@@ -15,9 +15,10 @@ Scope is deliberate:
   * NOT checked: `CHANGELOG.md` and `docs/OPEN-ISSUES.md`, which record HISTORY. A changelog entry
     saying "the cap was 2 MB" is correct about that release and must not be rewritten.
 
-The guard's own constants (12 MB / 20 s) live in `pi-customization/extensions/anon-guard.ts`, which
-is a different repository. That claim is checked when the file can be found, and reported as SKIP
-when it cannot — visibly, because a silent skip reads as "everything ran".
+The guard's own constants (12 MB / 20 s) live in the Pi extension (`anon-guard.ts`, shipped by
+pi-workbench and installed under `~/.pi/agent/extensions/`), which is a different repository. That
+claim is checked when the file can be found, and reported as SKIP when it cannot — visibly, because
+a silent skip reads as "everything ran".
 
     python3 scripts/check-doc-numbers.py
 """
@@ -135,7 +136,6 @@ def main() -> int:
         (
             path
             for path in (
-                ROOT.parent / "pi-customization" / "extensions" / "anon-guard.ts",
                 Path.home() / ".pi" / "agent" / "extensions" / "anon-guard.ts",
             )
             if path.is_file()

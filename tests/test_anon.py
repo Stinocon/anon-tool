@@ -51,7 +51,7 @@ _espec.loader.exec_module(deanon)
 ENTITIES = [
     ("CLIENTE", "Acme"),
     ("AZIENDA", "Acme Italia S.r.l."),
-    ("SEDE", "Sede di Brescia"),
+    ("SEDE", "Sede di Ancona"),
     ("PERSONA", "Mario Rossi"),
 ]
 
@@ -90,7 +90,7 @@ class RoundTripTest(unittest.TestCase):
                 "@match insensitive",
                 "@type SEDE",
                 r"@context (?:sede di)\s+",
-                "Brescia",
+                "Ancona",
                 "Roma Nord",
                 "Roma",
                 "@type PERSONA",
@@ -104,7 +104,7 @@ class RoundTripTest(unittest.TestCase):
         entities = anon.load_entities(path)
         text = (
             "Ferraris Group e ferraris group; Ferretti-DB01 e Ferretti; Prato ma non prato; "
-            "sede di Brescia e Brescia; sede di Roma Nord; Ferraris Gianni; "
+            "sede di Ancona e Ancona; sede di Roma Nord; Ferraris Gianni; "
             "König Söhne e Ko\u0308nig So\u0308hne; Ferrettini e Ferrettini Group.\n"
         )
         reference = sorted(
@@ -119,8 +119,8 @@ class RoundTripTest(unittest.TestCase):
     def test_roundtrip_is_lossless(self) -> None:
         original = (
             "Spett.le Acme Italia S.r.l. (rif. Acme),\n"
-            "sede operativa: Sede di Brescia.\n"
-            "Referente: Mario Rossi, mario.rossi@acme.it, tel. +39 030 1234567.\n"
+            "sede operativa: Sede di Ancona.\n"
+            "Referente: Mario Rossi, mario.rossi@acme.it, tel. +39 02 1234567.\n"
             "Server: 10.20.30.40, vpn gateway 2a01:4f8:1c17:1234::1, host srvcrm.acme.local.\n"
             "Portale: https://intranet.acme.it/login?token=abc123 (fino al 31/12).\n"
             "Chiave: sk-abcdefghijklmnopqrstuvwxyz012345, header Bearer "
@@ -207,7 +207,7 @@ class RoundTripTest(unittest.TestCase):
             self.assertEqual(restored, source)
 
     def test_international_phone(self) -> None:
-        for phone in ("+1 415 555 0199", "+44 20 7946 0958", "+39 030 1234567", "333 1234567"):
+        for phone in ("+1 415 555 0199", "+44 20 7946 0958", "+39 02 1234567", "333 1234567"):
             self.assertEqual(len(anon.detect(phone, self.entities)), 1, f"missed phone {phone!r}")
 
     def test_public_infrastructure_values_are_safe(self) -> None:
@@ -554,10 +554,10 @@ class CliTest(unittest.TestCase):
         catalogs = self.tmp / "catalogs"
         catalogs.mkdir()
         (catalogs / "mycity.txt").write_text(
-            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nBrescia\n", encoding="utf-8"
+            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nAncona\n", encoding="utf-8"
         )
         src = self.tmp / "doc.txt"
-        src.write_text("sede di Brescia, il prato e' verde. CF RSSMRA80A01H501U\n", encoding="utf-8")
+        src.write_text("sede di Ancona, il prato e' verde. CF RSSMRA80A01H501U\n", encoding="utf-8")
 
         listing = self.run_anon("--list-catalogs")
         self.assertEqual(listing.returncode, 0)
@@ -814,42 +814,42 @@ class DirectivesTest(unittest.TestCase):
         self.assertFalse(anon.detect("il prato è verde", entities), "`prato` is not a city here")
 
     def test_context_gates_a_low_signal_entry(self) -> None:
-        entities = self.entities("@type CITTÀ\n@match case-sensitive\n@context (?:comune di|sede di)\\s+\nBrescia\n")
-        self.assertTrue(anon.detect("sede di Brescia", entities))
-        self.assertFalse(anon.detect("Brescia", entities), "without the context marker it is not redacted")
+        entities = self.entities("@type CITTÀ\n@match case-sensitive\n@context (?:comune di|sede di)\\s+\nAncona\n")
+        self.assertTrue(anon.detect("sede di Ancona", entities))
+        self.assertFalse(anon.detect("Ancona", entities), "without the context marker it is not redacted")
         # only the city is redacted, the context marker stays readable
-        found = anon.detect("comune di Brescia", entities)
-        self.assertEqual(["comune di Brescia"[s:e] for s, e, _t in found], ["Brescia"])
+        found = anon.detect("comune di Ancona", entities)
+        self.assertEqual(["comune di Ancona"[s:e] for s, e, _t in found], ["Ancona"])
 
     def test_context_off_closes_the_block(self) -> None:
         entities = self.entities(
-            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nBrescia\n@context off\nPrato\n"
+            "@type CITTÀ\n@match case-sensitive\n@context (?:sede di)\\s+\nAncona\n@context off\nPrato\n"
         )
         # The gated entry keeps its context...
-        self.assertFalse(anon.detect("Brescia", entities), "the gated entry keeps its context")
-        self.assertTrue(anon.detect("sede di Brescia", entities))
+        self.assertFalse(anon.detect("Ancona", entities), "the gated entry keeps its context")
+        self.assertTrue(anon.detect("sede di Ancona", entities))
         # ...while an entry declared after `@context off` matches bare.
         self.assertTrue(anon.detect("Prato", entities), "`@context off` must clear the context")
 
     def test_a_later_context_replaces_the_earlier_one(self) -> None:
         entities = self.entities(
-            "@type CITTÀ\n@match case-sensitive\n@context (?:comune di)\\s+\nBrescia\n"
+            "@type CITTÀ\n@match case-sensitive\n@context (?:comune di)\\s+\nAncona\n"
             "@context (?:sede di)\\s+\nPrato\n"
         )
-        self.assertTrue(anon.detect("comune di Brescia", entities))
+        self.assertTrue(anon.detect("comune di Ancona", entities))
         self.assertFalse(anon.detect("comune di Prato", entities), "the first context no longer applies")
         self.assertTrue(anon.detect("sede di Prato", entities))
 
     def test_only_exactly_off_clears_the_context(self) -> None:
         # `no` and `0` are legitimate @context REGEXES: reading them as "off" (the shared _FALSE
         # list, used by @stem) would silently drop a gate the operator wrote.
-        entities = self.entities("@type CITTÀ\n@match case-sensitive\n@context no\\s+\nBrescia\n")
-        self.assertTrue(anon.detect("no Brescia", entities), "`no` is a regex, not an off switch")
-        self.assertFalse(anon.detect("Brescia", entities), "the gate must still apply")
+        entities = self.entities("@type CITTÀ\n@match case-sensitive\n@context no\\s+\nAncona\n")
+        self.assertTrue(anon.detect("no Ancona", entities), "`no` is a regex, not an off switch")
+        self.assertFalse(anon.detect("Ancona", entities), "the gate must still apply")
 
     def test_unknown_directive_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
-            self.entities("@contxt x\nCITTÀ|Brescia\n")
+            self.entities("@contxt x\nCITTÀ|Ancona\n")
         with self.assertRaises(ValueError):
             self.entities("@stem maybe\nX|Y\n")
         with self.assertRaises(ValueError):
@@ -1136,7 +1136,7 @@ class VendorsCatalogTest(CatalogBlocksTest):
             self.assertTrue(self.matched(text), f"{text!r} must be redacted")
 
     def test_a_vendor_inside_a_longer_word_is_not_matched(self) -> None:
-        for text in ("DellOrto e figli snc", "MikroTikSwitch", "il connettore HPX"):
+        for text in ("DellOrto e figli snc", "NetgearSwitch", "il connettore HPX"):
             self.assertEqual(self.matched(text), [], f"{text!r} is one word, not a vendor")
 
     def test_the_declared_elision_false_positive_is_what_the_header_says(self) -> None:

@@ -14,7 +14,7 @@ whole design lives in that tension:
 - redact too much → the document stops being readable and stops being useful.
 
 Consequence: not every "sensitive word" should be redacted by default. A city name alone rarely
-identifies anyone and appears constantly ("the Brescia site"); redacting every Italian
+identifies anyone and appears constantly ("the Ancona site"); redacting every Italian
 municipality would shred a report. So low-signal catalogs are **opt-in and context-gated**,
 while high-signal, machine-verifiable items are on by default.
 
@@ -150,13 +150,13 @@ there is one parser and one mental model:
 @type   CITTÀ
 @match  case-sensitive
 @context (?:comune|sede|stabilimento|filiale|magazzino|via|piazza|presso)\s+
-Brescia
+Ancona
 @context off
 Prato
 ```
 
 - `@match case-sensitive` + `@context` are what keep a low-signal catalog from shredding the text
-  (`"the prato is green"` stays intact; `"sede di Brescia"` becomes `sede di [CITTÀ-1]`).
+  (`"the prato is green"` stays intact; `"sede di Ancona"` becomes `sede di [CITTÀ-1]`).
 - **Ordering rule:** every directive applies to the entries that FOLLOW it and a later one replaces
   it, so `@context` is a property of a block, not of the file. `@context off` closes the block —
   otherwise narrowing a context would mean reordering the file.
@@ -214,7 +214,7 @@ this machine and the approval step in the UI. Until then the scaffold refuses to
 accident — with no `--url`/`--model` it suggests nothing and says so.
 ## 8. Known limits (deliberate)
 
-- contextual references ("the client from Brescia") — a human read is still required;
+- contextual references ("the client from Ancona") — a human read is still required;
 - proper names absent from the dictionary are not redacted;
 - images/screenshots are not scannable (pixels), so a screenshot of a client document passes;
 - office containers **are** anonymized directly: `.docx/.xlsx/.pptx/.odt` are ZIP packages, so the

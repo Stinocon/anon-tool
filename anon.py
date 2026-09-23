@@ -648,7 +648,7 @@ def load_entities(path: Path) -> list[Entity]:
         value                     no `|` -> TYPE is ALTRO
         @type X                   type for the entries that follow
         @stem on|off              `Pincopallino` also matches `Pincopallino1`
-        @match case-sensitive     do not case-fold (proper nouns: `Brescia`, not `prato`)
+        @match case-sensitive     do not case-fold (proper nouns: `Ancona`, not `prato`)
         @context <regex>          only match when preceded by this context
         @context off              stop requiring a context for the entries that follow (the exact
                                   token `off`; any other value is a regex, `no` included)

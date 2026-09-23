@@ -49,7 +49,7 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
 
 ## Out of scope (declared limits, see `docs/DESIGN.md` §8)
 
-- **contextual references** ("the client from Brescia") — redaction is deterministic pattern
+- **contextual references** ("the client from Ancona") — redaction is deterministic pattern
   matching plus a curated dictionary; a human read of the redacted document is still required;
 - **images/screenshots** — pixels are not scannable, so a screenshot of a client document passes;
 - **`bash`-style reads** in the Pi guard are outside its default perimeter (`--anon-guard=all`
