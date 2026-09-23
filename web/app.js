@@ -159,7 +159,7 @@ function download(name, text, base64) {
    would build more than the file itself as a string. The fetch still carries the per-run token. */
 async function downloadFromServer(url, name) {
   const response = await api(url);
-  if (!response.ok) throw new Error(`scarico del documento fallito (${response.status})`);
+  if (!response.ok) throw new Error(i18n.t("download.failed", { status: response.status }));
   saveBlob(name, await response.blob());
 }
 
@@ -328,7 +328,7 @@ async function loadMaps() {
       // with the total. It cannot be selected — restoring from it would fail anyway.
       const broken = document.createElement("p");
       broken.className = "map-empty";
-      broken.textContent = `${map.id} — mappa illeggibile (file corrotto o scrittura interrotta)`;
+      broken.textContent = i18n.t("maps.broken", { id: map.id });
       list.append(broken);
       continue;
     }
@@ -369,7 +369,7 @@ $("run-anon").addEventListener("click", async () => {
     let result;
     let baseName;
     if (file && isDocument(file.name)) {
-      progressStart(`caricamento di ${file.name} — ${humanSize(file.size)}…`);
+      progressStart(i18n.t("progress.loading", { name: file.name, size: humanSize(file.size) }));
       result = await requestWithProgress(
         "/api/anonymize-document",
         {
@@ -395,7 +395,7 @@ $("run-anon").addEventListener("click", async () => {
           patterns: selected(".pattern"),
         }),
       });
-      baseName = `${file ? stripExtension(file.name) : "testo"}.redacted.txt`;
+      baseName = `${file ? stripExtension(file.name) : i18n.t("filename.text")}.redacted.txt`;
     }
     state.lastMapId = result.map_id;
     pending = {
@@ -406,7 +406,7 @@ $("run-anon").addEventListener("click", async () => {
     };
 
     $("anon-result").hidden = false;
-    $("anon-result-title").textContent = `Risultato — ${pending.containerName || baseName}`;
+    $("anon-result-title").textContent = i18n.t("result.title", { name: pending.containerName || baseName });
     chips($("anon-counts"), result.counts);
     $("redacted").value = result.redacted;
     // The document itself, when the upload was one we can rewrite. One redaction produced both
@@ -414,7 +414,7 @@ $("run-anon").addEventListener("click", async () => {
     // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).
     $("download-document").hidden = !pending.containerUrl;
     $("download-document").title = pending.containerUrl
-      ? `${pending.containerName} — stesso tag e stessa mappa del testo qui sotto`
+      ? i18n.t("result.sameMap", { name: pending.containerName })
       : "";
     if (result.container_error) {
       setStatus($("anon-status"), i18n.t("status.notRewritable", { detail: result.container_error }), "warn");
@@ -804,7 +804,7 @@ async function acceptAnonFile(file) {
   state.anonFile = null;
   $("file-anon").value = "";
   $("text-anon").value = await file.text();
-  setStatus($("anon-status"), `${file.name} caricato`, "ok");
+  setStatus($("anon-status"), i18n.t("file.loaded", { name: file.name }), "ok");
 }
 
 dropzone($("drop-anon"), $("file-anon"), async (file) => {
@@ -813,12 +813,12 @@ dropzone($("drop-anon"), $("file-anon"), async (file) => {
 });
 dropzone($("drop-deanon"), $("file-deanon"), (file) => {
   state.deanonFile = file;
-  setStatus($("deanon-status"), `${file.name} pronto`, "ok");
+  setStatus($("deanon-status"), i18n.t("file.ready", { name: file.name }), "ok");
   refreshButtons();
 });
 dropzone($("drop-audit"), $("file-audit"), async (file) => {
   $("text-audit").value = await file.text();
-  setStatus($("audit-status"), `${file.name} caricato`, "ok");
+  setStatus($("audit-status"), i18n.t("file.loaded", { name: file.name }), "ok");
   refreshButtons();
 });
 
@@ -848,4 +848,6 @@ try {
 }
 applyTheme(document.documentElement.dataset.theme || "dark");
 
-boot().catch((error) => setStatus($("anon-status"), `avvio fallito: ${error.message || error}`, "error"));
+boot().catch((error) =>
+  setStatus($("anon-status"), i18n.t("boot.failed", { detail: error.message || error }), "error"),
+);
