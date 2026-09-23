@@ -22,6 +22,9 @@ services:
     environment:
       ANON_HOME: /data
       ANON_CONVERTER: /app/convert.py
+      # No local-model flags here on purpose: inside the container 127.0.0.1 is the container, and a
+      # non-loopback endpoint for a model on the host is refused (the seam accepts loopback only).
+      # For the suggestion panel, run the server natively — see the README.
       # Upload cap for the UI: 160 MB by default, raised here on purpose for a genuinely huge
       # document. The conversion stays bounded by ANON_CONVERT_TIMEOUT / ANON_CONVERT_MAX_BYTES.
       ANON_MAX_UPLOAD_BYTES: ${ANON_MAX_UPLOAD_BYTES:-167772160}

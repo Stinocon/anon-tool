@@ -23,7 +23,7 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=1407
 
 WORKDIR /app
-COPY anon.py deanon.py ./
+COPY anon.py deanon.py suggest.py ./
 COPY requirements-anydoc.txt ./
 COPY catalogs ./catalogs
 COPY web ./web

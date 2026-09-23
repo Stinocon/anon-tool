@@ -233,8 +233,20 @@ python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
 - **The model never decides what is redacted**: a value it returns that is not in the document is
   dropped, and applying a proposal stays `anon.py`'s job.
 
+The panel appears only when the server was started with `--suggest-url/--suggest-model`. Note where
+it can work: **not in the container**. Inside it `127.0.0.1` is the container itself, and a
+`host.docker.internal` URL is refused because it is not loopback — the rule that keeps the document
+on this machine also keeps the container from reaching a model on the host. Stop the container and run
+the server natively when you want the panel:
+
+```bash
+python3 ~/.anon/web/server.py --port 1407 \
+    --suggest-url http://127.0.0.1:8000/v1/chat/completions \
+    --suggest-model <nome-modello> --suggest-max-tokens 4096
+```
+
 See `docs/DESIGN.md` §7 for the boundary and `docs/OPEN-ISSUES.md` #17 for what is still open
-(a model worth running, and the approval step in the UI).
+(the model, and the UI in English).
 
 ## Security posture
 
