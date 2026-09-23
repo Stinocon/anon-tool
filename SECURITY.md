@@ -28,7 +28,9 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
 - size limits on uploads (160 MB, `ANON_MAX_UPLOAD_BYTES`) and on `/api/*` requests per minute (token bucket,
   `--rate-limit`, default 120/min, 0 disables), no shell, no `eval`, no content or value logging.
 - the socket has a 30 s read timeout, so a client that announces a body and stalls cannot pin a
-  worker thread; the external converter runs in its own process group, is killed as a group, is
+  worker thread, and the listen backlog is 128 (the `socketserver` default is 5) so a burst of
+  simultaneous connections is not reset at the kernel before it can be accepted; the external
+  converter runs in its own process group, is killed as a group, is
   bounded in time (300 s, `ANON_CONVERT_TIMEOUT`) and in output — the cap is applied WHILE the
   output is produced (`ANON_CONVERT_MAX_BYTES`, default 160 MB), never after buffering it.
 - the container runs as a non-root user, with a read-only root filesystem, `no-new-privileges`,

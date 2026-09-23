@@ -11,6 +11,7 @@ loopback-only, unauthenticated UI an acceptable trade-off.
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import importlib.util
 import io
 import json
@@ -450,6 +451,63 @@ class RateLimitTest(unittest.TestCase):
         self.assertGreater(int(headers["Retry-After"]), 1, "Retry-After must come from the bucket")
         self.assertIn("error", body, "the refusal is JSON, not a half-processed job")
         self.assertIn("too many requests", body)
+
+
+class BurstTest(unittest.TestCase):
+    """Simultaneous connections must not be dropped by the listen backlog.
+
+    `socketserver.TCPServer.request_queue_size` is 5: it is the number of connections the kernel
+    holds for a server that has not accepted them yet. Under that default, 48 simultaneous
+    connections left about half of them reset in EVERY run (19-28 of 48, over four measurement
+    sessions) — the client sees a socket error (`URLError: [Errno 54] Connection reset by peer`
+    most often) instead of a status, and the server logs nothing. The fix is the number the kernel
+    is told to hold; this asserts the BEHAVIOUR, because the attribute is what a later edit would
+    silently drop.
+    """
+
+    BURST = 48
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp(prefix="anon-web-burst-"))
+        (cls.tmp / "maps").mkdir()
+        (cls.tmp / "catalogs").mkdir()
+        (cls.tmp / "entities.txt").write_text("AZIENDA|Contoso\n", encoding="utf-8")
+        # The rate limit is off on purpose: with it on, the tail of the burst is a 429 and the
+        # test would measure the bucket instead of the backlog.
+        cls.process, cls.port, cls.token = SuggestTest._spawn(cls.tmp, "--rate-limit", "0")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.process.terminate()
+        try:
+            cls.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            cls.process.kill()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_a_burst_of_simultaneous_connections_answers_every_one(self) -> None:
+        # 48 is above the default backlog (5) by enough that the failure is not a coin flip: the
+        # measurement above left about half of them reset, in every run of four sessions.
+        body = json.dumps({"text": "Rif. Contoso in data odierna.", "catalogs": [],
+                           "patterns": []}).encode()
+
+        def one(_index: int) -> object:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/anonymize", data=body,
+                headers={TOKEN_HEADER: self.token, "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return response.status
+            except urllib.error.HTTPError as error:
+                return error.code
+            except OSError as error:  # ConnectionResetError is an OSError
+                return f"{type(error).__name__}: {error}"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.BURST) as pool:
+            results = list(pool.map(one, range(self.BURST)))
+        failures = [result for result in results if result != 200]
+        self.assertEqual(failures, [], f"{len(failures)}/{self.BURST} connections failed: {failures[:4]}")
 
 
 class ConverterCapTest(unittest.TestCase):

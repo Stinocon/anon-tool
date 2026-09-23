@@ -4,7 +4,9 @@ State at 2026-09-23 (last reviewed): everything closed so far carries its eviden
 engineering item is open**: #40, which is the operator's step rather than the code's — run the
 encrypted backup and test a restore. #13 is withdrawn and #19 needs no action, both on purpose.
 #26, the scan locator, closed on 2026-09-23 (7× on the dictionary that made it visible, no
-regression on the guard's path).
+regression on the guard's path). A hunt over the areas the tests do not assert found **three real
+defects — an IPv4 at the end of a sentence, an address written with a truncation apostrophe, and the
+listen backlog under a burst — all fixed in the same pass** (the campaign table is below).
 
 The rule I applied to myself: a fix counts as closed only with a number, a test name, or a command
 that produces the claim — not with "looks right".
@@ -322,6 +324,61 @@ word, and the cost was re-measured at the new size (`scripts/bench-check.py --en
 (`FortiGate`, `PowerEdge`, `BIG-IP`) remain out of scope by design, and the sentence-initial
 Italian elision (`Dell'azienda risulta…`) remains a KNOWN false positive that the format cannot
 express an exclusion for.
+
+## A hunt for defects in the areas the tests do NOT assert (2026-09-23)
+
+Instead of re-reading the code, this pass attacked the PROPERTIES the suite does not check, each
+campaign a throwaway script with its own oracle, kept out of the repository because the oracles are
+the point (a reusable harness here would be a second implementation to trust).
+
+| Campaign | The property, and the oracle | Result |
+|---|---|---|
+| A — the text path | `deanon(anon(x)) == x`, `anon(anon(x)) == anon(x)`, no map value left in clear, map and output coherent, `detect()` spans exact against the text | 6000 random texts and dictionaries: **0** |
+| G — the locator | `entity_hits` (fast) vs `Entity.spans` (reference) must locate the same thing, in both regimes (word walk and alternation) | 9000 random comparisons: **0** misses, **0** invented, **0** different resolutions |
+| B — the containers | `.docx` shapes that break naive redactors (a value split across runs, outside the BMP, NFD, XML entities, tables, notes, headers, properties, tracked changes), driven through the real CLIs | 60 documents: **0** |
+| H — the heuristics | a corpus written by hand where the oracle is the author: every line says which type MUST be found, or that nothing may be | **2 real defects** |
+| C — `--check` vs anonymization | check says CLEAN ⇒ redaction must change nothing; check says SENSITIVE ⇒ it must change something, on text and containers | consistent; the one difference found (`-` reads stdin only with `--check`) is documented behaviour, not a defect |
+| D — the web server | simultaneous anonymizations and documents, each carrying its OWN marker in the dictionary (cross-talk); traversal on `/api/download` and the static files; a filename carrying a path; a burst past the rate limit | **1 real defect** (`BurstTest`) |
+
+The three defects, all closed in this pass:
+
+- **An IPv4 address at the end of a sentence was left in clear**: the trailing guard was
+  `(?![\w.])`, which also rejected the full stop that closes the sentence. The proof that it was an
+  oversight and not a decision is next door — the HOST rule has carried `(?!\.\w)` with the comment
+  "allow a trailing sentence period" from the start. The guard now mirrors it, so a dotted run whose
+  continuation is a label (`.5`, `.beta`, `.rc1`) is still not an address. The first attempt used
+  `(?!\.\d)`, which accepted the alphabetic continuation and redacted half a version string — the
+  adversarial review of this very fix found it, and the shape it protects is in
+  `RoundTripTest::test_an_address_at_the_end_of_a_sentence_is_still_an_address`. Declared trade-off:
+  a four-part NUMBER at the end of a sentence (`aggiornato alla N.N.N.N.`) is redacted as an
+  address — the shapes are identical, and an anonymizer prefers a placeholder to a leak.
+- **An address written with a truncation apostrophe was not redacted**: the capitalization test
+  looked only at the part AFTER the last apostrophe of each token, which is empty in exactly that
+  spelling (`via della Liberta' NN`, `Via dell'Universita' NN`) — and in a plain-text note it is the
+  more common one. The rule now reads before the apostrophe too, but ONLY when the token ends with
+  one and only for the LAST token of the street name: a medial apostrophe elides an article (the name
+  is what follows), and an article whose space is misplaced (`via L' anno scorso, N`) ends with an
+  apostrophe exactly like a truncation. Testing every piece instead — the first version — made the
+  ARTICLE the signal and redacted ordinary prose (`via Un'ora di lavoro, N`); those two shapes are
+  negatives in `AddressCorpusTest` now, next to the positives it gained. Declared residue: an article
+  left with nothing after it (`via Un' N`) still reads as a truncated name — closing it would take a
+  second list of Italian article forms to keep true.
+- **A burst of simultaneous connections is reset by the kernel, silently.**
+  `socketserver.TCPServer.request_queue_size` is 5 and the accept loop spawns a thread per
+  connection, so a burst overflows the listen backlog before anything accepts it: measured on this
+  server, 48 simultaneous connections left about half of them reset in EVERY run (**19-28** of 48,
+  over four measurement sessions) — a client-side socket error, most often
+  `URLError: [Errno 54] Connection reset by peer`, so no status and no line in the log. The UI makes
+  a handful of requests at a time, so it never reached an operator, but a burst is an ordinary shape
+  and the fix is the number the kernel is told to hold. `LocalServer.request_queue_size = 128` lost
+  none in the same runs; `tests/test_web.py::BurstTest` fires 48 at once and fails against the
+  default.
+
+What the hunt did NOT reach, declared: the CLI surface beyond `-`, the converter itself
+(`convert.py`, anydoc), the Docker entrypoint, the seam under concurrent load, and the 3B model's
+own answers. Two findings of the first passes were defects of the harness, not the engine (a value
+that was not in the dictionary, and the wrong map picked from a glob), and are recorded here so the
+same noise is not re-diagnosed.
 
 ## To-do — the whole list, in the order I would take it
 

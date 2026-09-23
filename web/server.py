@@ -838,6 +838,16 @@ class LocalServer(ThreadingHTTPServer):
     """
 
     daemon_threads = True
+    # `socketserver.TCPServer.request_queue_size` is 5, the listen backlog the kernel applies to
+    # connections nobody has accepted yet. The accept loop spawns a thread per connection, so a
+    # burst is refused at the kernel before anything can answer it. Measured on this server: with
+    # the default, 48 simultaneous connections leave about half of them (19-28 of 48, over four
+    # measurement sessions) reset in EVERY run — a client-side socket error, most often
+    # `URLError: [Errno 54] Connection reset by peer`, with no status code and no line in the log.
+    # With 128, no run lost one. The UI makes a handful of requests at a time, so it never bit an
+    # operator; the burst is still an ordinary shape, and the fix is the number the kernel is told
+    # to hold.
+    request_queue_size = 128
 
     def server_bind(self) -> None:
         socketserver.TCPServer.server_bind(self)

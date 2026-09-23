@@ -158,6 +158,38 @@ enforces that they agree.
 
 ### Fixed
 
+- **An IPv4 address at the end of a sentence was left in the output.** The pattern's trailing guard
+  was `(?![\w.])`, which rejects the prefix of a longer dotted run (`.40.5`) but also rejects the
+  full stop that closes the sentence: `10.20.30.40.` matched nothing, and a report writes an address
+  that way. The HOST rule next to it had `(?!\.\w)` with the comment "allow a trailing sentence
+  period" from the beginning; the IP rule never received the same guard. It now does, so a dotted
+  run whose continuation is a LABEL (`.5`, `.beta`, `.rc1`, `.x86_64`) is still not an address — a
+  first attempt at this fix used `(?!\.\d)`, which accepted the alphabetic continuation and
+  redacted half a version string. Trade-off declared: a four-part NUMBER at the end of a sentence
+  (`aggiornato alla 3.4.5.6.`) is redacted as an address, because the two shapes are the same and an
+  anonymizer prefers a placeholder to a leak.
+  `tests/test_anon.py::RoundTripTest::test_an_address_at_the_end_of_a_sentence_is_still_an_address`.
+- **An address whose accent is written as a truncation apostrophe was not redacted.** `_valid_address`
+  required a capitalized token and looked at the part AFTER the last apostrophe, so `via della
+  Liberta' 27` and `Via dell'Universita' 2` left that part empty and failed the test — in a
+  plain-text note that spelling is more common than the accented one. A token that ends with an
+  apostrophe is now read before it too, which is the distinction between the two shapes: a medial
+  apostrophe elides an article and the name follows, a trailing one truncates the name itself. Two
+  corrections followed, both from the adversarial review: testing every piece (the first version)
+  turned the ARTICLE into the signal and redacted ordinary prose (`via Un'ora di lavoro, 3`), and
+  only the LAST token of the street name can be a truncation, because an article whose space is
+  misplaced (`via L' anno scorso, 3`) also ends with an apostrophe. A repeated apostrophe
+  (`Liberta''`) is read through. Declared residue: an article left with nothing after it
+  (`via Un' 3`) still reads as a truncated name; closing it would take a second list of Italian
+  article forms to keep true.
+- **A burst of simultaneous connections was reset at the kernel, with no status and no log.**
+  `socketserver.TCPServer.request_queue_size` is 5, the listen backlog, and the accept loop spawns
+  a thread per connection: measured on this server, 48 simultaneous connections left about half of
+  them reset in EVERY run (19-28 of 48, over four measurement sessions) — a client-side socket
+  error, most often `URLError: [Errno 54] Connection reset by peer`. The UI makes a handful of
+  requests at a time, so it never bit an operator, but a burst is an ordinary shape. `LocalServer`
+  now holds 128, and no run lost one (`tests/test_web.py::BurstTest` fires 48 at once and fails
+  against the default).
 - **A name declared next to a longer name that contains it was missed.** The alternation that
   locates the entries holding a non-word character used non-overlapping `finditer`, so after
   matching `A-B-C` it resumed past it and never probed `B-C` inside `a-b-c`; the same held for
