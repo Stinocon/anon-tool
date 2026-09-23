@@ -14,14 +14,18 @@ import ast
 import importlib.util
 import json
 import os
+import random
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 import zipfile
-from unittest import mock
+from collections import Counter
 from pathlib import Path
+from unittest import mock
 import xml.etree.ElementTree as ElementTree
 
 sys.dont_write_bytecode = True  # keep ~/.anon free of __pycache__ from the importlib loads below
@@ -165,6 +169,205 @@ class RoundTripTest(unittest.TestCase):
         )
         self.assertTrue(reference, "the fixture must actually match")
         self.assertEqual(fast, reference)
+
+    @staticmethod
+    def _resolve(hits: list, size: int) -> list:
+        """An oracle for `detect`'s overlap resolution: longest first at the same start, then claim.
+
+        It mirrors the resolver in `detect` (same key, same greedy claim) so the test can compare the
+        FINAL spans, which is what a document actually gets, not just the candidate lists. The
+        placeholder pre-claim is deliberately omitted: the corpus holds no placeholder.
+        """
+        claimed = bytearray(size)
+        resolved = []
+        # The same key `detect` sorts by, priority included: for entity hits the priority is constant,
+        # but omitting it would make this oracle disagree with `detect` the day two types collide.
+        for start, end, ptype in sorted(hits, key=lambda hit: (hit[0], -(hit[1] - hit[0]), hit[2])):
+            if any(claimed[start:end]):
+                continue
+            claimed[start:end] = b"\x01" * (end - start)
+            resolved.append((start, end, ptype))
+        return sorted(resolved)
+
+    def test_the_word_run_locator_matches_the_reference_on_every_difficult_shape(self) -> None:
+        """The fast scan must never MISS, and its extras must be dissolved by the resolution.
+
+        The locator used to be ONE alternation over every first token of the dictionary; it is now a
+        walk over the word runs of the text with dict probes, sound only because every literal entry
+        carries a `(?<!\\w)` prefix — a match can only START where a word run starts. The reference
+        is `Entity.spans`, one full-text pass per entry per Unicode form. It is not a strict equality:
+        `entity_hits` may yield an entry TWICE for one span (`Ferretti-Ferrettini` with `@stem on`
+        gives the stem at 39 and again at 48, because the earlier match swallowed the separator and
+        `finditer` does not rescan inside its own match), and that was already true of the alternation
+        — measured on the previous implementation, which missed one hit here and added the same two.
+        So the contract is: every reference hit is present, no extra reaches the output, and the
+        resolved spans are identical. A miss is a name left un-redacted; an extra only costs time.
+        """
+        path = Path(self._tmpdir) / "locator.txt"
+        path.write_text(
+            "@type AZIENDA\n"
+            "Acme\n"
+            "Roma Nord\n"
+            "D-Link\n"
+            "Link\n"
+            "A-B-C\n"
+            "B-C\n"
+            "Acme O\ufb03ce\n"
+            "Stra\u00dfe S\u00f6hne\n"
+            "Mario \u0130pek\n"
+            "K\u00f6nig S\u00f6hne\n"
+            "@stem on\n"
+            "Ferretti\n"
+            "@stem off\n"
+            "Ferrettini\n"
+            "@match sensitive\n"
+            "Prato\n"
+            "@match insensitive\n"
+            "@context via\\s+\n"
+            "Roma\n"
+            "@context off\n"
+            "A\n"
+            "@stem on\n"
+            "B\n"
+            "@stem off\n",
+            encoding="utf-8",
+        )
+        entities = anon.load_entities(path)
+        corpus = [
+            "Acme, ACME, acme; antAcme e AcmeAnt.",
+            "Roma Nord, Roma, Nord, Roma Nord Est, aRoma Nord.",
+            "D-Link, d-link, D-LINK, XD-Link, D-LinkX.",
+            "a-b-c, A-B-C, B-C, b-c; Link, link, D-Link e Link.",
+            "Acme O\ufb03ce e Acme Office e Acme O\ufb03ceX.",
+            "Stra\u00dfe S\u00f6hne, Stra\u00dfe, Strassen, Stra\u00dfe So\u0308hne.",
+            # An NFD text (what macOS writes): the combining mark is not a word character, so the
+            # NFD variant of a first token that carries one is a NON-word source and belongs to the
+            # alternation. A word-run walk alone cannot see it, which is why both locators run.
+            unicodedata.normalize("NFD", "K\u00f6nig S\u00f6hne und K\u00f6nig, K\u00f6nigX."),
+            "Mario \u0130pek, \u0130pek, ipek, Mario ipek, \u0130pekX.",
+            "Ferretti1, Ferretti-DB01, Ferretti_srv, Ferrettini, Ferrettini Group.",
+            "Prato e prato e PRATO; PratoX.",
+            "via Roma, Via  Roma, via Roma Nord, davanti a via  Roma.",
+            "A e a; AAA; aA; B1, B-DB01, B_srv, Bb e b.",
+            "Conte, c, \u0301Acme, Acme\u0301, (Acme), Dell'Acme.",
+            "Acme\nRoma Nord\nD-Link\n",
+            "",
+            "acme roma nord d-link ferretti1",
+            "11A)A-O\ufb03ceFerrettiNordRomapratoAc\u0130pek1\nFerretti-Ferrettini",
+        ]
+        # A deterministic fuzz pass over the fixture's own alphabet: it reaches the combinations a
+        # hand-written corpus misses, and the seed makes a failure reproducible.
+        random.seed(20260923)
+        alphabet = [
+            "Acme", "Roma", "Nord", "D-Link", "-", " ", ",", ".", "'", "\u0130pek", "Stra\u00dfe",
+            "O\ufb03ce", "Ferretti", "Ferrettini", "Prato", "prato", "via", "A", "a", "1", "\u0301",
+            "Rossi", "Ac", "\n", "(", ")", "B", "B1", "Link", "B-C", "a-b-c",
+        ]
+        corpus += ["".join(random.choice(alphabet) for _ in range(random.randint(1, 24)))
+                   for _ in range(400)]
+
+        # Two regimes, one corpus: below `SCAN_WORD_SOURCES_MIN` sources the locator is the
+        # alternation (the small-dictionary path, which is what the Pi guard uses and what every
+        # earlier version used), above it the walk over the word runs. The slow path is the one that
+        # is easy to get wrong, so the fixture above is extended past the threshold with fillers
+        # rather than duplicated.
+        filler = "\n".join(f"AZIENDA|Qq{index:02d}" for index in range(anon.SCAN_WORD_SOURCES_MIN + 4))
+        path.write_text(path.read_text(encoding="utf-8") + filler + "\n", encoding="utf-8")
+        many = anon.load_entities(path)
+        self.assertGreater(
+            len({
+                e.first_token
+                for e in many
+                if e.first_token and not e.context and re.fullmatch(r"\w+", e.first_token)
+            }),
+            anon.SCAN_WORD_SOURCES_MIN,
+            "the second fixture must cross the threshold on WORD sources, or the word-run locator is "
+            "never exercised",
+        )
+
+        matched = 0
+        for text in corpus:
+            for label, fixtures in (("small dictionary", entities), ("large dictionary", many)):
+                reference = sorted(
+                    (start, end, entity.type)
+                    for entity in fixtures
+                    for start, end, _ in entity.spans(text)
+                )
+                fast = sorted(
+                    (start, end, entity.type)
+                    for entity, start, end in anon.entity_hits(text, fixtures)
+                )
+                matched += len(reference)
+                for hit, count in Counter(reference).items():
+                    self.assertGreaterEqual(
+                        Counter(fast).get(hit, 0), count,
+                        f"the fast scan MISSED {hit} in {text!r} ({label}): a name left un-redacted",
+                    )
+                for hit in Counter(fast) - Counter(reference):
+                    # An extra is allowed when it is the SAME span as a reference hit (the two
+                    # locators can both reach one entry: a word source that is a prefix of a
+                    # non-word one, `B` behind `B-C`, is probed by the word walk and by the
+                    # alternation's prefix loop) or when a longer reference hit CONTAINS it, which
+                    # the longest-first claim in `detect` resolves. Anything else would be a span
+                    # the engine invented, and the resolved comparison below would catch it anyway.
+                    self.assertTrue(
+                        (hit[0], hit[1], hit[2]) in set(reference)
+                        or any(
+                            start <= hit[0] and hit[1] <= end
+                            for start, end, _ in reference
+                        ),
+                        f"the fast scan invented {hit} in {text!r} ({label}), outside any "
+                        "reference hit",
+                    )
+                self.assertEqual(
+                    self._resolve(fast, len(text)), self._resolve(reference, len(text)),
+                    f"the resolved spans differ on {text!r} ({label})",
+                )
+        # And the two regimes must agree with EACH OTHER on the final spans: the threshold is a cost
+        # decision, so picking the other locator may not change what a document gets.
+        for text in corpus:
+            small = sorted(
+                (start, end, entity.type)
+                for entity, start, end in anon.entity_hits(text, entities)
+            )
+            large = sorted(
+                (start, end, entity.type)
+                for entity, start, end in anon.entity_hits(text, many)
+            )
+            self.assertEqual(
+                self._resolve(small, len(text)), self._resolve(large, len(text)),
+                f"the two locators resolve differently on {text!r}",
+            )
+        self.assertGreater(matched, 200, "the fixture must actually match")
+
+    def test_the_locator_fold_covers_everything_ignorecase_matches(self) -> None:
+        """The scan keys a candidate on a fold, the pattern matches it with `re.IGNORECASE`, and the
+        two must not disagree.
+
+        They did: `str.casefold()` separates {I, İ, ı} while `re.IGNORECASE` treats them as one, so a
+        dictionary entry `İpek` was found in a document spelling it `İpek` but MISSED in one spelling
+        it `ipek` — a name left un-redacted, and the equivalence test above caught it. The property
+        is one-directional (a key COARSER than the pattern is safe: it probes more, never misses):
+        everything `re.IGNORECASE` matches must share one key. Exhaustive over every character of
+        Unicode that has a case or a fold, one pass each — `findall` on a blob of the whole universe
+        enumerates the equivalent characters by the engine itself, so this does not need a double
+        loop over pairs.
+        """
+        universe = [
+            chr(cp)
+            for cp in range(0x110000)
+            if unicodedata.category(chr(cp)) in ("Lu", "Ll", "Lt")
+            or chr(cp).casefold() != chr(cp)
+            or chr(cp).lower() != chr(cp)
+        ]
+        self.assertGreater(len(universe), 3000, "the universe must be the real one")
+        blob = "".join(universe)
+        for char in universe:
+            for equivalent in re.findall(re.escape(char), blob, re.IGNORECASE):
+                self.assertEqual(
+                    anon._locator_key(equivalent), anon._locator_key(char),
+                    f"re.IGNORECASE matches {equivalent!r} to {char!r} but the key separates them",
+                )
 
     def test_roundtrip_is_lossless(self) -> None:
         original = (

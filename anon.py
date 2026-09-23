@@ -843,12 +843,57 @@ class _ScanIndex:
         tuple[list[Entity], dict[str, list[Entity]], re.Pattern[str] | None, re.Pattern[str]],
     ]
     direct: list[Entity]
+    # A word-character source is located by walking the word runs of the text and looking each
+    # prefix up in `literals`, which costs one dict probe per token instead of trying every source
+    # at every offset. `word_heads2`/`word_heads1` are the cheap reject before the probing: most
+    # tokens of a document share neither the first two characters nor the single first character of
+    # any source. `max_word_len` bounds the probing to the longest source there is.
+    word_heads2: frozenset[str] = frozenset()
+    word_heads1: frozenset[str] = frozenset()
+    max_word_len: int = 0
+
+
+# `re.IGNORECASE` folds a few characters that `str.casefold()` does not, and the scan keyed on the
+# casefold: the dictionary entry `İpek` and a document spelling it `ipek` DID agree under the
+# entry's own pattern, while their keys did not — so the scan never probed the position and the name
+# was left un-redacted, the worst defect this tool can have. The divergence is exhausted by
+# `test_the_locator_fold_covers_everything_ignorecase_matches`: over every character of Unicode that
+# has a case or a fold, the only family `casefold` separates is {I, İ, ı}, folded here first. A key
+# COARSER than `re.IGNORECASE` is always safe — it can only probe more candidates, and every
+# candidate is still verified with the anchored pattern.
+_LOCATOR_TRANSLATION = str.maketrans({"İ": "i", "ı": "i"})
+
+
+def _locator_key(value: str) -> str:
+    """The fold the scan keys on: at least as coarse as `re.IGNORECASE`, never finer."""
+    return value.translate(_LOCATOR_TRANSLATION).casefold()
 
 
 _INDEX_CACHE: dict[int, tuple[object, _ScanIndex]] = {}
 
+# The word runs of the text, as the entity patterns see them: `\w` is Unicode-aware in Python, the
+# same class `(?<!\w)` uses, so a run always starts where a literal entity could start.
+_WORD_RUN_RE = re.compile(r"\w+")
 
-def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
+# Above this many word-character sources the walk over the word runs of the text is cheaper than one
+# alternation over every source, and below it the alternation is. Measured on 2 MB of synthetic
+# Italian prose with the shipped catalogs (`scripts/bench-scan.py --crossover`): the alternation costs
+# 0.013 s with 6 sources, 0.037 s with 50 and 0.041 s with 64, then 0.415 s with 80 — it jumps as soon
+# as the sources include common words, because the engine retries all of them at every offset — while
+# the word walk costs 0.15 s with 6 sources and 0.17 s with 80. The measured crossover lies between 64
+# and 80; 72 is the middle. The Pi guard's dictionary has 6 word-character sources, so it keeps the
+# alternation, at the same 0.090 s for 2 MB of real code as before this change (5 runs each, 22.3
+# MB/s). WHICH locator runs does not change what is found — the equivalence test resolves the same
+# corpus through both and compares the final spans — so this threshold is free to follow the cost.
+SCAN_WORD_SOURCES_MIN = 72
+
+
+
+
+
+def _build_scan_index(
+    entities: list[Entity], word_min: int = SCAN_WORD_SOURCES_MIN
+) -> _ScanIndex:
     literals: dict[str, list[Entity]] = {}
     sources: set[str] = set()
     groups: dict[tuple[str, str], list[Entity]] = {}
@@ -859,7 +904,7 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
         elif entity.context:
             groups.setdefault((entity.context, entity.form), []).append(entity)
         else:
-            literals.setdefault(entity.first_token.casefold(), []).append(entity)
+            literals.setdefault(_locator_key(entity.first_token), []).append(entity)
             sources.add(entity.first_token)
 
     alone: dict[str, list[Entity]] = {}
@@ -878,7 +923,7 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
             tokens = _name_tokens(entity.surface)
             if len(tokens) > 1:
                 raw = unicodedata.normalize(entity.form, tokens[1])
-                key = raw.casefold()
+                key = _locator_key(raw)
                 second.setdefault(key, []).append(entity)
                 raw_second.setdefault(key, raw)
             else:
@@ -895,15 +940,51 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
                 rf"(?:{NAME_SEPARATOR_RE})(?P<next>{branches})", re.IGNORECASE
             )
 
+    # Two locators, because one alternation over every first token made the scan cost
+    # `positions × sources` inside the regex engine: 290 catalog sources (all common words) over a
+    # 5 MB document spent 10.7 s of 11.0 s in `alternation.finditer` alone (0.47 MB/s,
+    # scripts/bench-scan.py). Every literal entity carries a `(?<!\w)` prefix, so a match can only
+    # ever START where a word run starts: a source made of word characters is therefore located by
+    # walking the word runs and probing their prefixes (dict lookups, no regex), and only a source
+    # holding a non-word character — `D-Link`, `Hyper-V`, `PAN-OS` — still needs an alternation.
+    word_sources: set[str] = set()
+    other_sources: set[str] = set()
+    for source in sources:
+        (word_sources if _WORD_RUN_RE.fullmatch(source) else other_sources).add(source)
+    if len(word_sources) < word_min:
+        # A small dictionary is cheaper to locate with one alternation, which is what every earlier
+        # version did: the word walk has a per-token floor that a handful of sources does not earn
+        # back. Both paths are equally correct — the equivalence test runs the same corpus through
+        # each — so this is only a choice of which one costs less.
+        other_sources |= word_sources
+        word_sources = set()
+
     alternation = None
-    if sources:
-        # Longest literal first: the alternation takes the FIRST branch that matches at a position,
-        # and this way that is also the longest — the choice the overlap resolver makes anyway for
-        # matches that start at the same offset.
+    if other_sources:
+        # Longest first: the alternation takes the FIRST branch that matches at a position, and this
+        # way that is also the longest — the choice the overlap resolver makes anyway. It is
+        # superset-safe: every candidate is still verified anchored below. NOT wrapped in a lookahead:
+        # a zero-width pattern makes the engine try every offset, which cost 17% on the guard's path,
+        # and `_alternation_hits` reaches the positions `finditer` skips by probing inside a match.
         alternation = re.compile(
-            "|".join(re.escape(source) for source in sorted(sources, key=len, reverse=True)),
+            "|".join(
+                re.escape(source) for source in sorted(other_sources, key=len, reverse=True)
+            ),
             re.IGNORECASE,
         )
+
+    word_heads2: set[str] = set()
+    word_heads1: set[str] = set()
+    max_word_len = 0
+    for source in word_sources:
+        key = _locator_key(source)
+        max_word_len = max(max_word_len, len(source))
+        if len(key) >= 2:
+            word_heads2.add(key[:2])
+        else:
+            # A one-character source has no second character to index on; keeping its only
+            # character in a set of its own means the reject below cannot hide it.
+            word_heads1.add(key)
 
     grouped: dict[
         tuple[str, str],
@@ -923,7 +1004,7 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
         by_first: dict[str, list[Entity]] = {}
         raw_first: dict[str, str] = {}  # same rule as above: pattern from the raw token
         for member in members:
-            key = member.first_token.casefold()
+            key = _locator_key(member.first_token)
             by_first.setdefault(key, []).append(member)
             raw_first.setdefault(key, member.first_token)
         locator = None
@@ -934,7 +1015,18 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
             locator = re.compile(first_branches, re.IGNORECASE)
         grouped[(context, _form)] = (members, by_first, locator, compiled)
 
-    return _ScanIndex(literals, alternation, alone, by_next, next_re, grouped, direct)
+    return _ScanIndex(
+        literals=literals,
+        alternation=alternation,
+        alone=alone,
+        by_next=by_next,
+        next_re=next_re,
+        grouped=grouped,
+        direct=direct,
+        word_heads2=frozenset(word_heads2),
+        word_heads1=frozenset(word_heads1),
+        max_word_len=max_word_len,
+    )
 
 
 def _scan_index(entities: Iterable[Entity]) -> _ScanIndex:
@@ -951,6 +1043,110 @@ def _scan_index(entities: Iterable[Entity]) -> _ScanIndex:
     return index
 
 
+def _word_run_hits(index: _ScanIndex, text: str):
+    r"""Locate the word-character sources by walking the word runs of the text.
+
+    One dict probe per token prefix, where the alternation it replaced made the regex engine try
+    every source at every offset. Sound because every literal entry carries a `(?<!\w)` prefix, so a
+    match can only START where a word run starts; every candidate is verified anchored anyway.
+    """
+    if not index.max_word_len:
+        return
+    literals = index.literals
+    # The two sets reject a token that shares no opening with any source before any probing happens.
+    # Compare the TRUNCATED fold: `casefold` can lengthen a character (`İ` -> two characters), so
+    # folding two raw characters can give three characters and would never equal a two-character
+    # head — a source opening with such a character would be silently unreachable.
+    heads2 = index.word_heads2
+    heads1 = index.word_heads1
+    longest = index.max_word_len
+    for run in _WORD_RUN_RE.finditer(text):
+        token = run.group(0)
+        start = run.start()
+        if _locator_key(token[:2])[:2] not in heads2 and _locator_key(token[:1]) not in heads1:
+            continue
+        for end in range(1, min(len(token), longest) + 1):
+            key = _locator_key(token[:end])
+            if key not in literals:
+                continue
+            for entity in _literal_candidates(index, text, start, end, key):
+                anchored = entity.regex.match(text, start)
+                if anchored is not None:
+                    span_start, span_end = anchored.span(ENTITY_GROUP)
+                    yield entity, span_start, span_end
+
+
+def _alternation_hits(index: _ScanIndex, text: str):
+    r"""Locate the remaining sources — the ones holding a non-word character — with one alternation.
+
+    `D-Link`, `Hyper-V`, `PAN-OS`: no word run can carry them. When the dictionary is small this
+    locator takes every word-character source TOO (see `SCAN_WORD_SOURCES_MIN`), which is what every
+    earlier version did and is cheaper than the word walk for a handful of names.
+    """
+    if index.alternation is None:
+        return
+    literals = index.literals
+
+    def probe(start: int, matched: str):
+        r"""Yield every entry that can start at `start`, given the alternation matched `matched`.
+
+        The alternation takes the FIRST branch that matches, so a longer literal hides a shorter one
+        starting at the same offset: with `@stem on` on `Ferretti` behind the literal `Ferrettini`,
+        `Ferrettini` wins and the stem entry — whose `[\w\-]*` DOES match that word — would never be
+        probed. Every prefix of the matched text is looked up too, so the shorter entry gets its
+        anchored chance.
+        """
+        for end in range(1, len(matched) + 1):
+            key = _locator_key(matched[:end])
+            if key not in literals:
+                continue
+            for entity in _literal_candidates(index, text, start, end, key):
+                anchored = entity.regex.match(text, start)
+                if anchored is not None:
+                    yield entity, *anchored.span(ENTITY_GROUP)
+
+    for match in index.alternation.finditer(text):
+        matched = match.group(0)
+        start = match.start()
+        yield from probe(start, matched)
+        # `finditer` resumes at the END of a match, so a source nested inside a longer one was never
+        # probed: declaring `A-B-C` and `B-C` found `A-B-C` and left `B-C` untouched in `a-b-c`, and
+        # `D-Link` next to `Link` did the same (measured: 1987 of 2000 random `X-Y-Z`/`Y-Z` pairs).
+        # Every position a match does NOT reach is found by `finditer`, so probing the positions
+        # strictly inside this one closes the gap — and it costs nothing when nothing nests, because
+        # matches are rare on the guard's path and few on a document with the catalogs.
+        for inner in range(start + 1, start + len(matched)):
+            inner_match = index.alternation.match(text, inner)
+            if inner_match is not None:
+                yield from probe(inner, inner_match.group(0))
+
+
+def _literal_candidates(
+    index: _ScanIndex, text: str, start: int, end: int, key: str
+) -> Iterable[Entity]:
+    """The entities that can start at `start`, given that `text[start:end]` spells the first token.
+
+    Shared by both locators so the two cannot drift apart. It only ever NARROWS the work: every
+    candidate is verified afterwards with the entity's own anchored pattern, so a locator can never
+    widen what is redacted — the worst it can do is cost time.
+    """
+    candidates: Iterable[Entity] = index.alone.get(key, ())
+    locator = index.next_re.get(key)
+    if locator is not None:
+        following = locator.match(text, start + end)
+        if following is not None:
+            found_token = following.group("next")
+            second = index.by_next[key]
+            extra: list[Entity] = []
+            for end2 in range(1, len(found_token) + 1):
+                matches_second = second.get(_locator_key(found_token[:end2]))
+                if matches_second:
+                    extra.extend(matches_second)
+            if extra:
+                candidates = list(candidates) + extra
+    return candidates
+
+
 def entity_hits(text: str, entities: Iterable[Entity]):
     """Yield (entity, start, end) for every dictionary occurrence, with the same matches
     `Entity.spans` produces — but without one full-text pass per entry.
@@ -959,12 +1155,18 @@ def entity_hits(text: str, entities: Iterable[Entity]):
     patterns (one per normalization form) and took 13.5s of 13.7s on 2 MB (scripts/bench-check.py).
     Three stages instead:
 
-      * entries without a `@context` are located by ONE case-insensitive scan over the first
-        token of every entry, then verified ANCHORED at each candidate position — the very match
-        `finditer` would have returned, because a context-free entry always starts at its first
-        token. A position yields only the entries whose NEXT token is present in the text (or
-        which can match on the first token alone), so the cost does not grow with the number of
-        entries that merely share a first name;
+      * entries without a `@context` are located by TWO locators: a source made of word characters
+        is found by walking the word runs of the text and looking each prefix up in the index, one
+        dict probe per prefix, while the handful of sources holding a non-word character (`D-Link`,
+        `Hyper-V`) are found by one case-insensitive alternation. Both are supersets: every
+        candidate is verified ANCHORED at its position, with the very match `finditer` would have
+        returned, because a context-free entry always starts at its first token;
+      * the word-run locator replaced ONE alternation over every source, which cost `positions ×
+        sources` inside the regex engine — 290 catalog sources over 5 MB spent 10.7 s of 11.0 s
+        there (0.47 MB/s, scripts/bench-scan.py) because most of those sources are common Italian
+        words that the engine retries at every offset. A position yields only the entries whose NEXT
+        token is present in the text (or which can match on the first token alone), so the cost does
+        not grow with the number of entries that merely share a first name;
       * entries WITH a `@context` cannot be found that way (their match starts at the context),
         so they are grouped by (context, normalization form) and scanned once per group, with the
         same first-token sub-index inside the group;
@@ -976,41 +1178,8 @@ def entity_hits(text: str, entities: Iterable[Entity]):
     anchored match, so the yielded set is identical to the reference scan.
     """
     index = _scan_index(entities)
-    literals = index.literals
-
-    if index.alternation is not None:
-        for match in index.alternation.finditer(text):
-            matched = match.group(0)
-            start = match.start()
-            # The alternation takes the FIRST branch that matches, so a longer literal hides a
-            # shorter one starting at the same offset: with `@stem on` on `Ferretti` behind the
-            # literal `Ferrettini`, `Ferrettini` wins and the stem entry — whose `[\w\-]*` DOES
-            # match that word — would never be probed. Every prefix of the matched text is looked
-            # up too, so the shorter entry gets its anchored chance.
-            for end in range(1, len(matched) + 1):
-                key = matched[:end].casefold()
-                bucket = literals.get(key)
-                if not bucket:
-                    continue
-                candidates = index.alone.get(key, ())
-                locator = index.next_re.get(key)
-                if locator is not None:
-                    following = locator.match(text, start + end)
-                    if following is not None:
-                        found_token = following.group("next")
-                        second = index.by_next[key]
-                        extra: list[Entity] = []
-                        for end2 in range(1, len(found_token) + 1):
-                            matches_second = second.get(found_token[:end2].casefold())
-                            if matches_second:
-                                extra.extend(matches_second)
-                        if extra:
-                            candidates = list(candidates) + extra
-                for entity in candidates:
-                    anchored = entity.regex.match(text, start)
-                    if anchored is not None:
-                        span_start, span_end = anchored.span(ENTITY_GROUP)
-                        yield entity, span_start, span_end
+    yield from _word_run_hits(index, text)
+    yield from _alternation_hits(index, text)
 
     for (context, _form), (members, by_first, locator, grouped) in index.grouped.items():
         for match in grouped.finditer(text):
@@ -1028,7 +1197,7 @@ def entity_hits(text: str, entities: Iterable[Entity]):
                 found_token = following.group(0)
                 narrowed: list[Entity] = []
                 for end2 in range(1, len(found_token) + 1):
-                    matches_first = by_first.get(found_token[:end2].casefold())
+                    matches_first = by_first.get(_locator_key(found_token[:end2]))
                     if matches_first:
                         narrowed.extend(matches_first)
                 if not narrowed:

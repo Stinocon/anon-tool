@@ -119,26 +119,44 @@ than an explicit alias the operator adds once.
 
 A 200-entry dictionary compiles to 400 patterns (one per normalization form). Scanning each one over
 the whole text was the entire cost of `--check`: 13.7 s for 2 MB, measured, which is what made the
-guard time out. The engine now locates candidates with ONE case-insensitive pass over the first
-token of every entry and verifies each entry anchored at those positions — the same match. The
-index is built once per run and reused (the container path calls the scan once per XML part), and a
-position is resolved through a sub-index on the SECOND token, so entries that merely share a first
-name are not probed one by one. Measured on a 5 MB corpus (`scripts/bench-check.py`), end to end:
-1.81 MB/s with 200 entries, 1.75 with 294, 1.38 with 1 000, 0.73 with 4 000, 0.44 with 7 900 (the
-full-municipality size) — roughly twice the previous rate at every size.
+guard time out. The engine now LOCATES candidates with a cheap pass and verifies each entry anchored
+at those positions — the same match `finditer` would have returned, because a context-free entry
+always starts at its first token. The index is built once per run and reused (the container path
+calls the scan once per XML part), and a position is resolved through a sub-index on the SECOND
+token, so entries that merely share a first name are not probed one by one. Measured on a 5 MB
+corpus (`scripts/bench-check.py`), end to end: 1.81 MB/s with 200 entries, 1.75 with 294, 1.38 with
+1 000, 0.73 with 4 000, 0.44 with 7 900 (the full-municipality size) — roughly twice the previous
+rate at every size.
 
-**What the dictionary costs is the LOCATOR, not the entries.** The first-token alternation is one
-0.39 MB/s, of which 8.8 s of 9.1 s is `alternation.finditer` alone: the catalog first tokens are
-COMMON WORDS (`windows`, `microsoft`, `apache`), they occur constantly in real text, and Python's
-`re` tries every branch of a 329-branch alternation at every position. A synthetic corpus does not
-model this — it inserts each dictionary name once, so the synthetic bench reads 1.75 MB/s at 294
-entries where a real document with the catalogs reads 0.39. The next structural step is a
-token-indexed locator (a word scan plus dict lookups) instead of the alternation; until then the
-catalogs are for smaller documents, and the **Pi guard is unaffected**: it runs `anon.py --check
---json` without `--catalogs`, so the guarded path keeps its 12 MB / 20 s margin at 23 MB/s with the
-operator's own 12-entry dictionary (OPEN-ISSUES 26). With the catalogs loaded, the same 12 MB would
-need ~31 s of a 20 s budget. Entries with a `@context` cannot be
-found that way, so they are
+**The locator was the cost, not the entries — and there are two of them.** On a 5 MB document the
+first-token alternation read 0.46 MB/s, and `alternation.finditer` was almost all of it: the catalog
+first tokens are COMMON WORDS (`windows`, `microsoft`, `apache`), and Python's `re` retries every
+branch of the 290-branch alternation at every position. A synthetic corpus does not model this — it
+inserts each dictionary name once, so the synthetic bench reads 1.75 MB/s at 294 entries where the
+same 5 MB document with the catalogs reads 0.46 (`scripts/bench-scan.py`, whose corpus is synthetic
+Italian prose and whose sources are the catalogs committed here; the operator's own catalogs are
+larger and read lower still). Every literal entry carries a `(?<!\w)` prefix, so a match can only
+START where a word run starts: the word-character sources are therefore indexed by their fold and
+located by walking the word runs and looking each prefix up, one dict probe per token instead of one
+regex attempt per source per offset (`_word_run_hits`). Only a source holding a non-word character —
+`D-Link`, `Hyper-V`, `PAN-OS` — still needs an alternation (`_alternation_hits`), and so does a SMALL
+dictionary, where the word walk's per-token floor costs more than it saves: the measured crossover on
+2 MB of synthetic prose is between 64 and 80 sources, and **72 is the middle**
+(`scripts/bench-scan.py --crossover`). The Pi guard's dictionary has 6 word-character sources, so the
+guarded path is the alternation it always was, at the same 0.090 s for 2 MB of real code as before
+(22.3 MB/s, five runs each), and its 12 MB / 20 s margin stands. With the catalogs, where the word
+walk is chosen, the locator went from 0.46 to 3.85 MB/s (8×) and the whole `entity_hits` from 0.46 to
+3.21, hit counts identical. **Which locator runs does not change what is found**:
+`test_the_word_run_locator_matches_the_reference_on_every_difficult_shape` resolves the same corpus
+through BOTH regimes against `Entity.spans` and compares the final spans.
+
+The adversarial review of that change found a defect worth recording, because it predated it: the
+alternation used non-overlapping `finditer`, so a source nested inside a longer one was never probed
+— declaring `A-B-C` and `B-C` found `A-B-C` and left `B-C` untouched in `a-b-c` (1987 of 2000 random
+`X-Y-Z`/`Y-Z` pairs), and `D-Link` next to `Link` did the same. `_alternation_hits` now probes the
+positions strictly inside each match, which are exactly the ones `finditer` skips; a zero-width
+lookahead would have been simpler and cost 17% on the guard's path, so it was rejected. Entries with
+a `@context` are
 grouped by context and the group pattern is used as a locator, again with anchored verification, so
 `Roma` is still found next to `Roma Nord`.
 

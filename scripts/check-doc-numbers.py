@@ -118,7 +118,10 @@ def main() -> int:
     ):
         claim(f"near-miss bounds ({language})", wording, "web/i18n.js")
 
-    # 6. the counts stated for the shipped catalogs, bound to the files themselves
+    # 6. the locator threshold: the number in DESIGN is the constant that decides which locator runs
+    claim("scan word threshold", rf"{anon.SCAN_WORD_SOURCES_MIN} is the middle", "docs/DESIGN.md")
+
+    # 7. the counts stated for the shipped catalogs, bound to the files themselves
     catalogs = {name: ROOT / "catalogs" / f"{name}.txt" for name in ("it-cities", "vendors", "products")}
     for name, path in catalogs.items():
         path = ROOT / "catalogs" / f"{name}.txt"

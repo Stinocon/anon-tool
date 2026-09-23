@@ -17,8 +17,9 @@ enforces that they agree.
   `web/i18n.js` holding the English keyed by selector. Every string `app.js` composes goes through
   the same table (progress, verdicts, statuses, dialogs) and the labels redraw when the language
   changes. Three tests guard it: a key with no element, a translation that drops a child id or an
-  interactive tag, and a key used in `app.js` with no translation. Server messages and tooltips are
-  still Italian (OPEN-ISSUES 38).
+  interactive tag, and a key used in `app.js` with no translation. What stays Italian is deliberate:
+  paths, format lists, and the language names written in their own language (the server's own messages
+  were already English, because the code is).
 - `docker-compose.model.yml` + `scripts/fetch-suggest-model.sh`: the local suggestion model
   (Qwen2.5-3B-Instruct Q4_K_M, verified by size and sha256) as a sidecar that SHARES the UI's
   network namespace, so it binds `127.0.0.1:8080` and the seam's loopback-only rule holds
@@ -157,6 +158,19 @@ enforces that they agree.
 
 ### Fixed
 
+- **A name declared next to a longer name that contains it was missed.** The alternation that
+  locates the entries holding a non-word character used non-overlapping `finditer`, so after
+  matching `A-B-C` it resumed past it and never probed `B-C` inside `a-b-c`; the same held for
+  `D-Link` next to `Link`. Pre-existing (every earlier version scanned that way), found by the
+  adversarial review of the locator change. It now probes the positions strictly inside each match,
+  which are exactly the ones `finditer` skips.
+- **An entry containing `İ` was missed when the document spelled it `ipek`.** The scan keys a
+  candidate on a fold while the pattern matches with `re.IGNORECASE`, and the two disagree on
+  {I, İ, ı}: `casefold` separates what the engine treats as one character, so the position was never
+  probed and the name stayed in the output. Pre-existing, found by the equivalence test above; the key
+  now applies that fold first, and `test_the_locator_fold_covers_everything_ignorecase_matches` proves
+  exhaustively (over every character of Unicode that has a case or a fold) that the key is at least as
+  coarse as `re.IGNORECASE`.
 - **The boundary rule was still wrong, and adversarial review found the DESTRUCTIVE case it hid.** The
   check stopped at the first difference between the fragments' element paths, so a fragment inside a
   text box nested in a run (`w:drawing`, and the legacy VML `w:txbxContent`) looked "safe" and the text
@@ -278,6 +292,20 @@ enforces that they agree.
 
 ### Changed
 
+- **The dictionary scan no longer tries every source at every offset.** The locator was one
+  case-insensitive alternation over the first token of every entry, and with the shipped catalogs it
+  spends essentially all of its time inside `alternation.finditer` on a 5 MB document (0.46 MB/s) —
+  those first tokens are common words, so the engine retried all 290 branches at every position. A source made of
+  word characters is now located by walking the word runs of the text and looking each prefix up in a
+  fold-keyed index; only a source holding a non-word character (`D-Link`, `Hyper-V`) still needs an
+  alternation, and so does a SMALL dictionary, where the word walk's per-token floor costs more than it
+  saves (measured crossover between 64 and 80 sources, threshold 72,
+  `scripts/bench-scan.py --crossover`). Measured on the same 5 MB document: the locator went from 0.46
+  to 3.85 MB/s and the whole scan from 0.46 to 3.21, with an identical hit count. The Pi guard's
+  dictionary has 6 word-character sources, so the guarded path is the alternation it always was, at
+  the same 0.090 s for 2 MB of real code (22.3 MB/s).
+  `test_the_word_run_locator_matches_the_reference_on_every_difficult_shape` runs the same corpus
+  through BOTH regimes against the reference scan.
 - `docs/DESIGN.md` states the engine only: the local web app's perimeter (bind address, token,
   `Host`/`Origin`, the caps, the container hardening) moved into `SECURITY.md`, where the threat
   model already pointed at it. One document per audience, and the perimeter is no longer written
