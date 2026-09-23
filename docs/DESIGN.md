@@ -215,10 +215,11 @@ edited — the write path that already exists — and the operator still presses
 redaction: the seam never writes.
 
 What remains open (`docs/OPEN-ISSUES.md` #17) is a model worth running. Measured with the local
-MTPLX Qwen3.5-9B on this machine: 138 s and 4096 tokens for one sentence, `finish_reason: length`,
-empty answer — a reasoning model that thinks until it runs out of budget. The seam reported the
-failure (`--max-tokens` is configurable, the prompt asks for JSON only, `reasoning_content` is read
-as a fallback), so the deficit is the model's, not the plumbing's.
+MTPLX Qwen3.5-9B: a one-sentence text gets a correct proposal in ~30 s, while a richer one (two
+names, a company, an email) spends 138 s and 4096 tokens and returns nothing (`finish_reason:
+length`) — a reasoning model that thinks until the budget ends. The seam reports that as an error
+(`--max-tokens` is configurable, the prompt asks for JSON only, `reasoning_content` is a fallback),
+so the deficit is the model's, not the plumbing's.
 ## 8. Known limits (deliberate)
 
 - contextual references ("the client from Ancona") — a human read is still required;
