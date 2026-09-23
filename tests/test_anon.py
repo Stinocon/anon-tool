@@ -861,26 +861,55 @@ class DirectivesTest(unittest.TestCase):
         self.assertEqual(types, {"CLIENTE", "PERSONA"})
 
 
-class VendorsCatalogTest(unittest.TestCase):
-    """The shipped `catalogs/vendors.txt` — what it MUST match, and what it must NOT.
+def catalog_blocks(path: Path) -> tuple[list[str], list[str]]:
+    """The two blocks a catalog declares, read from the FILE (the input the gate reads)."""
+    first: list[str] = []
+    second: list[str] = []
+    current: list[str] | None = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped == "@match case-sensitive":
+            current = first
+        elif stripped == "@match insensitive":
+            current = second
+        elif stripped and not stripped.startswith(("#", "@")) and current is not None:
+            current.append(stripped)
+    return first, second
 
-    A data file has no other way to fail loudly, so the properties that are load-bearing are pinned
-    here: `@match case-sensitive` on the ambiguous names (it is what keeps `Dell` from eating
-    `dell'aria`, and `Intel` from eating a line of code), whole-word anchoring (`Dell` must not
-    match `DellOrto`), the case-insensitive block, and the container path never rewriting an XML
-    ATTRIBUTE — `urn:schemas-microsoft-com:vml` replaced by a placeholder would leave a package
-    that is no longer valid. One entry is a DECLARED false positive and is pinned as such rather
-    than silently blessed: see the file's own header.
+
+class CatalogBlocksTest(unittest.TestCase):
+    """Shared gate for a shipped TWO-BLOCK catalog (`vendors.txt`, `products.txt`).
+
+    A data file has no other way to fail loudly, so the load-bearing properties are pinned here,
+    once, instead of being copied into every catalog's test class:
+
+      * both blocks are read from the FILE, and the block rule is enforced in both directions — a
+        case-sensitive name must declare the ordinary word it collides with, and a block-2 name may
+        not be one of those words nor a word of the OS dictionary (the sweep that catches a name
+        nobody thought about, skipped VISIBLY when there is no dictionary to read);
+      * a declared LINE must be a live entry (`load_entities` dedups, so asking it whether there are
+        duplicates is asking it to grade itself);
+      * the size stated to the user is bound to the file, here and in `--list-catalogs`.
+
+    Subclasses set `CATALOG`, `TYPE`, `STNAME` and `WORD_COLLISION`, and add the behaviour tests
+    that are specific to what they list.
     """
 
-    # `HOME/catalogs/...`: the engine's own tree — the repository when run from the repository,
-    # `~/.anon` when run from the live tree, and the same file in both.
-    CATALOG = HOME / "catalogs" / "vendors.txt"
+    CATALOG: Path
+    TYPE: str
+    STNAME: str
+    WORD_COLLISION: dict[str, str]
+    MIN_SIZE = 100
+    SYSTEM_DICTIONARIES = ("/usr/share/dict/words", "/usr/share/dict/american-english")
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="anon-vendors-"))
+        if not getattr(self, "CATALOG", None):
+            # The base class is the shared gate, not a catalog: unittest still collects it, so it
+            # says so out loud instead of erroring on a missing file.
+            self.skipTest("abstract: CatalogBlocksTest is inherited, never run")
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-catalog-"))
         (self.tmp / "catalogs").mkdir()
-        shutil.copyfile(self.CATALOG, self.tmp / "catalogs" / "vendors.txt")
+        shutil.copyfile(self.CATALOG, self.tmp / "catalogs" / self.CATALOG.name)
         self.env = {**os.environ, "ANON_HOME": str(self.tmp)}
         self.entities = anon.load_entities(self.CATALOG)
         self.size = anon.entity_count(self.entities)
@@ -895,14 +924,14 @@ class VendorsCatalogTest(unittest.TestCase):
 
     def matched(self, text: str) -> list[str]:
         """Only the vendor hits: the pattern rules are other people's business here."""
-        return [text[s:e] for s, e, ptype in anon.detect(text, self.entities) if ptype == "FORNITORE"]
+        return [text[s:e] for s, e, ptype in anon.detect(text, self.entities) if ptype == self.TYPE]
 
     # --- the shipped artifact ---
 
     def test_the_list_ships_typed_and_fully_declared(self) -> None:
         self.assertTrue(self.CATALOG.is_file(), f"the catalog ships at {self.CATALOG}")
-        self.assertEqual({entity.type for entity in self.entities}, {"FORNITORE"})
-        self.assertGreaterEqual(self.size, 100, "a vendor starter set that is not even 100 rows is not one")
+        self.assertEqual({entity.type for entity in self.entities}, {self.TYPE})
+        self.assertGreaterEqual(self.size, self.MIN_SIZE, f"{self.CATALOG.name}: fewer than {self.MIN_SIZE} rows")
         # Read the FILE, not the parsed entities: `load_entities` already dedups, so asking it
         # whether there are duplicates is asking it to grade itself. A line that is silently
         # dropped (or declared twice) is what this must catch.
@@ -920,7 +949,7 @@ class VendorsCatalogTest(unittest.TestCase):
         self.assertIn(f"adds {self.size} entries", header)
         listing = self.run_anon("--list-catalogs")
         self.assertEqual(listing.returncode, 0, listing.stderr)
-        self.assertIn(f"vendors\t{self.size} entries", listing.stdout)
+        self.assertIn(f"{self.STNAME}\t{self.size} entries", listing.stdout)
 
     # --- the gate on the block rule (docs/OPEN-ISSUES.md #37) ---
 
@@ -977,18 +1006,7 @@ class VendorsCatalogTest(unittest.TestCase):
 
     def blocks(self) -> tuple[list[str], list[str]]:
         """(case-sensitive, insensitive) as declared in the FILE — the input the gate reads."""
-        first: list[str] = []
-        second: list[str] = []
-        current: list[str] | None = None
-        for line in self.CATALOG.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped == "@match case-sensitive":
-                current = first
-            elif stripped == "@match insensitive":
-                current = second
-            elif stripped and not stripped.startswith(("#", "@")) and current is not None:
-                current.append(stripped)
-        return first, second
+        return catalog_blocks(self.CATALOG)
 
     def system_words(self) -> set[str]:
         """The lowercase words of the OS dictionary; empty when there is none (see the SKIP)."""
@@ -1030,7 +1048,7 @@ class VendorsCatalogTest(unittest.TestCase):
         words = self.system_words()
         if not words:
             self.skipTest(f"no system dictionary at {', '.join(self.SYSTEM_DICTIONARIES)}")
-        print(f"vendors gate: sweeping block 2 against {len(words)} system words", file=sys.stderr)
+        print(f"{self.STNAME} gate: sweeping block 2 against {len(words)} system words", file=sys.stderr)
         _, insensitive = self.blocks()
         self.assertEqual(
             [name for name in insensitive if name.casefold() in words],
@@ -1039,6 +1057,24 @@ class VendorsCatalogTest(unittest.TestCase):
         )
 
     # --- why the first block is case-sensitive ---
+
+
+class VendorsCatalogTest(CatalogBlocksTest):
+    """The shipped `catalogs/vendors.txt` — what it MUST match, and what it must NOT.
+
+    `@match case-sensitive` on the ambiguous names is what keeps `Dell` from eating `dell'aria` and
+    `Intel` from eating a line of code; whole-word anchoring keeps `Dell` out of `DellOrto`; the
+    container path must never rewrite an XML ATTRIBUTE, or `urn:schemas-microsoft-com:vml` would
+    become a placeholder and the package would stop being valid. One entry is a DECLARED false
+    positive and is pinned as such rather than silently blessed: see the file's own header.
+    """
+
+    # `HOME/catalogs/...`: the engine's own tree — the repository when run from the repository,
+    # `~/.anon` when run from the live tree, and the same file in both.
+    CATALOG = HOME / "catalogs" / "vendors.txt"
+    TYPE = "FORNITORE"
+    STNAME = "vendors"
+    MIN_SIZE = 160
 
     def test_the_italian_elision_is_not_redacted(self) -> None:
         for text in (
@@ -1175,6 +1211,99 @@ class VendorsCatalogTest(unittest.TestCase):
         for value in ("Dell", "Microsoft", "Veeam"):
             self.assertNotIn(value, text, f"{value} survived in the visible text")
         self.assertIn("[FORNITORE-1-", text)
+
+
+
+
+class ProductsCatalogTest(CatalogBlocksTest):
+    """The shipped `catalogs/products.txt` — the same gate, on the list where it matters more.
+
+    A product name is very often an ordinary English word (`Word`, `Excel`, `Access`, `Windows`,
+    `Teams`, `Catalyst`, `Nexus`, `Umbrella`, `Tomcat`, `Apache`, `Docker`, `Zoom`), so block 1 is
+    the majority of the work here and the gate is the same one. Two things are pinned in addition:
+    the product name is not a vendor name (the two lists must not disagree), and a model number is
+    NOT in the list by design (the family is; the number is a hostname).
+    """
+
+    CATALOG = HOME / "catalogs" / "products.txt"
+    TYPE = "PRODOTTO"
+    STNAME = "products"
+    MIN_SIZE = 120
+    WORD_COLLISION = {
+        "Access": "access",
+        "Android": "android",
+        "Apache": "apache",
+        "Azure": "azure",
+        "Catalyst": "catalyst",
+        "Chrome": "chrome",
+        "Defender": "defender",
+        "Docker": "docker",
+        "Exchange": "exchange",
+        "Excel": "excel",
+        "Falcon": "falcon",
+        "Fedora": "fedora",
+        "Firebox": "firebox",
+        "Firepower": "firepower",
+        "Helm": "helm",
+        "Horizon": "horizon",
+        "Jabber": "jabber",
+        "Nexus": "nexus",
+        "Outlook": "outlook",
+        "Thunderbird": "thunderbird",
+        "Rancher": "rancher",
+        "Safari": "safari",
+        "Teams": "teams",
+        "Tomcat": "tomcat",
+        "Umbrella": "umbrella",
+        "Windows": "windows",
+        "Word": "word",
+        "Zoom": "zoom",
+    }
+
+    def test_the_two_lists_do_not_disagree_about_a_name(self) -> None:
+        """A company name lives in `vendors.txt`; a product name here. Never both.
+
+        A name in both would give the SAME surface two types depending on which list was ticked
+        first, and the map would say `FORNITORE` in one document and `PRODOTTO` in the next.
+        """
+        vendor_catalog = self.CATALOG.parent / "vendors.txt"
+        if not vendor_catalog.is_file():
+            self.skipTest("vendors.txt is not installed next to this catalog")
+        vendors = {name.casefold() for name in sum(catalog_blocks(vendor_catalog), [])}
+        first, second = self.blocks()
+        overlap = sorted(name for name in first + second if name.casefold() in vendors)
+        self.assertEqual(overlap, [], "a name is in both catalogs — one of them must drop it")
+
+    def test_a_model_number_is_not_in_the_list(self) -> None:
+        """The family is here, the SKU is not: it changes every quarter and arrives as a hostname."""
+        _, insensitive = self.blocks()
+        self.assertNotIn("R740", insensitive)
+        self.assertNotIn("DL380", insensitive)
+        # ...but the families that carry them are, so a report names them whatever the generation.
+        for family in ("PowerEdge", "ProLiant"):
+            self.assertIn(family, insensitive)
+
+    def test_an_ordinary_word_is_not_eaten(self) -> None:
+        for text in (
+            "il catalizzatore (catalyst) della reazione",
+            "l'umbrella dell'ombrello",
+            "a word about words",
+            "le finestre (windows) della casa",
+            "una tazza (cup) sul tavolo",
+        ):
+            self.assertEqual(self.matched(text), [], f"{text!r} must stay intact")
+
+    def test_the_product_itself_is_redacted(self) -> None:
+        for text in ("un firewall FortiGate 60F", "un server PowerEdge", "VMware vSphere",
+                     "Windows Server 2022", "un cluster Kubernetes", "Microsoft Office 365"):
+            self.assertTrue(self.matched(text), f"{text!r} must be redacted")
+
+    def test_the_list_is_inert_until_it_is_selected(self) -> None:
+        src = self.tmp / "nota.txt"
+        src.write_text("Un firewall FortiGate e vSphere.\n", encoding="utf-8")
+        self.assertEqual(self.run_anon(str(src), "--check").returncode, 0,
+                         "without --catalogs the product names are not findings")
+        self.assertEqual(self.run_anon(str(src), "--catalogs", "products", "--check").returncode, 1)
 
 
 class AuditTest(unittest.TestCase):
@@ -2341,9 +2470,16 @@ class OfflineContractTest(unittest.TestCase):
     `web/server.py` is out of scope by design — it IS an HTTP server (DEC-0012 §1/§3). The document
     paths (`anon.py`, `deanon.py`) are also checked for `subprocess`: today neither spawns
     anything, and relaxing that should be a deliberate act rather than a drive-by edit.
+
+    ONE exception is declared, and it is tested rather than trusted: `suggest.py` is the local-model
+    seam, it is a CLIENT of the engine (it imports `anon`, never the reverse), and it is the only
+    file in the project allowed to reach the network. The tests below assert all three parts, so a
+    second module cannot quietly acquire the capability and the exception cannot spread.
     """
 
     SCRIPTS = ("anon.py", "deanon.py", "convert.py")
+    # The declared exception, named so it stays one: see the class docstring.
+    NETWORK_CLIENT = "suggest.py"
     # A network STACK, not a network-shaped name: `urllib.parse` and `http.cookies` are parsers and
     # constants, and must stay importable by the engine. A submodule is matched on its full dotted
     # name, so `urllib.request` fails where `urllib.parse` passes.
@@ -2390,14 +2526,43 @@ class OfflineContractTest(unittest.TestCase):
         self.assertTrue({"anon.py", "deanon.py"} <= {p.name for p in found}, "engine scripts not found")
         return found
 
+    def _network_imports(self, path: Path) -> set[str]:
+        """The network modules among the file's static imports."""
+        return {
+            name
+            for name in self._imports(path)
+            if any(name == banned or name.startswith(f"{banned}.") for banned in self.NETWORK_MODULES)
+        }
+
     def test_no_engine_script_imports_a_network_stack(self) -> None:
         for path in self._engine_scripts():
-            leaked = {
-                name
-                for name in self._imports(path)
-                if any(name == banned or name.startswith(f"{banned}.") for banned in self.NETWORK_MODULES)
-            }
+            leaked = self._network_imports(path)
             self.assertFalse(leaked, f"{path.name} imports a network stack: {sorted(leaked)}")
+
+    def test_the_network_capability_lives_in_exactly_one_named_module(self) -> None:
+        """The seam is the exception, and an exception that is not checked becomes the rule."""
+        client = HOME / self.NETWORK_CLIENT
+        self.assertTrue(client.is_file(), f"{self.NETWORK_CLIENT} is the declared network client")
+        self.assertTrue(
+            self._network_imports(client),
+            f"{self.NETWORK_CLIENT} must import the transport it is the declared client of",
+        )
+        for path in self._engine_scripts():
+            self.assertFalse(
+                self._network_imports(path), f"{path.name} must stay network-free"
+            )
+
+    def test_the_engine_never_imports_the_seam(self) -> None:
+        """The arrow points one way: the seam uses the engine, the engine does not know the seam.
+
+        If `anon.py` imported `suggest.py` — even lazily, even inside `--suggest` — the engine would
+        gain a network capability by the back door, and the claim in DEC-0012 §2 would be false
+        while every other test stayed green.
+        """
+        for path in self._engine_scripts():
+            self.assertNotIn("suggest", self._imports(path), f"{path.name} must not import the seam")
+        self.assertIn("anon", self._imports(HOME / self.NETWORK_CLIENT),
+                      f"{self.NETWORK_CLIENT} is a client of the engine")
 
     def test_the_document_paths_do_not_spawn_a_process(self) -> None:
         for path in self._engine_scripts():

@@ -160,6 +160,12 @@ Prato
 - **Ordering rule:** every directive applies to the entries that FOLLOW it and a later one replaces
   it, so `@context` is a property of a block, not of the file. `@context off` closes the block —
   otherwise narrowing a context would mean reordering the file.
+- The shipped vendor and product lists (`catalogs/vendors.txt`, `catalogs/products.txt`) use the
+  same format and the same switch, and add one rule that the prose cannot carry alone: **the block
+  is decided by whether the name's lowercase is also an ordinary word**, and that rule is ENFORCED
+  by `CatalogBlocksTest` in both directions (a case-sensitive name must record its word; a block-2
+  name may not be a word of the OS dictionary). `catalogs/README.md` states what each list covers
+  and what it deliberately leaves out.
 - Catalogs are **off by default** and ticked on demand ("anonimizza: …").
 - The shipped vendor list (`catalogs/vendors.txt`) uses the same switch for a different problem:
   it is **two blocks**, `@match case-sensitive` for the vendor names that are also ordinary words or
@@ -174,18 +180,38 @@ fiscale** (16 chars + check character), **partita IVA** (11 digits + Luhn), **IB
 license plates, addresses. A checksum-validated match has almost no false positives — the
 opposite of a word list.
 
-## 7. Planned seam for a local model
+## 7. The seam for a local model
 
-When a local model is available, it plugs in as a **detector**, never as the anonymizer:
+A local model plugs in as a **detector**, never as the anonymizer. The seam exists and is
+`suggest.py`, a CLIENT of the engine:
 
 ```
-engine.detect(text)  ->  [regex + dictionary + checksum matches]
-engine.suggest(text) ->  [candidates from a detector backend]  -> human approves -> engine applies
+suggest.py: engine.detect(text)   -> the deterministic findings (the same `detect` anon.py uses)
+            backend.complete()    -> the candidates the MODEL named
+            parse_candidates()    -> proposals LOCATED in the text by the ENGINE
+human reviews -> adds them to the dictionary -> anon.py writes
 ```
 
-A detector backend is a localhost endpoint (OpenAI-compatible or similar). Nothing in the engine
-calls it implicitly; the engine itself keeps zero network capability.
+The arrow points one way and that is tested, not intended: `anon.py`, `deanon.py` and `convert.py`
+import no network stack, and none of them imports `suggest.py`
+(`OfflineContractTest::test_the_engine_never_imports_the_seam`). `suggest.py` is the single file
+allowed to reach the network, and the same test says so by name.
 
+Three properties are enforced there, each with its own test:
+
+- **loopback only** — the endpoint must be `localhost`, `127.0.0.0/8` or `::1`; anything else is
+  refused BEFORE a request is made. A "helpful" LAN endpoint would break the contract that a
+  document does not leave the machine, and it would break it silently;
+- **fail-closed** — a timeout, a non-2xx or unparseable output is exit 2 with the reason. "The model
+  proposed nothing" and "the model never answered" are different facts and must not wear the same
+  face: a silent empty answer would be read as a clean document;
+- **writes nothing** — no redacted copy, no map, no placeholder. Proposals are printed (exit 4 =
+  candidates to review, the same meaning as `--audit`); approving one is a human act, and applying
+  it is `anon.py`'s job through the dictionary.
+
+What is still open (`docs/OPEN-ISSUES.md` #17) is not the plumbing: it is a model worth running on
+this machine and the approval step in the UI. Until then the scaffold refuses to be useful by
+accident — with no `--url`/`--model` it suggests nothing and says so.
 ## 8. Known limits (deliberate)
 
 - contextual references ("the client from Brescia") — a human read is still required;

@@ -185,10 +185,33 @@ python3 anon.py file.txt --patterns legal,identity
 
 Every catalog is **off by default**. Redacting more is not automatically better: a report where
 each city has become `[CITTÀ-1]` loses its substance and protects almost nothing extra. The one
-catalog written for every infrastructure report is `vendors.txt` — hardware and software
-manufacturers, one line per company, split into a case-sensitive block (`Dell`, `Canon`, `Axis`,
-`HP`: names that are also ordinary Italian or English words) and a case-insensitive one. See
-`catalogs/README.md`.
+catalogs written for every infrastructure report are the pair `vendors.txt` (the companies) and
+`products.txt` (their products and platforms: `FortiGate`, `PowerEdge`, `Windows`, `Docker`). Each
+is split into a case-sensitive block (`Dell`, `Canon`, `Axis`, `HP`; `Word`, `Excel`, `Windows`,
+`Catalyst`: names that are also ordinary Italian or English words) and a case-insensitive one, and
+the split is enforced by the test suite. See `catalogs/README.md`.
+
+## The local-model seam (optional, off by default)
+
+`suggest.py` is where a **local** model plugs in as a detector. It is a client of the engine, not
+part of it: it asks a loopback endpoint for candidate strings, locates them in the document itself,
+and prints them as **proposals**. It writes no redacted file and no map, and the engine never
+imports it — the arrow is one-way and tested.
+
+```bash
+python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
+    --url http://127.0.0.1:11434/v1/chat/completions --model <nome-modello> --json
+```
+
+- **Loopback only**: `localhost`, `127.0.0.0/8` or `::1`. Anything else is refused before a byte is
+  sent — this tool's contract is that a document does not leave the machine.
+- **Fail-closed**: a backend that does not answer is an error (exit 2), never an empty "nothing
+  found" (exit 0). A candidate list is exit 4: to review, not a verdict.
+- **The model never decides what is redacted**: a value it returns that is not in the document is
+  dropped, and applying a proposal stays `anon.py`'s job.
+
+See `docs/DESIGN.md` §7 for the boundary and `docs/OPEN-ISSUES.md` #17 for what is still open
+(a model worth running, and the approval step in the UI).
 
 ## Security posture
 

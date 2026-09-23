@@ -42,6 +42,9 @@ jobs:
       - name: Web UI integration
         run: python3 tests/test_web.py
 
+      - name: Local-model seam (loopback only, fail-closed, writes nothing)
+        run: python3 tests/test_suggest.py
+
       - name: UI loads without throwing
         run: node tests/ui_load_check.mjs
 
@@ -60,5 +63,5 @@ jobs:
               echo "- document converter: **NOT installed** — the docx/pdf tests were **skipped**,"
               echo "  so this run did NOT exercise the conversion path (see the *Install* step's log)"
             fi
-            echo "- gates run: engine suite, web integration, UI load, documentation numbers"
+            echo "- gates run: engine suite, web integration, local-model seam, UI load, documentation numbers"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -59,9 +59,11 @@
 #   * Vendors that are ordinary words with no unambiguous form are deliberately ABSENT, not
 #     forgotten: `LG`, `F5` (the bare token IS the refresh key — the company is here as
 #     `F5 Networks`), `MSI` (the Windows installer extension), `AVG`, `Sharp`, `Crucial`,
-#     `Canonical`, `Meta` (also an Italian noun), `Zoom`, `Docker`/`Kubernetes`/`Ubuntu`/`MongoDB`
+#     `Canonical`, `Meta` (also an Italian noun), `Docker`/`Kubernetes`/`Ubuntu`/`MongoDB`
 #     (the technology, not the firm — and `mongodb` IS how a code file names the database; the
-#     clean-corpus sweep is what showed it, one line of `delegate.ts`).
+#     clean-corpus sweep is what showed it, one line of `delegate.ts`). The same words, and
+#     `Zoom`, live in `catalogs/products.txt` instead: there they are the product or the platform,
+#     and a name belongs to ONE of the two catalogs.
 #   * This list does not make a document anonymous on its own — it removes one fingerprint among
 #     several.
 #

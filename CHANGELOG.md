@@ -76,8 +76,8 @@ enforces that they agree.
   camel-case compound can stay in block 2 while `Open Text` cannot: the separator rule applies only
   BETWEEN the words of a multi-word entry, so `SolarWinds` does not match "solar winds" while
   `Open Text` does match "open text" — verified against the engine, not assumed. Cost checked at
-  the new size: `scripts/bench-check.py --entities 164 --mb 5` → **1.82 MB/s** (1.42 at 1.25 MB),
-  well inside the guard's 12 MB / 20 s.
+  the new size with `scripts/bench-check.py --entities 164 --mb 5` (the figure belongs to the
+  machine: the command is documented, not the number).
 - **`VendorsCatalogTest`** (15 tests) pins the properties a data file cannot otherwise fail on:
   case-sensitivity on the homographs, whole-word anchoring (`Dell` must not match `DellOrto`), the
   case-insensitive block, the exact spelling kept in the map (`SonicWall` + `sonicwall` = two
@@ -92,6 +92,42 @@ enforces that they agree.
 - **`scripts/check-doc-numbers.py` now binds the size of the shipped catalogs** to the files
   themselves, in `catalogs/README.md` and in the `vendors.txt` header (the number in this changelog
   is history, and out of scope like every other one here).
+
+- **A second shipped catalog: `catalogs/products.txt`** (130 entries, `@type PRODOTTO`) — the
+  product and platform names an infrastructure report names (`FortiGate`, `PowerEdge`, `Catalyst`,
+  `vSphere`, `Windows`, `Docker`, `Kubernetes`), as opposed to the companies that make them, which
+  stay in `vendors.txt`: a name lives in ONE of the two, and a test fails if it appears in both,
+  because the same surface would otherwise get two types depending on which list was ticked first.
+  The block rule is the same and is enforced by the same gate, and here it works harder — a product
+  name is very often an ordinary English word, so block 1 is long (`Word`, `Excel`, `Access`,
+  `Teams`, `Windows`, `Exchange`, `Outlook`, `Catalyst`, `Nexus`, `Umbrella`, `Firepower`,
+  `Firebox`, `Falcon`, `Defender`, `Horizon`, `Android`, `Chrome`, `Safari`, `Thunderbird`,
+  `Azure`, `Docker`, `Helm`, `Rancher`, `Tomcat`, `Apache`, `Zoom`). The gate caught one during the
+  writing: `Thunderbird` had been left in block 2 and the dictionary sweep refused it — the bird is
+  a word. Model and release numbers (`R740`, `DL380`, `NSa 2700`, `Windows 11`) are deliberately out:
+  they change every quarter and arrive as hostnames. **The shared gate is now a reusable class**
+  (`CatalogBlocksTest`), so the vendor and product lists cannot drift apart in how they are checked,
+  and `scripts/check-doc-numbers.py` binds the size of both and of the PAIR (294 entries — the way
+  the two lists are meant to be used). The pair's throughput is `scripts/bench-check.py --entities
+  294 --mb 5`: the number belongs to the machine, so the command is what is documented, not a figure
+  that ages. Declared and NOT closed: product/model numbers, and the sentence-initial elision.
+- **The local-model seam, scaffolded: `suggest.py`** (`docs/DESIGN.md` §7, `docs/OPEN-ISSUES.md`
+  #17). A local model plugs in as a **detector**, never as the anonymizer, and the seam is a CLIENT
+  of the engine — `anon.py` does not know it exists. Three properties are enforced, each with its
+  own test: **loopback only** (the endpoint must be `localhost`, `127.0.0.0/8` or `::1`, refused
+  before any request — a document must not leave the machine, and a "helpful" LAN endpoint would
+  break that silently), **fail-closed** (a timeout, a non-2xx or unparseable output is exit 2, never
+  an empty "nothing found": those are different facts), and **writes nothing** (no redacted copy, no
+  map, no placeholder — proposals are exit 4, to review; applying one stays `anon.py`'s job). The
+  model's answer is located in the text BY US, so a hallucinated value costs nothing, and the
+  deterministic `detect()` output is shown alongside each proposal so a duplicate is visible.
+  `tests/test_suggest.py` (17 tests) drives a real loopback HTTP server for the happy path and
+  asserts the refusals, the failure modes, the truncation being declared, and that the seam leaves
+  the filesystem untouched. `OfflineContractTest` gained the declared exception: `suggest.py` is the
+  ONE file allowed to import a network stack, the engine never imports it, and both halves are
+  tested so a second module cannot quietly acquire the capability.
+- **The products catalog and the seam are wired into the gates**: `make test` and CI run
+  `tests/test_suggest.py`, and the CI run summary names it.
 
 ### Changed
 

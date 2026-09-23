@@ -1,0 +1,194 @@
+# catalogs/products.txt — product and platform names of the IT sector (starter list).
+#
+# WHAT IT IS
+#   The product, platform and product-line names an infrastructure report names, as opposed to the
+#   COMPANIES that make them: those are `vendors.txt`, and a name lives in one of the two, never both
+#   (`Fortinet` is a vendor, `FortiGate` is a product).
+#   It covers the families (`FortiGate`, `PowerEdge`, `Catalyst`, `vSphere`, `Windows`, `Docker`,
+#   `Kubernetes`), NOT the model numbers: `R740`, `DL380`, `NSa 2700`, `FortiGate 60F` are a
+#   different and much larger class, they change every quarter, and in a real document they arrive
+#   as HOSTNAMES — which the HOST rule already redacts. `PowerEdge` is here, `R740` is not.
+#
+# WHY IT IS OPT-IN
+#   Same reason as the vendor list, one level deeper: "firewall FortiGate, backup Veeam, Office 365,
+#   gli endpoint con Defender" says what the client runs. Nothing is applied unless you select it
+#   (`--catalogs products`, or the checkbox in the UI), and ticking BOTH lists is the intended way to
+#   use this in a report.
+#
+# WHY THERE ARE TWO BLOCKS
+#   The same rule as `vendors.txt`, and it matters more here: a product name is very often an
+#   ordinary English word. Block 1 is `@match case-sensitive` for exactly those —
+#   `Word`/word, `Excel`/excel, `Access`/access, `Teams`/teams, `Windows`/windows,
+#   `Exchange`/exchange, `Outlook`/outlook, `Catalyst`/catalyst, `Nexus`/nexus, `Umbrella`/umbrella,
+#   `Firepower`, `Firebox`, `Jabber`, `Falcon`, `Defender`, `Horizon`, `Android`, `Chrome`, `Safari`, `Fedora`/fedora (the hat),
+#   `Thunderbird`/thunderbird (the bird),
+#   `Azure`, `Docker`, `Helm`, `Rancher`, `Tomcat`, `Apache`, `Zoom` — and block 2 is
+#   `@match insensitive` for the names whose lowercase is not a word.
+#   It is enforced, in both directions, by the same gate that guards the vendor list
+#   (`tests/test_anon.py::ProductsCatalogTest`): a case-sensitive name must record its word, and a
+#   block-2 name may not be a word.
+#
+# WHAT IS NOT COVERED (declared, not forgotten)
+#   * VENDOR NAMES — `vendors.txt`. Ticking both gives the whole stack, covered by two placeholders.
+#   * MODEL NUMBERS AND RELEASE NUMBERS: `R740`, `DL380`, `NSa 2700`, `vSphere 7`, `Windows 11`.
+#     The family is here; the number is hostname territory (`HOST` rule), and a list of every SKU
+#     would be wrong within a quarter of being written.
+#   * PRODUCT NAMES THAT ARE A SINGLE COMMON WORD WITH NO UNAMBIGUOUS FORM: `Project`, `Publisher`,
+#     `Edge`, `View`, `Domino`, `Workspace`. They collide with prose even capitalized, and the cost
+#     of shredding a paragraph is worse than the fingerprint they carry.
+#   * A name appears in ONE of the two lists, never both (a test fails if it does), and the tie
+#     goes to what a document MEANS by the word: `Slack`, `Tenable`, `Zabbix` are listed as
+#     companies in `vendors.txt`, while `Zoom`, `GitHub`, `GitLab`, `MongoDB`, `Zerto`,
+#     `Docker` are listed here as products and platforms. The rule is enforced as "not in both",
+#     which is the part that would actually hurt.
+#
+# MEASURED COST
+#   It adds 130 entries to the scan on its own; ticking BOTH this list and `vendors.txt` gives the
+#   pair's size, which `catalogs/README.md` states (bound by `scripts/check-doc-numbers.py`). The
+#   pair's throughput is measured with
+#   `scripts/bench-check.py --entities 294 --mb 5`, and the number it prints is the honest figure:
+#   it is the pair that matters, because that is how the two lists are meant to be used. The Pi
+#   guard's cap is sized for a few hundred entries (`docs/OPEN-ISSUES.md` #26).
+#
+# HOW TO EXTEND IT
+#   Append the product, one per line, in the block its surface belongs to, then run the suite: the
+#   gate fails a case-sensitive name that does not record its word in `ProductsCatalogTest.
+#   WORD_COLLISION`, and fails a block-2 name that a word list recognises. Never invent entries.
+
+@type PRODOTTO
+
+# --- block 1: case-sensitive (the name is also an ordinary word) ---
+@match case-sensitive
+Access
+Android
+Apache
+Azure
+Catalyst
+Chrome
+Defender
+Docker
+Excel
+Exchange
+Falcon
+Fedora
+Firebox
+Firepower
+Helm
+Horizon
+Jabber
+Nexus
+Outlook
+Rancher
+Safari
+Teams
+Thunderbird
+Tomcat
+Umbrella
+Windows
+Word
+Zoom
+
+# --- block 2: case-insensitive (the lowercase is not a word) ---
+@match insensitive
+ACI
+AHV
+AirOS
+AlmaLinux
+Ansible
+AnyConnect
+Arcserve UDP
+ArcSight
+Backup Exec
+CentOS
+Chrome OS
+Data Protector
+Debian
+Elasticsearch
+Entra ID
+ESXi
+Firefox
+FortiAnalyzer
+FortiClient
+FortiGate
+FortiManager
+FortiOS
+FortiSwitch
+FortiWeb
+FreeNAS
+GitHub
+GitLab
+GlobalProtect
+Hyper-V
+IdeaPad
+iDRAC
+IIS
+Intune
+iOS
+IronPort
+JBoss
+Jenkins
+Junos
+Kafka
+Kubernetes
+Lotus Notes
+macOS
+MariaDB
+Mattermost
+Meraki
+Microsoft 365
+MongoDB
+MySQL
+Nessus
+NetBackup
+NetScaler
+NetWorker
+Nextcloud
+Nginx
+NSX
+Office 365
+Omada
+OneDrive
+OneNote
+OpenShift
+openSUSE
+OPNsense
+PAN-OS
+pfSense
+PostgreSQL
+PowerEdge
+PowerPoint
+PowerScale
+PowerStore
+PowerVault
+ProLiant
+Prometheus
+QRadar
+RabbitMQ
+Redis
+Rocky Linux
+RouterBOARD
+RouterOS
+ScreenOS
+SharePoint
+SonicOS
+Stealthwatch
+Tanzu
+Terraform
+ThinkPad
+ThinkSystem
+TrueNAS
+Ubuntu
+UniFi
+vCenter
+Visio
+vSAN
+vSphere
+VxRail
+Webex
+WebLogic
+WebSphere
+WildFly
+Windows Server
+XCP-ng
+XenServer
+Zerto

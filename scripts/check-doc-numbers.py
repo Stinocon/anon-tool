@@ -116,13 +116,19 @@ def main() -> int:
     )
 
     # 6. the counts stated for the shipped catalogs, bound to the files themselves
-    for name in ("it-cities", "vendors"):
+    catalogs = {name: ROOT / "catalogs" / f"{name}.txt" for name in ("it-cities", "vendors", "products")}
+    for name, path in catalogs.items():
         path = ROOT / "catalogs" / f"{name}.txt"
         claim(
             f"catalog size ({name})",
             rf"{anon.entity_count(anon.load_entities(path))} entries",
             "catalogs/README.md",
         )
+    # The pair is the way these two lists are meant to be used, so its size is a claim too.
+    pair = sum(
+        anon.entity_count(anon.load_entities(catalogs[name])) for name in ("vendors", "products")
+    )
+    claim("catalog pair size", rf"Ticking both lists together adds {pair} entries", "catalogs/README.md")
 
     # 7. the guard's cap, when its source is reachable (cross-repository)
     guard = next(

@@ -42,9 +42,10 @@ build: ## build the image only
 native: ## run the server directly, without Docker
 	python3 web/server.py --port $(PORT)
 
-test: ## engine + web + UI load check + doc numbers (no Docker needed)
+test: ## engine + web + local-model seam + UI load check + doc numbers (no Docker needed)
 	python3 tests/test_anon.py
 	python3 tests/test_web.py
+	python3 tests/test_suggest.py
 	node tests/ui_load_check.mjs
 	python3 scripts/check-doc-numbers.py
 

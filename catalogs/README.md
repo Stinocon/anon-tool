@@ -86,6 +86,29 @@ no per-entry exclusion). Vendors that are also ordinary words are absent on purp
 `MSI`, `AVG`, `Sharp`, `Crucial`, `Canonical`, `Meta`, `Zoom`, and `Docker`/`Kubernetes`/`Ubuntu`
 (the technology, not the firm).
 
+## `products.txt` — the product and platform list
+
+`products.txt` is the other half of the same job: 164 entries in `vendors.txt` (the companies) and
+130 entries here (products, platforms and product lines). A name lives in ONE of the two (`Fortinet` is a
+vendor, `FortiGate` is a product), and `ProductsCatalogTest` fails if a name appears in both,
+because the same surface would otherwise get two types depending on which list was ticked first.
+
+It covers the families — `FortiGate`, `PowerEdge`, `Catalyst`, `vSphere`, `Windows`, `Docker`,
+`Kubernetes` — and deliberately NOT the model or release numbers (`R740`, `DL380`, `NSa 2700`,
+`Windows 11`): those change every quarter and in a real document they arrive as hostnames, which
+the HOST rule already redacts.
+
+The block rule is the same one, enforced by the same gate, and here it has more work to do: a
+product name is very often an ordinary English word, so block 1 is long (`Word`, `Excel`, `Access`,
+`Teams`, `Windows`, `Exchange`, `Outlook`, `Catalyst`, `Nexus`, `Umbrella`, `Firepower`, `Firebox`,
+`Falcon`, `Defender`, `Horizon`, `Android`, `Chrome`, `Safari`, `Thunderbird`, `Azure`, `Docker`,
+`Helm`, `Rancher`, `Tomcat`, `Apache`, `Zoom`). The gate caught one of these during the writing:
+`Thunderbird` had been left in block 2 and the dictionary sweep refused it — the bird is a word.
+
+Ticking both lists together adds 294 entries; `scripts/bench-check.py --entities 294 --mb 5` is the
+measurement that says whether that is affordable (it is: see the tool's own output, ~1.7 MB/s
+against the guard's 12 MB / 20 s).
+
 ## Not shipped, on purpose: a phone-prefix catalog
 
 Redacting bare calling codes (`+39`, `+44`) has no real use case here:
