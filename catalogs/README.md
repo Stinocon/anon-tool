@@ -52,7 +52,7 @@ own dictionary) are on; low-signal word lists are ticked on demand.
 
 ## `vendors.txt` — the IT vendor list
 
-`vendors.txt` is the one catalog meant for every infrastructure report: 116 entries (`@type
+`vendors.txt` is the one catalog meant for every infrastructure report: 164 entries (`@type
 FORNITORE`), one per hardware and software **company** — `Fortinet` is in, `FortiGate`/`NSa`
 are not, because product families are a larger and faster-drifting list and usually arrive as
 hostnames, which the HOST rule already covers.
@@ -64,18 +64,20 @@ It is split into two blocks, and that split is the whole design:
   `Apple`/`apple`, `Juniper`, `Brother`, `Snowflake`, `Slack`, `Elastic`, `Confluence`, `Tenable`,
   `Xerox`, `Adobe` the building material, `Google`/`to google`, `Oracle`, `Intel`/"threat intel",
   `Cisco` and `Barracuda` the fish, `Siemens` the SI unit, `Okta` the cloud-cover unit, `Gigabyte`
-  the unit, `HP` horsepower, `SAP` tree sap, `Red Hat`). Matching those case-insensitively would
-  redact `dell'aria`, `un gigabyte di memoria` and a variable named `intel`;
+  the unit, `HP` horsepower, `SAP` tree sap, `Arista` the Italian roast, `Moxa`, `Sage`, `Zebra`,
+  `Ruckus`, `Red Hat`, `New Relic`, `Open Text`). Matching those case-insensitively would redact
+  `dell'aria`, `un gigabyte di memoria` and a variable named `intel`;
 - **block 2, `@match insensitive`** — the names whose lowercase is not a word, so a lowercase
   spelling in a filename, a hostname or a spreadsheet matches too (`aruba cloud`, `kingston RAM`,
   `un server ibm`). That is why the short all-caps brands are here (`IBM`, `AMD`, `HPE`, `APC`,
   `QNAP`, `SUSE`). The map keeps the exact spelling it found, so `SonicWall` and `sonicwall` in the
   same document are two placeholders for one company, and `deanon` restores both.
 
-The line is **measurable**: `grep -ix "<name>" /usr/share/dict/words` — a name that is a word goes
-in block 1. It is not sufficient (it misses `gigabyte`, `google`, `veritas`, `siemens`, `okta`,
-`hp`, `intel`, `xerox`), which is why `docs/OPEN-ISSUES.md` #37 asks for it to become a real gate
-with a curated list instead of a judgement nobody re-runs.
+The line is **measurable, and enforced**: `grep -ix "<name>" /usr/share/dict/words` — a name that is
+a word goes in block 1. The OS list alone is not sufficient (it misses `gigabyte`, `google`,
+`veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`, `arista`), so `VendorsCatalogTest` keeps the
+recorded word per block-1 entry and sweeps block 2 against the OS dictionary as well: a name added
+to the wrong block fails the suite instead of waiting for a review to notice.
 
 Three things it deliberately does **not** do, all stated in the file's own header: product/model
 names, the lowercase spelling of a block-1 name, and the sentence-initial Italian elision
@@ -98,8 +100,8 @@ line — and expect that interaction.
 
 ## Growing a list
 
-`it-cities.txt` (50 entries) and `vendors.txt` (116 entries) ship starter sets. Append names under the same
-header, in the block that fits the surface — a public list, one name per line — and never generate
+`it-cities.txt` (50 entries) and `vendors.txt` (164 entries) ship starter sets. Append names under
+the same header, in the block that fits the surface — a public list, one name per line — and never generate
 names: a list that *looks* complete but is not would create a false sense of coverage. The count
 stated in `vendors.txt` and here is bound to the file by `scripts/check-doc-numbers.py`, so adding
 an entry means updating the number in the same change.

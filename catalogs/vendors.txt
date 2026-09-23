@@ -3,7 +3,11 @@
 # WHAT IT IS
 #   The manufacturers whose names appear in an infrastructure report: servers, network gear,
 #   storage, printers, endpoints, security and infrastructure software. ONE LINE PER COMPANY, not
-#   per product — `Fortinet` is here, `FortiGate`/`NSa 2700` are not.
+#   per product — `Fortinet` is here, `FortiGate`/`NSa 2700` are not. The selection is the names
+#   that actually show up in Italian client documents: the international manufacturers plus the
+#   main Italian software houses (`Zucchetti`, `TeamSystem`, `Dedagroup`, `GPI`, `Almaviva`,
+#   `Maggioli`) and the industrial-networking vendors an OT report names (`Moxa`, `Advantech`,
+#   `Belden`, `Riello`).
 #
 # WHY IT IS OPT-IN
 #   The vendor mix is part of what makes a document attributable: "firewall SonicWall, backup Veeam,
@@ -18,19 +22,29 @@
 #   `Google`/`to google`, `Oracle`/`oracle`, `Amazon` (the river), `Slack`/`slack`, `Elastic`,
 #   `Snowflake`, `Confluence`, `Tenable`, `Barracuda` (the fish), `Cisco` (the fish), `Siemens` (the
 #   SI unit), `Okta` (the cloud-cover unit), `Gigabyte` (the unit), `HP` (horsepower), `SAP` (tree
-#   sap), `Intel`/"threat intel", and the multi-word names whose every word is ordinary (`Red Hat`,
-#   `Trend Micro`, `Western Digital`, `Check Point`).
+#   sap), `Arista` (an Italian roast, and the awn of wheat), `Moxa` (burnt in moxibustion), `Sage`
+#   (the herb), `Zebra` (the animal), `Ruckus` ("a ruckus"), `Oki`, `Intel`/"threat intel", and the
+#   multi-word names whose every word is ordinary (`Red Hat`, `Trend Micro`, `Western Digital`,
+#   `Check Point`, `New Relic`, `Open Text`).
 #   Block 2 is `@match insensitive`, for names whose lowercase is NOT a word, so a lowercase
 #   spelling in a filename, a hostname or a spreadsheet matches too. That is why the short all-caps
 #   brands live there — `IBM`, `AMD`, `HPE`, `APC`, `QNAP`, `SUSE`, `ESET`, `ASUS`: none of them is
 #   a word, and `un server ibm` in a spreadsheet must be redacted as much as `IBM` in prose.
+#   A camel-case compound (`SolarWinds`, `Bitdefender`, `OpenText`) is judged by its OWN surface,
+#   not by a spaced form that does not exist in the entry: the separator rule only applies BETWEEN
+#   the words of a multi-word entry, so `SolarWinds` does NOT match "solar winds" — which is why it
+#   can stay in block 2 — while `Open Text`, being two tokens, DOES match "open text", and is
+#   therefore in block 1.
 #   Consequence to know: the map keeps the EXACT spelling it found, so a document that writes both
 #   `SonicWall` and `sonicwall` gets two placeholders for the same company (deanon restores both).
-#   THE LINE IS MEASURABLE, NOT A JUDGEMENT: a name whose lowercase appears in a word list belongs
-#   in block 1. `grep -ix "<name>" /usr/share/dict/words` is the first check — but it is NOT
-#   sufficient (it misses `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`,
-#   `xerox`), which is why it is the start of the decision and `docs/OPEN-ISSUES.md` #37 asks for a
-#   real gate.
+#   THE LINE IS MEASURABLE, AND IT IS NOW A GATE: a name whose lowercase appears in a word list
+#   belongs in block 1. `VendorsCatalogTest` enforces both directions — every block-1 name must
+#   record the ordinary word it collides with, and no block-2 name may be a word — and it sweeps
+#   block 2 against the OS dictionary as well. The OS list alone is NOT sufficient (it misses
+#   `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`, `arista`), which is
+#   why the recorded word is the primary evidence and the sweep is the net. The gate is what
+#   `docs/OPEN-ISSUES.md` #37 asked for, and what the fifteen wrong-block names of the first two
+#   reviews cost.
 #
 # WHAT IS NOT COVERED (declared, not forgotten)
 #   * PRODUCT AND MODEL NAMES (`FortiGate`, `PowerEdge`, `Catalyst`, `BIG-IP`, `vSphere`, `NSa`).
@@ -45,15 +59,18 @@
 #   * Vendors that are ordinary words with no unambiguous form are deliberately ABSENT, not
 #     forgotten: `LG`, `F5` (the bare token IS the refresh key — the company is here as
 #     `F5 Networks`), `MSI` (the Windows installer extension), `AVG`, `Sharp`, `Crucial`,
-#     `Canonical`, `Meta` (also an Italian noun), `Zoom`, `Docker`/`Kubernetes`/`Ubuntu` (the
-#     technology, not the firm).
+#     `Canonical`, `Meta` (also an Italian noun), `Zoom`, `Docker`/`Kubernetes`/`Ubuntu`/`MongoDB`
+#     (the technology, not the firm — and `mongodb` IS how a code file names the database; the
+#     clean-corpus sweep is what showed it, one line of `delegate.ts`).
 #   * This list does not make a document anonymous on its own — it removes one fingerprint among
 #     several.
 #
 # MEASURED COST
-#   Selecting it adds 116 entries to the scan. The Pi guard's cap is sized for a few hundred
-#   (`scripts/bench-check.py`: 1 000 entries 0.93 MB/s against 1.60 at 200), so this list is inside
-#   the budget; `docs/OPEN-ISSUES.md` #26 tracks the general problem.
+#   Selecting it adds 164 entries to the scan. The Pi guard's cap is sized for a few hundred
+#   (`scripts/bench-check.py`): measured at this size, `--entities 164 --mb 5` gives **1.82 MB/s**
+#   (1.42 MB/s on a 1.25 MB corpus), so the 12 MB cap needs well under half of its 20 s budget;
+#   at 1 000 entries the same tool reports 0.93 MB/s and the margin starts to go —
+#   `docs/OPEN-ISSUES.md` #26 tracks that.
 #   A clean-corpus sweep is what decided the CONTENT, and it is not a score for this file — read it
 #   with that in mind:
 #     python3 scripts/fp-sweep.py --entities catalogs/vendors.txt --show FORNITORE
@@ -71,10 +88,11 @@
 #
 # HOW TO EXTEND IT
 #   Append the company, one per line, under the block that fits its surface — under `@match
-#   case-sensitive` whenever the name is also an ordinary word or unit (check it: `grep -ix`). Never
-#   invent entries and never generate them: a list that LOOKS complete but is not creates a false
-#   sense of coverage, and the header count above is bound to the file by
-#   `scripts/check-doc-numbers.py`.
+#   case-sensitive` whenever the name is also an ordinary word or unit. Then run the suite: the gate
+#   FAILS a case-sensitive name that does not record its word in `VendorsCatalogTest.
+#   WORD_COLLISION`, and FAILS a block-2 name that a word list recognises. Never invent entries and
+#   never generate them: a list that LOOKS complete but is not creates a false sense of coverage,
+#   and the header count above is bound to the file by `scripts/check-doc-numbers.py`.
 
 @type FORNITORE
 
@@ -84,6 +102,7 @@ Acer
 Adobe
 Amazon
 Apple
+Arista
 Avast
 Axis
 Barracuda
@@ -99,9 +118,15 @@ Google
 HP
 Intel
 Juniper
+Moxa
+New Relic
+Oki
 Okta
+Open Text
 Oracle
 Red Hat
+Ruckus
+Sage
 SAP
 Siemens
 Slack
@@ -111,58 +136,88 @@ Trend Micro
 Veritas
 Western Digital
 Xerox
+Zebra
 
 # --- block 2: case-insensitive (the lowercase is not a word) ---
 @match insensitive
+A10 Networks
 Acronis
+Advantech
+Akamai
 Alcatel
+Almaviva
 AMD
 APC
 Arcserve
 Aruba
+ASRock
 ASUS
 Atlassian
+Autodesk
 Avaya
+Avira
+Belden
 Bitdefender
 Broadcom
 Citrix
+Cloudera
+Cloudflare
 Commvault
 CrowdStrike
 D-Link
 Dahua
+Darktrace
+Databricks
 Datadog
+Datalogic
 Datto
+Dedagroup
+Dropbox
+Dynatrace
 Eaton
 Epson
 Ericsson
 ESET
+Extreme Networks
 F5 Networks
+Fastly
+Forcepoint
 Fortinet
 Fujitsu
+GPI
 Grafana
 Grandstream
 Hikvision
 HPE
 Huawei
+HubSpot
 IBM
 Imperva
+JetBrains
 Kaspersky
 Kingston
+Konica Minolta
 Kyocera
 Legrand
 Lenovo
 Lexmark
+Maggioli
 McAfee
+MediaTek
 Microsoft
 MikroTik
+Mimecast
 Mitel
 Nagios
 Nakivo
 NetApp
 Netgear
+Netskope
 Nokia
 Nutanix
 NVIDIA
+Paessler
+Palo Alto Networks
 Polycom
 Proofpoint
 Proxmox
@@ -171,13 +226,17 @@ Qualcomm
 Qualys
 Rapid7
 Ricoh
+Riello
 Rittal
+Rubrik
 Salesforce
 Samsung
 SanDisk
+Schneider Electric
 Seagate
 SentinelOne
 ServiceNow
+SolarWinds
 SonicWall
 Sophos
 Splunk
@@ -185,8 +244,11 @@ Supermicro
 SUSE
 Symantec
 Synology
+TeamSystem
+Teradata
 Toshiba
 TP-Link
+Trellix
 Tripp Lite
 Ubiquiti
 Veeam
@@ -196,6 +258,10 @@ WatchGuard
 Xiaomi
 Yealink
 Zabbix
+Zendesk
 Zimbra
+Zoho
 Zscaler
+ZTE
+Zucchetti
 Zyxel

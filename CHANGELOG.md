@@ -12,7 +12,7 @@ enforces that they agree.
 
 ### Added
 
-- **A vendor catalog for infrastructure reports: `catalogs/vendors.txt`** (116 entries,
+- **A vendor catalog for infrastructure reports: `catalogs/vendors.txt`** (164 entries,
   `@type FORNITORE`) — hardware and software manufacturers, one line per COMPANY, ticked on demand
   like any other catalog (`--catalogs vendors`, or the checkbox in the UI). The list is split into
   two blocks and that split is the design, with ONE rule: `@match case-sensitive` for the names whose
@@ -20,10 +20,11 @@ enforces that they agree.
   `Acer` the maple genus, `Apple`/`apple`, `Juniper`, `Brother`, `Snowflake`, `Slack`, `Elastic`,
   `Tenable`, `Xerox`, `Adobe` the building material, `Google`/`to google`, `Oracle`,
   `Intel`/"threat intel", `Cisco` and `Barracuda` the fish, `Siemens` the SI unit, `Okta` the
-  cloud-cover unit, `Gigabyte` the unit, `HP` horsepower, `SAP` tree sap, `Red Hat`) and
-  `@match insensitive` for the rest, so a lowercase spelling in a filename, a hostname or a
-  spreadsheet matches too (`un server ibm`). The rule is measurable — `grep -ix "<name>"
-  /usr/share/dict/words` — which is how the wrong-block entries below were found.
+  cloud-cover unit, `Gigabyte` the unit, `HP` horsepower, `SAP` tree sap, `Arista` the Italian roast,
+  `Moxa`, `Sage`, `Zebra`, `Ruckus`, `Red Hat`, `New Relic`, `Open Text`) and `@match insensitive`
+  for the rest, so a lowercase spelling in a filename, a hostname or a spreadsheet matches too
+  (`un server ibm`). The rule is measurable — `grep -ix "<name>" /usr/share/dict/words` — which is
+  how the wrong-block entries below were found, and it is enforced by the tests below.
   The list was sized up before shipping with `scripts/fp-sweep.py` (which now takes `--entities`, so
   a candidate list can be measured the same way): on the first candidate (54 clean source/doc files,
   measured before this file shipped) `Docker` alone accounted for 37 of the 49 hits — three quarters
@@ -46,14 +47,38 @@ enforces that they agree.
   All fifteen moved, the rule is now one line instead of a judgement call, and six wrong-block
   entries plus the under-redaction direction are pinned by
   `VendorsCatalogTest::test_no_second_block_name_is_an_ordinary_word` and
-  `::test_a_second_block_name_matches_however_it_is_capitalized`. A name added LATER is still
-  unguarded: `docs/OPEN-ISSUES.md` #37 asks for the word-list check to become a gate, and records
-  that the system word list alone would not have been enough (it misses `gigabyte`, `google`,
-  `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`).
+  `::test_a_second_block_name_matches_however_it_is_capitalized`. That pinning covered the shapes
+  that had been found and nothing else; the GATE for a name added later is the bullet after this
+  one.
   The reviews also found a tautological assertion in the size test (it compared `entity_count` with
   itself; it now reads the declared LINES, which is what catches a duplicated or silently dropped
   entry) and a vacuous one (`a4`).
-- **`VendorsCatalogTest`** (12 tests) pins the properties a data file cannot otherwise fail on:
+- **The two-block rule is now a GATE, not a convention** (`docs/OPEN-ISSUES.md` #37, closed).
+  `VendorsCatalogTest` reads the two blocks out of the FILE and enforces both directions: every
+  case-sensitive name must record the ordinary word it collides with (`WORD_COLLISION`), and no
+  block-2 name may be one of those words or a word of the OS dictionary — the sweep that catches a
+  name nobody thought about, with a VISIBLE skip when there is no dictionary to sweep (a silent
+  skip reads as "everything ran"). Both halves are needed: the OS list has no `gigabyte`, `google`,
+  `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox` or `arista` either. Proven to bite by
+  mutation, four ways: a word moved into block 2, a recorded word deleted, an unjustified
+  case-sensitive name added, and a dictionary word (`Onyx`) appended to block 2 — each fails.
+- **The list grew from 116 to 164 entries**, chosen the same way and checked by the gate above:
+  the networking and security vendors an infrastructure report names (`Palo Alto Networks`,
+  `Extreme Networks`, `A10 Networks`, `ZTE`, `SolarWinds`, `Cloudflare`, `Akamai`, `Fastly`,
+  `Netskope`, `Darktrace`, `Trellix`, `Forcepoint`, `Mimecast`, `Rubrik`, `Avira`), the compute and
+  imaging ones (`MediaTek`, `ASRock`, `Konica Minolta`, `Datalogic`, `Zebra`), the OT/industrial
+  ones (`Moxa`, `Advantech`, `Belden`, `Riello`), the software names (`JetBrains`, `Databricks`,
+  `Cloudera`, `Teradata`, `Autodesk`, `Open Text`, `Dynatrace`, `Paessler`, `Dropbox`,
+  `Zoho`, `HubSpot`, `Zendesk`, `Schneider Electric`) and the Italian software houses (`Zucchetti`,
+  `TeamSystem`, `Dedagroup`, `GPI`, `Almaviva`, `Maggioli`). Eight of them are words and went to
+  block 1 with the word recorded (`Ruckus`, `Arista`, `Oki`, `Zebra`, `Moxa`, `Sage`, `New Relic`,
+  `Open Text`). The rule survived the additions unchanged, and one thing it made explicit is why a
+  camel-case compound can stay in block 2 while `Open Text` cannot: the separator rule applies only
+  BETWEEN the words of a multi-word entry, so `SolarWinds` does not match "solar winds" while
+  `Open Text` does match "open text" — verified against the engine, not assumed. Cost checked at
+  the new size: `scripts/bench-check.py --entities 164 --mb 5` → **1.82 MB/s** (1.42 at 1.25 MB),
+  well inside the guard's 12 MB / 20 s.
+- **`VendorsCatalogTest`** (15 tests) pins the properties a data file cannot otherwise fail on:
   case-sensitivity on the homographs, whole-word anchoring (`Dell` must not match `DellOrto`), the
   case-insensitive block, the exact spelling kept in the map (`SonicWall` + `sonicwall` = two
   placeholders, declared), inertness until the catalog is selected, and — the one that would have

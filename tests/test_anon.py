@@ -922,6 +922,122 @@ class VendorsCatalogTest(unittest.TestCase):
         self.assertEqual(listing.returncode, 0, listing.stderr)
         self.assertIn(f"vendors\t{self.size} entries", listing.stdout)
 
+    # --- the gate on the block rule (docs/OPEN-ISSUES.md #37) ---
+
+    # The ordinary word each case-sensitive entry collides with. This map IS the gate: it is what
+    # turns "check whether the name is also a word" from a judgement into something that fails.
+    # Two reviews of the first version moved FIFTEEN names because nothing was watching: six were
+    # words sitting in block 2 (`gigabyte`, `red hat`, ...), and `ibm`/`amd`/`hpe`/`apc` were kept
+    # case-sensitive with no word behind them at all. The map answers both directions, and the
+    # system word list below sweeps for a name that was never noticed in the first place.
+    # The eight that a word LIST would not have caught are why both are needed: the system list has
+    # no `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox` either.
+    WORD_COLLISION = {
+        "Acer": "acer",
+        "Adobe": "adobe",
+        "Amazon": "amazon",
+        "Apple": "apple",
+        "Arista": "arista",
+        "Avast": "avast",
+        "Axis": "axis",
+        "Barracuda": "barracuda",
+        "Brother": "brother",
+        "Canon": "canon",
+        "Check Point": "check point",
+        "Cisco": "cisco",
+        "Confluence": "confluence",
+        "Dell": "dell",
+        "Elastic": "elastic",
+        "Gigabyte": "gigabyte",
+        "Google": "google",
+        "HP": "hp",
+        "Intel": "intel",
+        "Juniper": "juniper",
+        "Moxa": "moxa",
+        "New Relic": "new relic",
+        "Oki": "oki",
+        "Okta": "okta",
+        "Open Text": "open text",
+        "Oracle": "oracle",
+        "Red Hat": "red hat",
+        "Ruckus": "ruckus",
+        "SAP": "sap",
+        "Sage": "sage",
+        "Siemens": "siemens",
+        "Slack": "slack",
+        "Snowflake": "snowflake",
+        "Tenable": "tenable",
+        "Trend Micro": "trend micro",
+        "Veritas": "veritas",
+        "Western Digital": "western digital",
+        "Xerox": "xerox",
+        "Zebra": "zebra",
+    }
+    SYSTEM_DICTIONARIES = ("/usr/share/dict/words", "/usr/share/dict/american-english")
+
+    def blocks(self) -> tuple[list[str], list[str]]:
+        """(case-sensitive, insensitive) as declared in the FILE — the input the gate reads."""
+        first: list[str] = []
+        second: list[str] = []
+        current: list[str] | None = None
+        for line in self.CATALOG.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped == "@match case-sensitive":
+                current = first
+            elif stripped == "@match insensitive":
+                current = second
+            elif stripped and not stripped.startswith(("#", "@")) and current is not None:
+                current.append(stripped)
+        return first, second
+
+    def system_words(self) -> set[str]:
+        """The lowercase words of the OS dictionary; empty when there is none (see the SKIP)."""
+        words: set[str] = set()
+        for path in self.SYSTEM_DICTIONARIES:
+            candidate = Path(path)
+            if candidate.is_file():
+                # Only lowercase entries: a Capitalized proper noun in the dictionary is a NAME,
+                # not the ordinary word this rule is about.
+                words |= {
+                    word.strip()
+                    for word in candidate.read_text(errors="replace").splitlines()
+                    if word.strip().islower() and "'" not in word
+                }
+        return words
+
+    def test_every_case_sensitive_name_records_its_ordinary_word(self) -> None:
+        case_sensitive, _ = self.blocks()
+        self.assertEqual(
+            [name for name in case_sensitive if name not in self.WORD_COLLISION],
+            [],
+            "case-sensitive name with no recorded ordinary word — move it to block 2 or record the word",
+        )
+        self.assertEqual(
+            [name for name in self.WORD_COLLISION if name not in case_sensitive],
+            [],
+            "the word map names something that is not in block 1 any more",
+        )
+
+    def test_no_case_insensitive_name_is_an_ordinary_word(self) -> None:
+        """The direction that shredded reports: a word in block 2 is redacted in lowercase."""
+        _, insensitive = self.blocks()
+        collisions = set(self.WORD_COLLISION.values())
+        for name in insensitive:
+            self.assertNotIn(name.casefold(), collisions, f"{name!r} is in block 2 and is an ordinary word")
+
+    def test_the_system_word_list_finds_no_collision_either(self) -> None:
+        """The sweep for the name nobody thought about — skipped VISIBLY when there is no list."""
+        words = self.system_words()
+        if not words:
+            self.skipTest(f"no system dictionary at {', '.join(self.SYSTEM_DICTIONARIES)}")
+        print(f"vendors gate: sweeping block 2 against {len(words)} system words", file=sys.stderr)
+        _, insensitive = self.blocks()
+        self.assertEqual(
+            [name for name in insensitive if name.casefold() in words],
+            [],
+            "block 2 holds a name that is an ordinary word in the system dictionary",
+        )
+
     # --- why the first block is case-sensitive ---
 
     def test_the_italian_elision_is_not_redacted(self) -> None:

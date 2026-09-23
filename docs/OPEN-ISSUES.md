@@ -302,6 +302,24 @@ Both residuals are closed:
   top of the file, the Markdown and the decoded copies. The docker smoke now downloads the document
   through that endpoint and inspects its parts.
 
+## Closed in the sixth pass (2026-09-23)
+
+The vendor list: it exists, it was reviewed twice, and the rule that makes it usable is now enforced.
+
+| # | What it was | How it is closed | Evidence |
+|---|---|---|---|
+| 37 | **The two-block rule of `catalogs/vendors.txt` was a prose convention, not an enforced invariant.** Two adversarial reviews of the first version moved FIFTEEN names between the blocks — six ordinary words in the case-insensitive one (`gigabyte`, `red hat`, `avast`, `veritas`, `trend micro`, `western digital`), three needlessly case-sensitive (`aruba`, `kingston`, `eaton`), `cisco` (a fish, and an enum-listed word) put in the wrong block BY the fix itself, `okta` (a cloud-cover unit), and `ibm`/`amd`/`hpe`/`apc` kept case-sensitive on a rationale that was simply false — they are neither words nor identifiers, which made `un server ibm` a MISS. | `VendorsCatalogTest` reads the two blocks out of the FILE and enforces BOTH directions: every case-sensitive name must record the ordinary word it collides with (`WORD_COLLISION`), and no block-2 name may be one of those words or a word of the OS dictionary. The OS list alone is not enough (no `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`, `arista` in it), which is why the recorded word is the primary evidence and the sweep is the net. | Proven to bite by mutation, four ways: a word moved into block 2, a recorded word deleted, an unjustified case-sensitive name added, and a dictionary word (`Onyx`) appended to block 2 — `test_every_case_sensitive_name_records_its_ordinary_word`, `test_no_case_insensitive_name_is_an_ordinary_word`, `test_the_system_word_list_finds_no_collision_either`. The sweep SKIPS VISIBLY when there is no dictionary to read. |
+
+Also in this pass: the list grew from 116 to **164 entries** (the international vendors an
+infrastructure report names, the OT/industrial ones, and the main Italian software houses),
+chosen by the same rule and checked by the gate above — the eight additions that are ordinary
+words (`Ruckus`, `Arista`, `Oki`, `Zebra`, `Moxa`, `Sage`, `New Relic`, `Open Text`) carry their
+word, and the cost was re-measured at the new size (`scripts/bench-check.py --entities 164 --mb 5`,
+1.82 MB/s against the guard's 12 MB / 20 s). Declared and NOT closed: product and model names
+(`FortiGate`, `PowerEdge`, `BIG-IP`) remain out of scope by design, and the sentence-initial
+Italian elision (`Dell'azienda risulta…`) remains a KNOWN false positive that the format cannot
+express an exclusion for.
+
 ## To-do — the whole list, in the order I would take it
 
 One ordered list. The **IDs are stable references, not an order**: 1-11 are the items closed above,
@@ -329,7 +347,7 @@ old reference can never point at a different item.
 | 17 | 26 | **Guard throughput vs dictionary size.** The cap is derived from a measurement, but that measurement assumed a small dictionary. Measured today (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s · 1 000 → 0.93 · 4 000 → 0.37 · 7 900 → 0.20. At 1 000 entries the 12 MB cap already needs 13 s of a 20 s budget; at 4 000 it exceeds it. Either measure at run time or size the cap against a declared entry count. | 12 MB / 20 s were sized on this Mac with a few hundred entries; the margin is not a property of the guard, it is a property of the dictionary. | medium |
 | 18 | 36 | ~~**A symlinked FILE inside a `--batch` tree is followed** even when the target is outside the tree or inside the private store.~~ **Fixed**: the walk resolves each candidate and skips it — saying which reason — when the target is inside the private store or leaves the scan root. A test with both kinds of link fails against the old code. The scope is the tree the operator named; a link is a way of naming something else. A HARD link is not covered (it is not dereferenceable): it resolves inside the root, so it is processed — benign, because the output is redacted and creating one needs write access to the tree, but it is the honest boundary of the fix. | `--batch` was fixed, but silently FOLLOWING a link is the same class of mistake: the tool processed a file nobody put in scope, and the private store's maps are exactly what must not leave it. | small |
 | 19 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
-| 20 | 37 | **The two-block rule of `catalogs/vendors.txt` is a prose convention, not an enforced invariant.** Two adversarial reviews of the first version moved FIFTEEN names between the blocks — six sitting in the case-insensitive one where they collide with an ordinary word (`gigabyte`, `red hat`, `avast`, `veritas`, `trend micro`, `western digital`), three needlessly case-sensitive (`aruba`, `kingston`, `eaton`), `cisco` put in the wrong block BY the fix itself, `okta` (a cloud-cover unit), and `ibm`/`amd`/`hpe`/`apc` kept case-sensitive on a rationale that was simply false — they are neither words nor identifiers, which made `un server ibm` a MISS. The wrong-block cases are pinned now, and `grep -ix "<name>" /usr/share/dict/words` finds most of them — but the system word list alone is NOT enough (it misses `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`) and a name added LATER is still unguarded. The gate would be a `scripts/check-doc-numbers.py`-style check: every block-2 surface tested against a curated word list (the system list plus the misses above), failing the suite when a vendor name is also a word. | The class is cheap to reintroduce (one `@match` line or one appended name) and invisible in both directions — a report that comes back shredded, or a vendor left in the document. | small |
+| 20 | 37 | **The two-block rule of `catalogs/vendors.txt` is a prose convention, not an enforced invariant** — CLOSED in the sixth pass (see above): `VendorsCatalogTest` fails a name in the wrong block, in both directions, and sweeps block 2 against the OS dictionary. Two adversarial reviews of the first version moved FIFTEEN names — six ordinary words in the case-insensitive block (`gigabyte`, `red hat`, `avast`, `veritas`, `trend micro`, `western digital`), three needlessly case-sensitive (`aruba`, `kingston`, `eaton`), `cisco` put in the wrong block BY the fix itself, `okta` (a cloud-cover unit), and `ibm`/`amd`/`hpe`/`apc` kept case-sensitive on a rationale that was false, which made `un server ibm` a MISS. |  | — |
 
 ### Hygiene note kept from this pass
 
