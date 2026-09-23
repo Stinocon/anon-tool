@@ -165,6 +165,35 @@
       </div>
       <p class="muted small">File: <code id="entities-path">~/.anon/entities.txt</code> — resta sulla tua macchina, fuori da ogni repository.</p>
     </div>
+
+    <!-- Il pannello compare solo se il server è stato avviato con --suggest-url/--suggest-model:
+         senza modello configurato non esiste, invece di esistere e fallire. -->
+    <div class="card" id="suggest-card" hidden>
+      <h2>Suggerimenti dal modello locale</h2>
+      <p class="muted small">
+        Il testo che incolli qui va a un endpoint <strong>su questa macchina</strong> (loopback): non
+        esce da qui. Il modello <em>propone</em> stringhe da redigere; sei tu ad approvarle, e
+        l'approvazione le aggiunge al dizionario qui sopra — l'unico posto da cui il motore redige.
+        Il pannello non scrive nulla da solo.
+      </p>
+      <p class="muted small">Modello: <code id="suggest-backend">—</code></p>
+      <textarea id="suggest-text" rows="6" spellcheck="false"
+        placeholder="…incolla qui il testo da far leggere al modello locale"
+        aria-label="Testo per i suggerimenti"></textarea>
+      <div class="actions">
+        <button id="suggest-run" class="primary">Suggerisci</button>
+        <span id="suggest-status" class="status" role="status" aria-live="polite"></span>
+      </div>
+      <p class="hint" id="suggest-hint">
+        Un modello <em>reasoning</em> può impiegare decine di secondi, e può non rispondere affatto:
+        in quel caso lo dice l'errore, perché un errore non è «niente da segnalare».
+      </p>
+      <div id="suggest-list" class="suggest-list"></div>
+      <div class="actions" id="suggest-actions" hidden>
+        <button id="suggest-add" class="primary">Aggiungi al dizionario</button>
+        <span class="muted small">poi premi <strong>Salva</strong> e rilancia l'anonimizzazione</span>
+      </div>
+    </div>
   </section>
 </main>
 

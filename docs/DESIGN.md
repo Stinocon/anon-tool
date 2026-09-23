@@ -209,9 +209,16 @@ Three properties are enforced there, each with its own test:
   candidates to review, the same meaning as `--audit`); approving one is a human act, and applying
   it is `anon.py`'s job through the dictionary.
 
-What is still open (`docs/OPEN-ISSUES.md` #17) is not the plumbing: it is a model worth running on
-this machine and the approval step in the UI. Until then the scaffold refuses to be useful by
-accident — with no `--url`/`--model` it suggests nothing and says so.
+The approval step exists too, in the **Dizionario** tab of the UI (`--suggest-url/--suggest-model`
+on the server; off without them). It appends the approved lines to the dictionary file being
+edited — the write path that already exists — and the operator still presses Save and re-runs the
+redaction: the seam never writes.
+
+What remains open (`docs/OPEN-ISSUES.md` #17) is a model worth running. Measured with the local
+MTPLX Qwen3.5-9B on this machine: 138 s and 4096 tokens for one sentence, `finish_reason: length`,
+empty answer — a reasoning model that thinks until it runs out of budget. The seam reported the
+failure (`--max-tokens` is configurable, the prompt asks for JSON only, `reasoning_content` is read
+as a fallback), so the deficit is the model's, not the plumbing's.
 ## 8. Known limits (deliberate)
 
 - contextual references ("the client from Ancona") — a human read is still required;

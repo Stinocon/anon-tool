@@ -48,6 +48,7 @@ WEB_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(WEB_DIR.parent))
 import anon  # noqa: E402
 import deanon as deanon_engine  # noqa: E402
+import suggest as suggest_engine  # noqa: E402
 
 
 def _dictionary_path(raw: object) -> tuple[str, Path]:
@@ -136,6 +137,33 @@ def _resolve(catalogs: str | None, patterns: str | None):
     """Turn UI selections into (entities, families) using the engine's own resolvers."""
     request = argparse.Namespace(entities=None, catalogs=catalogs or None, patterns=patterns or None)
     return anon.resolve_entities(request), anon.resolve_families(request)
+
+
+# The local-model seam: OFF unless the operator configures it. There is deliberately NO default
+# endpoint — a default pointing at a server that is not running is an error that looks like a
+# configuration. `suggest.py` refuses anything that is not loopback at construction time, so the
+# address cannot leave this machine even if a remote URL is passed to the flag.
+SUGGEST_BACKEND: suggest_engine.Backend | None = None
+
+
+def build_suggest_backend(args: argparse.Namespace) -> suggest_engine.Backend | None:
+    """The backend from the flags, or None when the seam is not configured.
+
+    Built once at STARTUP, not per request: a bad endpoint (a remote host, a typo in the scheme)
+    must fail at launch with a message, not at the first click.
+    """
+    if not args.suggest_url and not args.suggest_model:
+        return None
+    if not args.suggest_url or not args.suggest_model:
+        raise ValueError("--suggest-url and --suggest-model go together")
+    return suggest_engine.LoopbackBackend(
+        args.suggest_url,
+        args.suggest_model,
+        api_key=(args.suggest_key or "").strip() or None,
+        headers=suggest_engine.parse_headers(args.suggest_header),
+        max_tokens=args.suggest_max_tokens,
+        timeout=args.suggest_timeout,
+    )
 
 
 def _map_path(map_id: str) -> Path:
@@ -569,8 +597,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._save_entities()
             elif path == "/api/maps/reveal":
                 self._reveal_map()
+            elif path == "/api/suggest":
+                self._suggest()
             else:
                 self._error(404, "not found")
+        except suggest_engine.BackendError as exc:
+            # A local model that did not answer is an UPSTREAM failure, never an empty list: an
+            # empty list would read as "nothing sensitive found".
+            self._error(502, f"the local model did not answer: {exc}")
         except ValueError as exc:
             self._error(400, str(exc))
         except Exception as exc:  # noqa: BLE001 - never leak a traceback body
@@ -585,6 +619,8 @@ class Handler(BaseHTTPRequestHandler):
             "patterns": list(anon.PATTERN_FAMILIES),
             "maps_count": len(self._map_files()),
             "converter": CONVERTER.is_file(),
+            "suggest": SUGGEST_BACKEND is not None,
+            "suggest_backend": SUGGEST_BACKEND.name if SUGGEST_BACKEND else None,
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),
             "entities_paths": {name: str(path) for name, path in anon.DICTIONARIES.items()},
@@ -592,6 +628,21 @@ class Handler(BaseHTTPRequestHandler):
             # before spending the transfer): a hard-coded copy on the page would drift from this.
             "max_upload_bytes": MAX_BODY_BYTES,
         }
+
+    def _suggest(self) -> None:
+        """Proposals from the local model. Writes NOTHING: the operator approves them one by one."""
+        if SUGGEST_BACKEND is None:
+            raise ValueError(
+                "the local model is not configured: start the server with --suggest-url and "
+                "--suggest-model (a loopback address only)"
+            )
+        payload = self._read_json()
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('"text" is required')
+        entities, families = _resolve(payload.get("catalogs"), payload.get("patterns"))
+        report = suggest_engine.suggest(text, SUGGEST_BACKEND, entities=entities, families=families)
+        self._json({"schema": anon.SCHEMA, "mode": "suggest", **report})
 
     def _map_files(self) -> list[Path]:
         if not anon.DEFAULT_MAPS.is_dir():
@@ -805,6 +856,33 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"requests per minute allowed on /api/* (default: {DEFAULT_RATE_LIMIT}; 0 disables the limit)",
     )
     parser.add_argument(
+        "--suggest-url",
+        help="loopback endpoint of a local model, OpenAI-compatible (e.g. "
+        "http://127.0.0.1:8000/v1/chat/completions); without it the suggestion panel stays off",
+    )
+    parser.add_argument("--suggest-model", help="model name, as the local server knows it")
+    parser.add_argument("--suggest-key", help="a bearer key for the local model, when it wants one")
+    parser.add_argument(
+        "--suggest-header",
+        action="append",
+        metavar="'Nome: valore'",
+        help="extra header for the local model (repeatable); a reasoning model may need none of this, "
+        "but some servers ask for a client tag",
+    )
+    parser.add_argument(
+        "--suggest-max-tokens",
+        type=int,
+        default=suggest_engine.DEFAULT_MAX_TOKENS,
+        help=f"generation budget for the local model (default {suggest_engine.DEFAULT_MAX_TOKENS}); a "
+        "reasoning model spends it thinking and may need far more",
+    )
+    parser.add_argument(
+        "--suggest-timeout",
+        type=float,
+        default=suggest_engine.DEFAULT_TIMEOUT,
+        help=f"seconds to wait for the local model (default {suggest_engine.DEFAULT_TIMEOUT:g})",
+    )
+    parser.add_argument(
         "--allow-lan",
         action="store_true",
         help="permit a non-loopback bind — the UI has NO authentication, so this exposes your "
@@ -814,7 +892,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global SUGGEST_BACKEND
     args = build_parser().parse_args(argv)
+    try:
+        SUGGEST_BACKEND = build_suggest_backend(args)
+    except ValueError as exc:
+        print(f"server: {exc}", file=sys.stderr)
+        return 2
     loopback = args.host in ("127.0.0.1", "localhost", "::1")
     if not loopback and not args.allow_lan:
         print(

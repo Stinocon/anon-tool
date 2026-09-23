@@ -52,6 +52,9 @@ DEFAULT_TIMEOUT = 60.0
 # What a local model is asked to SEND is bounded separately from what it may read: the engine's caps
 # (160 MB upload, 12 MB scan) are sized for a scanner, not for a 32k-token context window.
 DEFAULT_MAX_CHARS = 20_000
+# A reasoning model needs room to think before it answers; too small a value spends the budget on
+# `reasoning_content` and returns an empty `content`.
+DEFAULT_MAX_TOKENS = 1024
 MIN_VALUE_LENGTH = 3
 MAX_OCCURRENCES = 20
 
@@ -141,7 +144,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         )
 
 
-def _http_post(payload: dict[str, object], url: str, timeout: float) -> str:
+def parse_headers(pairs: list[str] | None) -> dict[str, str]:
+    """`--header "Name: value"` (repeatable) into a dict, refusing anything malformed.
+
+    A local server often wants its own header (MTPLX tags the client, proxies want a key): an
+    unparsable header is a mistake that would otherwise be sent as a literal name.
+    """
+    headers: dict[str, str] = {}
+    for pair in pairs or []:
+        name, sep, value = pair.partition(":")
+        if not sep or not name.strip():
+            raise ValueError(f'--header wants "Name: value", found {pair!r}')
+        headers[name.strip()] = value.strip()
+    return headers
+
+
+def _http_post(payload: dict[str, object], url: str, timeout: float, headers: dict[str, str]) -> str:
     """The default transport: one POST, no retries, no redirects anywhere, no proxies.
 
     Two environment-driven escapes are closed here rather than assumed closed:
@@ -154,15 +172,18 @@ def _http_post(payload: dict[str, object], url: str, timeout: float) -> str:
     """
     body = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
     )
     opener = urllib.request.build_opener(_NoRedirect(), urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=timeout) as response:
         return response.read().decode("utf-8", "replace")
 
 
-Transport = Callable[[dict[str, object], str, float], str]
-"""A transport takes (payload, url, timeout) and returns the RAW HTTP BODY as text."""
+Transport = Callable[[dict[str, object], str, float, dict[str, str]], str]
+"""A transport takes (payload, url, timeout, headers) and returns the RAW HTTP BODY as text."""
 
 
 class Backend(Protocol):
@@ -198,12 +219,23 @@ class LoopbackBackend:
         model: str,
         timeout: float = DEFAULT_TIMEOUT,
         transport: Transport | None = None,
+        api_key: str | None = None,
+        headers: dict[str, str] | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self.url = check_loopback(url)
         self.model = model
         self.timeout = timeout
         self.transport = transport or _http_post
-        self.name = f"{urllib.parse.urlsplit(self.url).netloc}/{model}"
+        self.max_tokens = max_tokens
+        self.headers = dict(headers or {})
+        # An explicit `--header Authorization:` wins over `--api-key`: the operator wrote it by hand.
+        if api_key and not any(name.lower() == "authorization" for name in self.headers):
+            self.headers["Authorization"] = f"Bearer {api_key}"
+        # host:port only: a URL may carry userinfo (`http://user:secret@127.0.0.1:8000/`), and this
+        # name ends up in `/api/state` and in every response. Credentials stay out of the report.
+        parts = urllib.parse.urlsplit(self.url)
+        self.name = f"{parts.hostname}:{parts.port or ''}/{model}"
 
     def complete(self, prompt: str) -> str:
         payload: dict[str, object] = {
@@ -213,10 +245,13 @@ class LoopbackBackend:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0,
+            # A REASONING model spends this budget thinking and may return an empty `content`: too
+            # small a value turns a good answer into "no JSON". See `_content_of` for the fallback.
+            "max_tokens": self.max_tokens,
             "stream": False,
         }
         try:
-            raw = self.transport(payload, self.url, self.timeout)
+            raw = self.transport(payload, self.url, self.timeout, self.headers)
         except Exception as exc:  # noqa: BLE001 - every transport failure is the same failure here
             raise BackendError(f"the backend did not answer: {type(exc).__name__}: {exc}") from exc
         return _content_of(raw)
@@ -234,11 +269,22 @@ def _content_of(raw: str) -> str:
     if error:
         raise BackendError(f"the backend reported an error: {str(error)[:200]}")
     try:
-        content = body["choices"][0]["message"]["content"]
+        message = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise BackendError("the backend answered without choices[0].message.content") from exc
+        raise BackendError("the backend answered without choices[0].message") from exc
+    if not isinstance(message, dict):
+        raise BackendError("choices[0].message is not an object")
+    content = message.get("content")
     if not isinstance(content, str):
         raise BackendError("the assistant content is not a string")
+    if not content.strip():
+        # A reasoning model (Qwen/MTPLX, and the same shape from others) can return an EMPTY
+        # `content` with the answer in `reasoning_content`. Reporting "the answer holds no JSON"
+        # for a model that did answer is a lie about the failure, so the thinking text is used as
+        # a fallback — the engine still only reads JSON out of it.
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            content = reasoning
     return content
 
 
@@ -324,6 +370,7 @@ def suggest(
     backend: NullBackend | LoopbackBackend,
     *,
     entities: list[anon.Entity] | None = None,
+    families: set[str] | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
     limit: int = 100,
 ) -> dict[str, object]:
@@ -334,7 +381,9 @@ def suggest(
     human approves.
     """
     entities = entities or []
-    detected = anon.detect(text, entities)
+    # The same pattern families the operator selected: a deselected rule must not keep marking a
+    # proposal as "already detected", or the report would describe a run that did not happen.
+    detected = anon.detect(text, entities, families=families)
     analyzed = text[:max_chars]
     answer = backend.complete(analyzed)
     proposals = parse_candidates(answer, text, detected)[:limit]
@@ -364,7 +413,14 @@ def build_backend(args: argparse.Namespace) -> NullBackend | LoopbackBackend:
     model = (args.model or "").strip()
     if not url or not model:
         raise ValueError("--url and --model go together, and neither may be empty")
-    return LoopbackBackend(url, model, timeout=args.timeout)
+    return LoopbackBackend(
+        url,
+        model,
+        timeout=args.timeout,
+        api_key=(args.api_key or "").strip() or None,
+        headers=parse_headers(args.header),
+        max_tokens=args.max_tokens,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -375,12 +431,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("file", help="text file to read (never modified)")
     parser.add_argument("--entities", action="append", metavar="PATH", help="dictionary (repeatable)")
     parser.add_argument("--catalogs", help="comma-separated catalog names from ~/.anon/catalogs/")
+    parser.add_argument("--patterns", help="pattern groups to apply (same names as anon.py)")
     parser.add_argument(
         "--url",
         help="loopback endpoint, OpenAI-compatible: Ollama http://127.0.0.1:11434/v1/chat/completions, "
         "LM Studio :1234, llama.cpp :8080. A non-loopback host is refused.",
     )
     parser.add_argument("--model", help="model name, as the local server knows it")
+    parser.add_argument("--api-key", help="sent as `Authorization: Bearer <key>` (a local server may want one)")
+    parser.add_argument(
+        "--header",
+        action="append",
+        metavar="'Name: value'",
+        help="extra request header (repeatable), e.g. --header 'x-mtplx-client: pi'",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help=f"generation budget; a reasoning model needs room to think (default {DEFAULT_MAX_TOKENS})",
+    )
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help=f"seconds (default {DEFAULT_TIMEOUT:g})")
     parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                         help=f"how much of the document to send (default {DEFAULT_MAX_CHARS}); always declared")
@@ -411,12 +481,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         entities = anon.resolve_entities(args)
+        families = anon.resolve_families(args)
     except (ValueError, OSError) as exc:
         print(f"suggest: {exc}", file=sys.stderr)
         return 2
 
     try:
-        report = suggest(text, backend, entities=entities, max_chars=args.max_chars, limit=args.limit)
+        report = suggest(
+            text, backend, entities=entities, families=families,
+            max_chars=args.max_chars, limit=args.limit,
+        )
     except BackendError as exc:
         print(f"suggest: {exc}", file=sys.stderr)
         return 2  # a failed backend is an ERROR, never "nothing found"

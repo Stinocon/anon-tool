@@ -83,9 +83,169 @@ class StaticUiTest(unittest.TestCase):
         self.assertIn("REVEAL_TTL_MS", self.JS)
         self.assertIn('$("hide-map").addEventListener', self.JS)
 
+    def test_the_model_output_reaches_the_page_as_text_only(self) -> None:
+        """A model answer is untrusted input: it must never be assigned as HTML.
+
+        The DOM harness is deliberately minimal (it has no query-by-class), so this is checked at
+        the source: the panel writes every model value with `textContent`, and a regression to
+        `innerHTML` fails HERE. Verified by mutation — switching that one line to innerHTML leaves
+        every other check green.
+        """
+        self.assertIn("value.textContent = proposal.value", self.JS)
+        self.assertNotIn("innerHTML = proposal", self.JS)
+        self.assertNotIn("innerHTML = value", self.JS)
+
+    def test_a_value_that_cannot_be_a_dictionary_line_is_not_appended(self) -> None:
+        """A dictionary line is `TIPO|valore`: a value with a pipe or a newline, written as is,
+        would be parsed as several entries — or as a `@type` directive. It is refused and named."""
+        self.assertIn("const dictionaryLine = (type, value) =>", self.JS)
+        self.assertIn(r"/[\n\r|]/.test(value)", self.JS)
+        # The CALL, not just the helper: asserting that the filter exists while nothing uses it is
+        # an assertion that cannot fail. (Measured: removing the call left the suite green.)
+        self.assertIn("dictionaryLine(type, proposal.value)", self.JS)
+        self.assertIn("non aggiunte", self.JS)
+
     def test_a_capped_candidate_scan_is_stated_out_loud(self) -> None:
         """`candidates_capped` means the list is partial: silence would read as 'nothing found'."""
         self.assertIn("candidates_capped", self.JS)
+
+
+class SuggestTest(unittest.TestCase):
+    """The local-model seam from the UI: proposals, and the failures that must NOT look empty.
+
+    The model is a real loopback HTTP server answering a canned OpenAI body, and the app server is
+    the real one started with `--suggest-url`: the path exercised here is the path that runs.
+    """
+
+    ANSWER = json.dumps({"candidates": [
+        {"value": "Contoso", "type": "AZIENDA", "reason": "cliente"},
+        {"value": "ACME Holdings", "type": "AZIENDA", "reason": "non e' nel testo"},
+    ]})
+
+    @staticmethod
+    def _model_server(answer: str):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                body = json.dumps({"choices": [{"message": {"content": answer}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    @staticmethod
+    def _spawn(tmp: Path, *extra: str):
+        port = free_port()
+        process = subprocess.Popen(
+            [sys.executable, str(SERVER), "--port", str(port), *extra],
+            env={**os.environ, "ANON_HOME": str(tmp)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.time() + 15
+        page = None
+        while time.time() < deadline:
+            if process.poll() is not None:
+                raise AssertionError(f"server died: {process.stderr.read()}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                    page = response.read().decode()
+                break
+            except Exception:  # noqa: BLE001 - still starting
+                time.sleep(0.2)
+        if page is None:
+            raise AssertionError("server did not start")
+        match = re.search(r'window\.ANON_TOKEN = "([^"]+)"', page)
+        assert match, "token not injected into the page"
+        return process, port, match.group(1)
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-web-suggest-"))
+        (self.tmp / "maps").mkdir()
+        (self.tmp / "catalogs").mkdir()
+        self.model = self._model_server(self.ANSWER)
+        self.process, self.port, self.token = self._spawn(
+            self.tmp,
+            "--suggest-url", f"http://127.0.0.1:{self.model.server_address[1]}/v1/chat/completions",
+            "--suggest-model", "fake",
+        )
+
+    def tearDown(self) -> None:
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        self.model.shutdown()
+        self.model.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def call(self, path: str, payload: dict | None = None, server: tuple | None = None) -> tuple[int, dict]:
+        process, port, token = server or (self.process, self.port, self.token)
+        data = json.dumps(payload).encode() if payload is not None else None
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=data,
+            headers={TOKEN_HEADER: token, "Content-Type": "application/json"}, method="POST" if data else "GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    def test_the_state_names_the_local_model(self) -> None:
+        status, body = self.call("/api/state")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["suggest"])
+        self.assertIn("fake", body["suggest_backend"])
+
+    def test_proposals_are_located_and_a_hallucination_is_dropped(self) -> None:
+        status, body = self.call("/api/suggest", {"text": "Il cliente Contoso ha rinnovato."})
+        self.assertEqual(status, 200, body)
+        self.assertEqual([item["value"] for item in body["candidates"]], ["Contoso"])
+        self.assertNotIn("ACME Holdings", json.dumps(body), "a value that is not in the text is dropped")
+        start, end = body["candidates"][0]["spans"][0]["start"], body["candidates"][0]["spans"][0]["end"]
+        self.assertEqual("Il cliente Contoso ha rinnovato."[start:end], "Contoso")
+
+    def test_the_seam_leaves_nothing_behind(self) -> None:
+        self.call("/api/suggest", {"text": "Il cliente Contoso ha rinnovato."})
+        self.assertEqual(list((self.tmp / "maps").glob("*.map.json")), [], "the seam writes no map")
+        self.assertEqual(sorted(path.name for path in self.tmp.iterdir()), ["catalogs", "maps"])
+
+    def test_a_backend_that_does_not_answer_is_an_error_not_an_empty_list(self) -> None:
+        # Nothing listens on this loopback port: the failure must be an ERROR, because an empty
+        # 200 would read as "nothing sensitive found".
+        process, port, token = self._spawn(
+            self.tmp, "--suggest-url", "http://127.0.0.1:9/v1/chat/completions", "--suggest-model", "dead"
+        )
+        try:
+            status, body = self.call("/api/suggest", {"text": "Contoso"}, server=(process, port, token))
+            self.assertEqual(status, 502, body)
+            self.assertIn("did not answer", body["error"])
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_without_configuration_the_endpoint_says_so(self) -> None:
+        process, port, token = self._spawn(self.tmp)
+        try:
+            status, body = self.call("/api/state", server=(process, port, token))
+            self.assertFalse(body["suggest"], "no endpoint means the seam is off")
+            status, body = self.call("/api/suggest", {"text": "Contoso"}, server=(process, port, token))
+            self.assertEqual(status, 400, body)
+            self.assertIn("not configured", body["error"])
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
 
 
 class RateLimitTest(unittest.TestCase):

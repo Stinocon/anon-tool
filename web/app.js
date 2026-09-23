@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null };
+const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestions: [] };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -255,6 +255,13 @@ async function boot() {
   // The upload cap belongs to the server: the UI states it instead of keeping its own copy.
   state.maxUploadBytes = info.max_upload_bytes || null;
   if (state.maxUploadBytes) $("upload-limit").textContent = humanSize(state.maxUploadBytes);
+
+  // Il seam verso un modello locale esiste solo se il server e' stato avviato con
+  // --suggest-url/--suggest-model: senza modello il pannello non si mostra, invece di mostrarsi e
+  // fallire al primo clic.
+  state.suggest = Boolean(info.suggest);
+  $("suggest-card").hidden = !state.suggest;
+  if (state.suggest) $("suggest-backend").textContent = info.suggest_backend || "modello locale";
 
   const catalogs = info.catalogs || [];
   $("catalogs").innerHTML = "";
@@ -613,6 +620,114 @@ $("entities-file").addEventListener("change", async (event) => {
     event.target.value = previous;
     setStatus($("entities-status"), String(error.message || error), "error");
   }
+});
+
+/* ------------------------------------------------- suggerimenti dal modello locale */
+/* Il modello PROPONE, l'operatore approva, il dizionario applica: qui non si scrive nulla finche'
+   non e' l'operatore a premere Salva sul dizionario. Un valore arriva dal modello e finisce nel DOM
+   solo con textContent: mai innerHTML con testo che non abbiamo scritto noi. */
+const SUGGEST_TYPES = ["PERSONA", "AZIENDA", "CLIENTE", "SEDE", "ALTRO"];
+
+function renderSuggestions(proposals) {
+  const list = $("suggest-list");
+  list.textContent = "";
+  state.suggestions = proposals;
+  $("suggest-actions").hidden = proposals.length === 0;
+  for (const [index, proposal] of proposals.entries()) {
+    const row = document.createElement("label");
+    row.className = "suggest-row";
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = true;
+    check.dataset.index = String(index);
+
+    const select = document.createElement("select");
+    for (const type of SUGGEST_TYPES) {
+      const option = document.createElement("option");
+      option.value = type;
+      option.textContent = type;
+      select.append(option);
+    }
+    select.value = SUGGEST_TYPES.includes(proposal.type) ? proposal.type : "ALTRO";
+
+    const value = document.createElement("code");
+    value.className = "suggest-value";
+    value.textContent = proposal.value;
+
+    const note = document.createElement("span");
+    note.className = "muted small";
+    note.textContent = `×${proposal.count}` + (proposal.overlaps_detected ? " — già rilevato dal motore" : "");
+
+    row.append(check, select, value, note);
+    list.append(row);
+  }
+}
+
+$("suggest-run").addEventListener("click", async () => {
+  const button = $("suggest-run");
+  const text = $("suggest-text").value;
+  if (!text.trim()) {
+    setStatus($("suggest-status"), "incolla prima il testo", "error");
+    return;
+  }
+  button.disabled = true;
+  setStatus($("suggest-status"), "il modello locale sta leggendo…", "");
+  try {
+    const report = await request("/api/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        catalogs: selected(".catalog"),
+        patterns: selected(".pattern"),
+      }),
+    });
+    renderSuggestions(report.candidates || []);
+    const truncated = report.truncated ? ` — inviati ${report.analyzed_chars} caratteri su ${report.chars}` : "";
+    setStatus($("suggest-status"), `${(report.candidates || []).length} proposte${truncated}`, "ok");
+  } catch (error) {
+    // Un backend che non risponde e' un ERRORE, mai una lista vuota: la lista vuota si legge come
+    // "niente da segnalare", che e' un'altra cosa.
+    renderSuggestions([]);
+    setStatus($("suggest-status"), String(error.message || error), "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+/* Una riga di dizionario e' `TIPO|valore`: un valore che contiene `|` o un a capo non e'
+   rappresentabile e, scritto cosi', verrebbe letto come PIU' voci (o come una direttiva `@type`).
+   Il valore resta nel testo e viene nominato, non aggiunto: scartarlo in silenzio sarebbe peggio. */
+const dictionaryLine = (type, value) => (/[\n\r|]/.test(value) ? null : `${type}|${value}`);
+
+$("suggest-add").addEventListener("click", () => {
+  const chosen = [];
+  const skipped = [];
+  for (const row of $("suggest-list").querySelectorAll(".suggest-row")) {
+    const check = row.querySelector("input[type=checkbox]");
+    if (!check || !check.checked) continue;
+    const proposal = state.suggestions[Number(check.dataset.index)];
+    const type = row.querySelector("select").value;
+    if (!proposal) continue;
+    const line = dictionaryLine(type, proposal.value);
+    if (line) chosen.push(line);
+    else skipped.push(proposal.value);
+  }
+  if (!chosen.length && !skipped.length) {
+    setStatus($("suggest-status"), "nessuna proposta selezionata", "error");
+    return;
+  }
+  const area = $("entities-text");
+  area.value = `${area.value.replace(/\s*$/, "")}\n${chosen.join("\n")}\n`;
+  $("save-entities").disabled = false;
+  renderSuggestions([]);
+  const added = `${chosen.length} aggiunte: premi Salva, poi rilancia l'anonimizzazione`;
+  setStatus(
+    $("suggest-status"),
+    skipped.length ? `${added} — ${skipped.length} non aggiunte (contengono «|» o un a capo)` : added,
+    skipped.length ? "error" : "ok",
+  );
 });
 
 $("save-entities").addEventListener("click", async () => {

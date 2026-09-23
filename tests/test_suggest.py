@@ -97,11 +97,14 @@ class BackendTest(unittest.TestCase):
     def test_the_request_is_openai_shaped_and_deterministic(self) -> None:
         seen: dict[str, object] = {}
 
-        def transport(payload, url, timeout):  # noqa: ANN001 - the injected transport signature
-            seen.update(payload=payload, url=url, timeout=timeout)
+        def transport(payload, url, timeout, headers):  # noqa: ANN001 - the transport signature
+            seen.update(payload=payload, url=url, timeout=timeout, headers=headers)
             return completion('{"candidates": []}')
 
-        backend = suggest.LoopbackBackend("http://127.0.0.1:11434/v1/chat/completions", "qwen", transport=transport)
+        backend = suggest.LoopbackBackend(
+            "http://127.0.0.1:11434/v1/chat/completions", "qwen", transport=transport,
+            api_key="local-key", headers={"x-mtplx-client": "pi"},
+        )
         self.assertEqual(backend.complete("testo"), '{"candidates": []}')
         payload = seen["payload"]
         self.assertEqual(payload["model"], "qwen")  # type: ignore[index]
@@ -109,9 +112,14 @@ class BackendTest(unittest.TestCase):
         self.assertFalse(payload["stream"])  # type: ignore[index]
         self.assertEqual(payload["messages"][1]["content"], "testo")  # type: ignore[index]
         self.assertIn("JSON only", payload["messages"][0]["content"])  # type: ignore[index]
+        # A reasoning model spends the budget thinking: the default must leave room for an answer.
+        self.assertGreaterEqual(payload["max_tokens"], 256)  # type: ignore[operator]
+        # The headers a local server may require (MTPLX tags the client; many want a bearer key).
+        self.assertEqual(seen["headers"]["x-mtplx-client"], "pi")
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer local-key")
 
     def test_a_failing_transport_is_an_error_never_an_empty_answer(self) -> None:
-        def transport(payload, url, timeout):  # noqa: ANN001, ARG001
+        def transport(payload, url, timeout, headers):  # noqa: ANN001, ARG001
             raise TimeoutError("no answer in 60s")
 
         backend = suggest.LoopbackBackend("http://127.0.0.1:11434/v1/chat/completions", "qwen", transport=transport)
@@ -132,6 +140,39 @@ class BackendTest(unittest.TestCase):
             )
             with self.subTest(raw=raw), self.assertRaises(suggest.BackendError):
                 backend.complete("testo")
+
+
+class HeadersTest(unittest.TestCase):
+    """`--header` and `--api-key`: what a local server may require, refused when malformed."""
+
+    def test_headers_parse_and_a_malformed_one_is_refused(self) -> None:
+        self.assertEqual(suggest.parse_headers(["x-a: 1", "X-B:due:tre"]), {"x-a": "1", "X-B": "due:tre"})
+        self.assertEqual(suggest.parse_headers(None), {})
+        for bad in ("niente-due-punti", ": valore"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                suggest.parse_headers([bad])
+
+    def test_an_explicit_authorization_header_wins_over_the_api_key(self) -> None:
+        backend = suggest.LoopbackBackend(
+            "http://127.0.0.1:8000/v1/chat/completions", "m", api_key="ignored",
+            headers={"authorization": "Custom xyz"}, transport=lambda *a: "{}",
+        )
+        self.assertEqual(backend.headers["authorization"], "Custom xyz")
+        self.assertNotIn("Authorization", backend.headers)
+
+    def test_a_reasoning_model_that_answers_in_reasoning_content(self) -> None:
+        """Qwen/MTPLX with a small budget: `content` empty, the answer in `reasoning_content`."""
+        body = json.dumps({"choices": [{"message": {
+            "role": "assistant", "content": "",
+            "reasoning_content": 'Thinking...\\n{"candidates": [{"value": "Contoso"}]}',
+        }}]})
+        proposals = suggest.parse_candidates(suggest._content_of(body), "Il cliente Contoso.")
+        self.assertEqual([p.value for p in proposals], ["Contoso"])
+
+    def test_both_content_and_reasoning_empty_is_still_a_failure(self) -> None:
+        body = json.dumps({"choices": [{"message": {"content": "   ", "reasoning_content": ""}}]})
+        with self.assertRaises(suggest.BackendError):
+            suggest.parse_candidates(suggest._content_of(body), "testo")
 
 
 class ParsingTest(unittest.TestCase):

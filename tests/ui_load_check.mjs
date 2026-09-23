@@ -104,7 +104,8 @@ const stubPayload = (url) => {
   if (String(url).includes("/api/entities")) return { text: "" };
   return {
     version: "test", schema: "anon/1", catalogs: [], patterns: ["identity"],
-    maps_count: 0, converter: false, entities_path: "/tmp/entities.txt",
+    maps_count: 0, converter: false, suggest: false, suggest_backend: null,
+    entities_path: "/tmp/entities.txt",
     max_upload_bytes: 160 * 1024 * 1024,
   };
 };
@@ -165,6 +166,13 @@ try {
   check(
     "a dropped .txt fills the textarea and enables Anonimizza",
     /Contoso/.test(document.getElementById("text-anon").value) && runAnon.disabled === false,
+  );
+
+  // Il seam verso il modello locale esiste solo se il server lo ha configurato: con
+  // `suggest: false` (lo stub) il pannello non deve comparire, invece di comparire e fallire.
+  check(
+    "the local-model panel stays hidden when no model is configured",
+    document.getElementById("suggest-card").hidden === true,
   );
 
   if (failures.length) {

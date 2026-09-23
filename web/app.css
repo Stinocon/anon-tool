@@ -252,3 +252,11 @@ button[disabled] { opacity: 0.45; cursor: not-allowed; }
   .tabs { padding: var(--space-2) var(--space-3) 0; overflow-x: auto; }
   .card { padding: var(--space-4); }
 }
+
+/* Suggerimenti dal modello locale: una riga per proposta, con tipo e casella di approvazione. */
+.suggest-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+.suggest-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.suggest-value { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 6px; overflow-wrap: anywhere;
+  /* Un valore con un a capo deve MOSTRARLO: appiattito a uno spazio sembra una riga sola. */
+  white-space: pre-wrap; }

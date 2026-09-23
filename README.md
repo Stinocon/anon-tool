@@ -207,6 +207,20 @@ part of it: it asks a loopback endpoint for candidate strings, locates them in t
 and prints them as **proposals**. It writes no redacted file and no map, and the engine never
 imports it — the arrow is one-way and tested.
 
+The same thing exists in the UI, in the **Dizionario** tab, because approving a proposal *is* a
+dictionary edit: paste the text, press *Suggerisci*, tick what is real, pick a type, and
+*Aggiungi al dizionario* appends those lines to the dictionary file you are editing. Then save and
+re-run the anonymization. The panel only exists if the server was started with the endpoint
+(`--suggest-url --suggest-model`): without a model there is nothing to show, so it is not shown.
+
+Measured on this machine, and worth knowing before you expect magic: a **reasoning** model spends
+its whole budget thinking. A local Qwen3.5-9B spent 138 s and 4096 tokens on a one-sentence text and
+still returned an empty answer — the CLI said *"the backend did not answer: …"* (exit 2) and the UI
+showed *"the local model did not answer: …"* (HTTP 502) instead of pretending it found nothing. That is the correct behaviour, and it means the
+model is the part to choose: a small instruct model, or a bigger `--max-tokens`, is the operator's
+call. What the seam guarantees is that a proposal is never taken on trust and a failure never looks
+like a clean document.
+
 ```bash
 python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
     --url http://127.0.0.1:11434/v1/chat/completions --model <nome-modello> --json
