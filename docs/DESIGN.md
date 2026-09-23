@@ -121,11 +121,23 @@ A 200-entry dictionary compiles to 400 patterns (one per normalization form). Sc
 the whole text was the entire cost of `--check`: 13.7 s for 2 MB, measured, which is what made the
 guard time out. The engine now locates candidates with ONE case-insensitive pass over the first
 token of every entry and verifies each entry anchored at those positions — the same match. The
-cost is now a function of the DICTIONARY, not only of the file: measured on a 2 MB corpus
-(`scripts/bench-check.py`), 1.60 MB/s with 200 entries, 0.93 with 1 000, 0.20 with 7 900 (the
-full-municipality size), and ~2.0 MB/s at 16 MB with a few hundred entries, where the per-run
-overhead is amortised. The guard's 12 MB cap is sized for a few hundred entries: against the full
-list it would need 60 s of a 20 s budget (OPEN-ISSUES 26). Entries with a `@context` cannot be
+index is built once per run and reused (the container path calls the scan once per XML part), and a
+position is resolved through a sub-index on the SECOND token, so entries that merely share a first
+name are not probed one by one. Measured on a 5 MB corpus (`scripts/bench-check.py`), end to end:
+1.81 MB/s with 200 entries, 1.75 with 294, 1.38 with 1 000, 0.73 with 4 000, 0.44 with 7 900 (the
+full-municipality size) — roughly twice the previous rate at every size.
+
+**What the dictionary costs is the LOCATOR, not the entries.** The first-token alternation is one
+0.39 MB/s, of which 8.8 s of 9.1 s is `alternation.finditer` alone: the catalog first tokens are
+COMMON WORDS (`windows`, `microsoft`, `apache`), they occur constantly in real text, and Python's
+`re` tries every branch of a 329-branch alternation at every position. A synthetic corpus does not
+model this — it inserts each dictionary name once, so the synthetic bench reads 1.75 MB/s at 294
+entries where a real document with the catalogs reads 0.39. The next structural step is a
+token-indexed locator (a word scan plus dict lookups) instead of the alternation; until then the
+catalogs are for smaller documents, and the **Pi guard is unaffected**: it runs `anon.py --check
+--json` without `--catalogs`, so the guarded path keeps its 12 MB / 20 s margin at 23 MB/s with the
+operator's own 12-entry dictionary (OPEN-ISSUES 26). With the catalogs loaded, the same 12 MB would
+need ~31 s of a 20 s budget. Entries with a `@context` cannot be
 found that way, so they are
 grouped by context and the group pattern is used as a locator, again with anchored verification, so
 `Roma` is still found next to `Roma Nord`.

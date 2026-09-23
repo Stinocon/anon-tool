@@ -105,9 +105,12 @@ product name is very often an ordinary English word, so block 1 is long (`Word`,
 `Helm`, `Rancher`, `Tomcat`, `Apache`, `Zoom`). The gate caught one of these during the writing:
 `Thunderbird` had been left in block 2 and the dictionary sweep refused it — the bird is a word.
 
-Ticking both lists together adds 294 entries; `scripts/bench-check.py --entities 294 --mb 5` is the
-measurement that says whether that is affordable (it is: see the tool's own output, ~1.7 MB/s
-against the guard's 12 MB / 20 s).
+Ticking both lists together adds 294 entries. `scripts/bench-check.py --entities 294 --mb 5` reports
+~1.75 MB/s, but that synthetic corpus inserts each name once — a real document mentions catalog
+names (and their common first words) constantly, and measured on one the catalogs cost a different
+order of magnitude: **0.39 MB/s on a 5 MB document, 8.8 s of it inside the first-token locator
+alone**. The guard is not affected (it does not load catalogs); `--catalogs` on a large document is
+the slow path, tracked in `docs/OPEN-ISSUES.md` #26.
 
 ## Not shipped, on purpose: a phone-prefix catalog
 
@@ -130,8 +133,9 @@ stated in `vendors.txt` and here is bound to the file by `scripts/check-doc-numb
 an entry means updating the number in the same change.
 
 Growth has a measured cost, so measure before committing to a big list. The scan slows with the
-dictionary (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s, 1 000 → 0.93, 4 000 →
-0.37, 7 900 → 0.20. At 1 000 entries the Pi guard's 12 MB cap already needs ~13 s of its 20 s
-budget, and at 4 000 it exceeds it — so a list that big would make the guard refuse every large
-document. `docs/OPEN-ISSUES.md` #26 tracks the fix; until then, a starter set is not a compromise,
+dictionary (`scripts/bench-check.py`, 5 MB corpus, end to end): 200 entries 1.81 MB/s, 294 → 1.75,
+1 000 → 1.38, 4 000 → 0.73, 7 900 → 0.44. At 4 000 entries the Pi guard's 12 MB cap needs ~16 s of
+its 20 s budget and at 7 900 it exceeds it — so a list that big would make the guard refuse every
+large document. (That law is the synthetic one; the real-document figure with the catalogs is 0.39
+MB/s, see above. The guard does not load catalogs.) `docs/OPEN-ISSUES.md` #26 tracks the fix; until then, a starter set is not a compromise,
 it is what the budget allows.

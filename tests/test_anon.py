@@ -116,6 +116,34 @@ class RoundTripTest(unittest.TestCase):
         self.assertTrue(reference, "the fixture must actually match")
         self.assertEqual(fast, reference)
 
+    def test_the_fast_scan_survives_entries_sharing_a_first_token(self) -> None:
+        """The sub-index must not narrow a bucket into a MISS.
+
+        `entity_hits` resolves a position by looking at the SECOND token of the text, so a bucket
+        whose members share one first name is the shape that breaks it if the narrowing is wrong —
+        and a miss here is an un-redacted name in an output document, the worst defect this tool
+        can have. The reference scan is the standard: identical, entry by entry.
+        """
+        path = Path(self._tmpdir) / "shared.txt"
+        shared = [f"Mario {surname}" for surname in ("Rossi", "Rossini", "Ros", "Rosa", "Rossi S.p.A")]
+        shared += [f"Rossi S.p.A {index}" for index in range(12)]
+        path.write_text("\n".join(["@type PERSONA", *shared, "@type SERVIZIO", "Mario", "Rossi"]),
+                        encoding="utf-8")
+        entities = anon.load_entities(path)
+        text = (
+            "Mario Rossi, Mario Rossini, Mario Ros e Mario Rosa; Mario Rossi S.p.A e Mario Rossi "
+            "Spa; Rossi S.p.A 3 e Rossi S.p.A 11; Mario da solo; mario rossi minuscolo; "
+            "Mario Rossi\u0301 e Mario Rossi. Rossi, Rossi S.p.A e Rossi S.p.A 7.\n"
+        )
+        reference = sorted(
+            (start, end, entity.type) for entity in entities for start, end, _ in entity.spans(text)
+        )
+        fast = sorted(
+            (start, end, entity.type) for entity, start, end in anon.entity_hits(text, entities)
+        )
+        self.assertTrue(reference, "the fixture must actually match")
+        self.assertEqual(fast, reference)
+
     def test_roundtrip_is_lossless(self) -> None:
         original = (
             "Spett.le Acme Italia S.r.l. (rif. Acme),\n"

@@ -818,24 +818,37 @@ def is_allowed(path: Path, patterns: Iterable[str]) -> bool:
     return False
 
 
-def entity_hits(text: str, entities: Iterable[Entity]):
-    """Yield (entity, start, end) for every dictionary occurrence, with the same matches
-    `Entity.spans` produces — but without one full-text pass per entry.
+@dataclass(frozen=True)
+class _ScanIndex:
+    """Precomputed fast-scan state for one entity list.
 
-    That per-entry pass was the whole cost of a scan: a 200-entry dictionary compiles to 400
-    patterns (one per normalization form) and took 13.5s of 13.7s on 2 MB (scripts/bench-check.py).
-    Two stages instead:
-
-      * entries without a `@context` are located by ONE case-insensitive scan over the first
-        token of every entry, then verified ANCHORED at each candidate position — the very match
-        `finditer` would have returned, because a context-free entry always starts at its first
-        token;
-      * entries WITH a `@context` cannot be found that way (their match starts at the context),
-        so they are grouped by (context, normalization form) and scanned once per group.
-
-    An entry built by hand (no scan metadata) is scanned directly: never skipped, so a caller
-    cannot silence an entry by omitting a field.
+    Built once and reused: the container path calls `entity_hits` once per XML part with the same
+    dictionary, and rebuilding the alternation and the sub-indexes for every part was pure cost.
+    Each bucket also carries a SUB-INDEX, so a position is resolved without probing every entry
+    that shares the first token (measured: cost was `matches × entries sharing the first token`,
+    i.e. quadratic — 10 000 synthetic entries over 11 first names meant 14.3M anchored probes).
     """
+
+    literals: dict[str, list[Entity]]
+    alternation: re.Pattern[str] | None
+    # Members of each literal bucket that can match with the first token ALONE (a single-token
+    # surface, with an optional legal suffix or stem). A member with more tokens always needs the
+    # second one to be present, so it lives in `by_next` instead.
+    alone: dict[str, list[Entity]]
+    by_next: dict[str, dict[str, list[Entity]]]
+    next_re: dict[str, re.Pattern[str]]
+    # (context, form) -> (members of the group, members by their own first token, locator, pattern)
+    grouped: dict[
+        tuple[str, str],
+        tuple[list[Entity], dict[str, list[Entity]], re.Pattern[str] | None, re.Pattern[str]],
+    ]
+    direct: list[Entity]
+
+
+_INDEX_CACHE: dict[int, tuple[object, _ScanIndex]] = {}
+
+
+def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
     literals: dict[str, list[Entity]] = {}
     sources: set[str] = set()
     groups: dict[tuple[str, str], list[Entity]] = {}
@@ -849,6 +862,30 @@ def entity_hits(text: str, entities: Iterable[Entity]):
             literals.setdefault(entity.first_token.casefold(), []).append(entity)
             sources.add(entity.first_token)
 
+    alone: dict[str, list[Entity]] = {}
+    by_next: dict[str, dict[str, list[Entity]]] = {}
+    next_re: dict[str, re.Pattern[str]] = {}
+    for token, bucket in literals.items():
+        single: list[Entity] = []
+        second: dict[str, list[Entity]] = {}
+        for entity in bucket:
+            tokens = _name_tokens(entity.surface)
+            if len(tokens) > 1:
+                key = unicodedata.normalize(entity.form, tokens[1]).casefold()
+                second.setdefault(key, []).append(entity)
+            else:
+                single.append(entity)
+        alone[token] = single
+        if second:
+            by_next[token] = second
+            branches = "|".join(re.escape(key) for key in sorted(second, key=len, reverse=True))
+            # Locates the SECOND token of any member of this bucket. Longest first, like the
+            # first-token alternation, so the caller can probe the prefixes for a shorter member.
+            next_re[token] = re.compile(
+                rf"(?:{NAME_SEPARATOR_RE})(?P<next>{branches})", re.IGNORECASE
+            )
+
+    alternation = None
     if sources:
         # Longest literal first: the alternation takes the FIRST branch that matches at a position,
         # and this way that is also the longest — the choice the overlap resolver makes anyway for
@@ -857,39 +894,140 @@ def entity_hits(text: str, entities: Iterable[Entity]):
             "|".join(re.escape(source) for source in sorted(sources, key=len, reverse=True)),
             re.IGNORECASE,
         )
-        for match in alternation.finditer(text):
+
+    grouped: dict[
+        tuple[str, str],
+        tuple[list[Entity], dict[str, list[Entity]], re.Pattern[str] | None, re.Pattern[str]],
+    ] = {}
+    for (context, _form), members in groups.items():
+        # Same order as the caller's list (longest surface first), so a city catalog inside one
+        # context keeps the behavior of one scan per entry. The context is a NAMED group: the
+        # member starts where it ends, and a context like `(?:comune di|sede di)\s+` consumes
+        # whitespace, so `match.start()` is not the member's position.
+        branches = "|".join(
+            f"(?P<e{index}>{member.inner})" for index, member in enumerate(members)
+        )
+        compiled = re.compile(
+            f"(?P<ctx>{context})(?<!\\w)(?:{branches})(?!\\w)", re.IGNORECASE
+        )
+        by_first: dict[str, list[Entity]] = {}
+        for member in members:
+            by_first.setdefault(member.first_token.casefold(), []).append(member)
+        locator = None
+        if by_first:
+            first_branches = "|".join(
+                re.escape(key) for key in sorted(by_first, key=len, reverse=True)
+            )
+            locator = re.compile(first_branches, re.IGNORECASE)
+        grouped[(context, _form)] = (members, by_first, locator, compiled)
+
+    return _ScanIndex(literals, alternation, alone, by_next, next_re, grouped, direct)
+
+
+def _scan_index(entities: Iterable[Entity]) -> _ScanIndex:
+    """`_build_scan_index` with an identity-keyed cache (the same list is passed again and again)."""
+    if isinstance(entities, list):
+        cached = _INDEX_CACHE.get(id(entities))
+        if cached is not None and cached[0] is entities:
+            return cached[1]
+    index = _build_scan_index(list(entities))
+    if isinstance(entities, list):
+        if len(_INDEX_CACHE) > 3:  # a run holds one dictionary; keep the cache trivially bounded
+            _INDEX_CACHE.clear()
+        _INDEX_CACHE[id(entities)] = (entities, index)
+    return index
+
+
+def entity_hits(text: str, entities: Iterable[Entity]):
+    """Yield (entity, start, end) for every dictionary occurrence, with the same matches
+    `Entity.spans` produces — but without one full-text pass per entry.
+
+    That per-entry pass was the whole cost of a scan: a 200-entry dictionary compiles to 400
+    patterns (one per normalization form) and took 13.5s of 13.7s on 2 MB (scripts/bench-check.py).
+    Three stages instead:
+
+      * entries without a `@context` are located by ONE case-insensitive scan over the first
+        token of every entry, then verified ANCHORED at each candidate position — the very match
+        `finditer` would have returned, because a context-free entry always starts at its first
+        token. A position yields only the entries whose NEXT token is present in the text (or
+        which can match on the first token alone), so the cost does not grow with the number of
+        entries that merely share a first name;
+      * entries WITH a `@context` cannot be found that way (their match starts at the context),
+        so they are grouped by (context, normalization form) and scanned once per group, with the
+        same first-token sub-index inside the group;
+      * an entry built by hand (no scan metadata) is scanned directly: never skipped, so a caller
+        cannot silence an entry by omitting a field.
+
+    The sub-index only ever REMOVES candidates that cannot match (a member with two tokens needs
+    its second token to be in the text), and every candidate is still verified with the same
+    anchored match, so the yielded set is identical to the reference scan.
+    """
+    index = _scan_index(entities)
+    literals = index.literals
+
+    if index.alternation is not None:
+        for match in index.alternation.finditer(text):
             matched = match.group(0)
+            start = match.start()
             # The alternation takes the FIRST branch that matches, so a longer literal hides a
             # shorter one starting at the same offset: with `@stem on` on `Ferretti` behind the
             # literal `Ferrettini`, `Ferrettini` wins and the stem entry — whose `[\w\-]*` DOES
             # match that word — would never be probed. Every prefix of the matched text is looked
             # up too, so the shorter entry gets its anchored chance.
             for end in range(1, len(matched) + 1):
-                for entity in literals.get(matched[:end].casefold(), ()):
-                    anchored = entity.regex.match(text, match.start())
+                key = matched[:end].casefold()
+                bucket = literals.get(key)
+                if not bucket:
+                    continue
+                candidates = index.alone.get(key, ())
+                locator = index.next_re.get(key)
+                if locator is not None:
+                    following = locator.match(text, start + end)
+                    if following is not None:
+                        found_token = following.group("next")
+                        second = index.by_next[key]
+                        extra: list[Entity] = []
+                        for end2 in range(1, len(found_token) + 1):
+                            matches_second = second.get(found_token[:end2].casefold())
+                            if matches_second:
+                                extra.extend(matches_second)
+                        if extra:
+                            candidates = list(candidates) + extra
+                for entity in candidates:
+                    anchored = entity.regex.match(text, start)
                     if anchored is not None:
-                        start, span_end = anchored.span(ENTITY_GROUP)
-                        yield entity, start, span_end
+                        span_start, span_end = anchored.span(ENTITY_GROUP)
+                        yield entity, span_start, span_end
 
-    for (context, _form), members in groups.items():
-        # Same order as the caller's list (longest surface first), so a city catalog inside one
-        # context keeps the behavior of one scan per entry.
-        branches = "|".join(
-            f"(?P<e{index}>{member.inner})" for index, member in enumerate(members)
-        )
-        grouped = re.compile(f"(?:{context})(?<!\\w)(?:{branches})(?!\\w)", re.IGNORECASE)
+    for (context, _form), (members, by_first, locator, grouped) in index.grouped.items():
         for match in grouped.finditer(text):
             # The group pattern only LOCATES the context positions; each member is then verified
             # anchored there, exactly as above. An alternation reports one branch per position, so
             # reading the matched group would silently drop `Roma` when `Roma Nord` is declared in
             # the same context — the reference scan yields both, and the overlap resolver decides.
-            for member in members:
-                anchored = member.regex.match(text, match.start())
+            start = match.start()
+            candidates = members
+            if locator is not None:
+                member_start = match.end("ctx")
+                following = locator.match(text, member_start)
+                if following is None:
+                    continue  # no member's first token is here: nothing can match at this position
+                found_token = following.group(0)
+                narrowed: list[Entity] = []
+                for end2 in range(1, len(found_token) + 1):
+                    matches_first = by_first.get(found_token[:end2].casefold())
+                    if matches_first:
+                        narrowed.extend(matches_first)
+                if not narrowed:
+                    continue
+                candidates = narrowed
+            for member in candidates:
+                anchored = member.regex.match(text, start)
                 if anchored is not None:
-                    start, end = anchored.span(ENTITY_GROUP)
-                    yield member, start, end
+                    span_start, span_end = anchored.span(ENTITY_GROUP)
+                    yield member, span_start, span_end
 
-    for entity in direct:
+    for entity in index.direct:
         for start, end, _value in entity.spans(text):
             yield entity, start, end
 
