@@ -166,8 +166,8 @@
       <p class="muted small">File: <code id="entities-path">~/.anon/entities.txt</code> — resta sulla tua macchina, fuori da ogni repository.</p>
     </div>
 
-    <!-- Il pannello compare solo se il server è stato avviato con --suggest-url/--suggest-model:
-         senza modello configurato non esiste, invece di esistere e fallire. -->
+    <!-- Il pannello si vede SEMPRE, anche senza modello: dice come accenderlo. Senza configurazione
+         resta inerte (i campi sono chiusi nell'HTML, non solo da JS), invece di non esistere. -->
     <div class="card" id="suggest-card">
       <h2>Suggerimenti dal modello locale <span class="badge" id="suggest-state">non configurato</span></h2>
       <p class="muted small" id="suggest-off">

@@ -89,8 +89,16 @@ class StaticUiTest(unittest.TestCase):
         card = re.search(r'<div class="card" id="suggest-card"[^>]*>', self.HTML)
         self.assertIsNotNone(card, "the panel must be in the Dizionario tab")
         self.assertNotIn("hidden", card.group(0), "the panel is hidden again: it becomes undiscoverable")
-        self.assertIn('id="suggest-off"', self.HTML)
-        self.assertIn('id="suggest-fields"', self.HTML)
+        # "inert" is the half that matters: the hint shows and the fields are closed in the HTML
+        # itself, before any script runs, so a JS failure cannot leave them armed.
+        self.assertIn('<div id="suggest-fields" hidden>', self.HTML)
+        hint = re.search(r'<p class="muted small" id="suggest-off"[^>]*>', self.HTML)
+        self.assertIsNotNone(hint, "the hint that says how to enable the seam must exist")
+        self.assertNotIn("hidden", hint.group(0))
+        # and the wiring that keeps it that way, asserted at the call site (a test that only
+        # asserted the ids passed while the bug it was written for was live).
+        self.assertIn('$("suggest-fields").hidden = !state.suggest', self.JS)
+        self.assertIn('$("suggest-off").hidden = state.suggest', self.JS)
 
     def test_the_model_output_reaches_the_page_as_text_only(self) -> None:
         """A model answer is untrusted input: it must never be assigned as HTML.

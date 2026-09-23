@@ -210,7 +210,7 @@ Three properties are enforced there, each with its own test:
   it is `anon.py`'s job through the dictionary.
 
 The approval step exists too, in the **Dizionario** tab of the UI (`--suggest-url/--suggest-model`
-on the server; off without them). It appends the approved lines to the dictionary file being
+on the server; inert without them — the panel is always visible and says so). It appends the approved lines to the dictionary file being
 edited — the write path that already exists — and the operator still presses Save and re-runs the
 redaction: the seam never writes.
 

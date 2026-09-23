@@ -29,6 +29,13 @@ try {
 }
 
 const declaredIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((match) => match[1]));
+// Which elements the HTML itself closes. The stub starts from that state rather than a blanket
+// `hidden: false`, so "inert before any script runs" becomes testable: without this, deleting the
+// `hidden` attribute from a panel passed every check and only showed up as a flash of unarmed
+// controls (or as armed controls when app.js never loads) in a browser.
+const hiddenInHtml = new Set(
+  [...html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*\shidden\b[^>]*>/g)].map((match) => match[1]),
+);
 
 /** A permissive element stub: every property the script touches must exist. */
 function makeElement(tag = "div") {
@@ -37,7 +44,7 @@ function makeElement(tag = "div") {
     children: [],
     style: {},
     dataset: {},
-    hidden: false,
+    hidden: hiddenInHtml.has(tag),
     value: "",
     checked: true,
     textContent: "",
@@ -119,6 +126,15 @@ const check = (label, ok, detail) => {
   if (!ok) failures.push(`${label}${detail ? ` — ${detail}` : ""}`);
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${!ok && detail ? ` — ${detail}` : ""}`);
 };
+
+// Lo stato iniziale dell'HTML, asserito PRIMA che app.js giri: dopo il boot il JS sovrascrive
+// `.hidden`, quindi un campo armato nel markup resterebbe invisibile a ogni altra asserzione e si
+// vedrebbe solo come lampo di controlli attivi (o come controlli attivi, se lo script non carica).
+check(
+  "the HTML closes the panel's fields before any script runs",
+  hiddenInHtml.has("suggest-fields") && hiddenInHtml.has("suggest-actions"),
+  [...hiddenInHtml].join(" "),
+);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 try {
@@ -175,6 +191,12 @@ try {
     document.getElementById("suggest-card").hidden === false &&
       document.getElementById("suggest-off").hidden === false &&
       document.getElementById("suggest-fields").hidden === true,
+  );
+  // Il badge è lo stato che l'operatore legge: senza asserirlo, un pannello che dice sempre
+  // "configurato" passerebbe tutti i controlli.
+  check(
+    "the badge reports the seam as unconfigured",
+    document.getElementById("suggest-state").textContent === "non configurato",
   );
 
   if (failures.length) {
