@@ -144,6 +144,28 @@ class RoundTripTest(unittest.TestCase):
         self.assertTrue(reference, "the fixture must actually match")
         self.assertEqual(fast, reference)
 
+    def test_the_fast_scan_matches_the_reference_on_the_unicode_folds(self) -> None:
+        """`casefold()` and `re.IGNORECASE` are NOT the same fold, and the sub-index once used the
+        folded token as the PATTERN: a name with ß, a ligature or İ stopped matching, i.e. it was
+        left un-redacted. The patterns come from the raw token and only the lookup is folded; this
+        test fails if that distinction is lost again."""
+        path = Path(self._tmpdir) / "folds.txt"
+        path.write_text(
+            "@type AZIENDA\nHans Straße\nAcme Oﬃce\nMario İpek\n"
+            "@context via\\s+\nAZIENDA|Straße\n@context off\nStraße Söhne\n",
+            encoding="utf-8",
+        )
+        entities = anon.load_entities(path)
+        text = "Hans Straße, Acme Oﬃce, Mario İpek, via Straße, Straße Söhne e Straße.\n"
+        reference = sorted(
+            (start, end, entity.type) for entity in entities for start, end, _ in entity.spans(text)
+        )
+        fast = sorted(
+            (start, end, entity.type) for entity, start, end in anon.entity_hits(text, entities)
+        )
+        self.assertTrue(reference, "the fixture must actually match")
+        self.assertEqual(fast, reference)
+
     def test_roundtrip_is_lossless(self) -> None:
         original = (
             "Spett.le Acme Italia S.r.l. (rif. Acme),\n"

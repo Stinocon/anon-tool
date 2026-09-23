@@ -868,17 +868,27 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
     for token, bucket in literals.items():
         single: list[Entity] = []
         second: dict[str, list[Entity]] = {}
+        # The PATTERN is built from the raw token, the LOOKUP key from its casefold: `casefold()`
+        # and `re.IGNORECASE` are not the same fold (ß -> ss, the ﬁ/ﬂ/ﬃ ligatures, İ, µ), so using
+        # the folded string as the pattern silently stopped matching a real name — an un-redacted
+        # name in the output, which is the worst defect this tool can have. The first-token
+        # alternation always worked this way; the sub-index must too.
+        raw_second: dict[str, str] = {}
         for entity in bucket:
             tokens = _name_tokens(entity.surface)
             if len(tokens) > 1:
-                key = unicodedata.normalize(entity.form, tokens[1]).casefold()
+                raw = unicodedata.normalize(entity.form, tokens[1])
+                key = raw.casefold()
                 second.setdefault(key, []).append(entity)
+                raw_second.setdefault(key, raw)
             else:
                 single.append(entity)
         alone[token] = single
         if second:
             by_next[token] = second
-            branches = "|".join(re.escape(key) for key in sorted(second, key=len, reverse=True))
+            branches = "|".join(
+                re.escape(raw) for raw in sorted(raw_second.values(), key=len, reverse=True)
+            )
             # Locates the SECOND token of any member of this bucket. Longest first, like the
             # first-token alternation, so the caller can probe the prefixes for a shorter member.
             next_re[token] = re.compile(
@@ -911,12 +921,15 @@ def _build_scan_index(entities: list[Entity]) -> _ScanIndex:
             f"(?P<ctx>{context})(?<!\\w)(?:{branches})(?!\\w)", re.IGNORECASE
         )
         by_first: dict[str, list[Entity]] = {}
+        raw_first: dict[str, str] = {}  # same rule as above: pattern from the raw token
         for member in members:
-            by_first.setdefault(member.first_token.casefold(), []).append(member)
+            key = member.first_token.casefold()
+            by_first.setdefault(key, []).append(member)
+            raw_first.setdefault(key, member.first_token)
         locator = None
         if by_first:
             first_branches = "|".join(
-                re.escape(key) for key in sorted(by_first, key=len, reverse=True)
+                re.escape(raw) for raw in sorted(raw_first.values(), key=len, reverse=True)
             )
             locator = re.compile(first_branches, re.IGNORECASE)
         grouped[(context, _form)] = (members, by_first, locator, compiled)
