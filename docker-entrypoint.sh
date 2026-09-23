@@ -13,4 +13,6 @@ fi
 # Inside the container the socket must listen on 0.0.0.0; the isolation comes from publishing the
 # port on 127.0.0.1 only (docker-compose.yml). The server refuses a non-loopback bind without
 # --allow-lan precisely so that this decision is explicit and visible in one place.
-exec python3 /app/web/server.py --host 0.0.0.0 --port "${PORT:-1407}" --allow-lan
+# "$@" are the extra server flags from the compose override that ships the local model
+# (--suggest-url/--suggest-model). Empty in the default configuration.
+exec python3 /app/web/server.py --host 0.0.0.0 --port "${PORT:-1407}" --allow-lan "$@"

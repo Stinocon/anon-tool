@@ -36,6 +36,19 @@ telemetry, no credentials.
 
 The AI re-enters only *after* redaction, when you or an agent analyze the redacted text.
 
+**The suggestion model can live in the container, beside the UI.** `make model` downloads
+Qwen2.5-3B-Instruct (Q4_K_M, ~2 GB, verified by size and sha256) and starts it as a sidecar that
+**shares the UI container's network namespace** (`network_mode: service:anon-tool`). That detail is
+the whole point: the seam is loopback-only by decision (DEC-0018, DEC-0019), a second service on the
+compose network would have its own IP and be refused, while in a shared namespace `127.0.0.1:8080`
+is the same loopback for both — the invariant is honoured, not weakened, and nothing new is exposed
+(the port is not published). The model is for *extraction* (name the strings worth redacting), not
+reasoning: measured through the seam, a 9B reasoning model spent 43 s and answered with a
+"Thinking Process" narrative instead of JSON, which the seam reported as an error — correctly. A
+small instruct model with a bounded `--max-tokens` is the right shape, and that is what ships.
+`make bench-model URL=… MODEL=…` measures any loopback endpoint, and the tests that need a model are
+gated behind `ANON_MODEL_URL`.
+
 **The interface speaks Italian and English; Italian is the default.** The switcher sits in the
 header and the choice is remembered (`localStorage`, key `anon-lang`). The Italian text lives in
 `web/index.html` and is the fallback, so a missing translation shows Italian rather than an empty

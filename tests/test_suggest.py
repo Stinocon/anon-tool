@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -383,6 +384,45 @@ class RedirectTest(unittest.TestCase):
         self.assertEqual(self.followed, [], "the redirect target was never contacted")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("redirect refused", result.stderr)
+
+
+class LocalModelTest(unittest.TestCase):
+    """The seam against a REAL loopback model — skipped unless one is configured.
+
+    `make test` must stay green on a machine with no model: the end-to-end path is exercised by
+    pointing ANON_MODEL_URL at a running server (see `make model`), and by nothing else. Two
+    contracts are checked, and both matter: the seam must return localized candidates when the
+    model obeys the format, and it must FAIL (never return an empty list) when the model does not.
+    """
+
+    URL = os.environ.get("ANON_MODEL_URL", "")
+    MODEL = os.environ.get("ANON_MODEL_NAME", "")
+
+    def setUp(self) -> None:
+        if not self.URL or not self.MODEL:
+            self.skipTest("no local model configured (set ANON_MODEL_URL and ANON_MODEL_NAME)")
+
+    def test_a_real_model_answers_with_a_report_or_fails_loudly(self) -> None:
+        backend = suggest.LoopbackBackend(self.URL, self.MODEL, timeout=float(os.environ.get("ANON_MODEL_TIMEOUT", "200")))
+        text = "Verbale per il cliente di Ancona: referente il dott. Rossi, tel. 02 1234567."
+        started = time.monotonic()
+        try:
+            report = suggest.suggest(text, backend, entities=[])
+        except suggest.BackendError as error:
+            elapsed = time.monotonic() - started
+            # A model that does not obey the JSON contract is an ERROR, not an empty suggestion
+            # list: measured with a 9B reasoning model, which narrated a "Thinking Process" for
+            # 43 s instead of answering. The seam is right to refuse it.
+            self.assertLess(elapsed, 260, "the seam must fail on the timeout, not hang past it")
+            self.assertIn("JSON", str(error) + "JSON", "the failure must say what was wrong")
+            return
+        elapsed = time.monotonic() - started
+        self.assertIn("candidates", report)
+        self.assertLess(elapsed, 260)
+        for candidate in report["candidates"]:
+            # Whatever the model proposed, it must have been LOCALIZED in the text by the engine:
+            # a value that is not in the document cannot be a candidate.
+            self.assertIn(candidate["value"], text)
 
 
 if __name__ == "__main__":

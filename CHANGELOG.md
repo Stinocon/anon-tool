@@ -12,6 +12,16 @@ enforces that they agree.
 
 ### Added
 
+- The interface speaks Italian and English, with Italian as the default: a header selector, the
+  choice kept in `localStorage`, the Italian text in `index.html` as source and fallback, and
+  `web/i18n.js` holding the English keyed by selector. A test fails when a key no longer matches an
+  element. Server messages and tooltips are still Italian (OPEN-ISSUES 38).
+- `docker-compose.model.yml` + `scripts/fetch-suggest-model.sh`: the local suggestion model
+  (Qwen2.5-3B-Instruct Q4_K_M, verified by size and sha256) as a sidecar that SHARES the UI's
+  network namespace, so it binds `127.0.0.1:8080` and the seam's loopback-only rule holds
+  unchanged. `make model`, `make bench-model`.
+- `scripts/bench-suggest.py`: latency and answer quality of a loopback model through the seam.
+
 - **A vendor catalog for infrastructure reports: `catalogs/vendors.txt`** (164 entries,
   `@type FORNITORE`) — hardware and software manufacturers, one line per COMPANY, ticked on demand
   like any other catalog (`--catalogs vendors`, or the checkbox in the UI). The list is split into

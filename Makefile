@@ -13,7 +13,7 @@ SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up up-slim down logs restart build native test smoke clean
+.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -48,6 +48,16 @@ test: ## engine + web + local-model seam + UI load check + doc numbers (no Docke
 	python3 tests/test_suggest.py
 	node tests/ui_load_check.mjs
 	python3 scripts/check-doc-numbers.py
+
+model: ## download the local suggestion model (~2 GB, verified) and start it beside the UI
+	bash scripts/fetch-suggest-model.sh
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.model.yml up -d
+
+model-stop: ## stop the UI and the suggestion model
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.model.yml down
+
+bench-model: ## measure the seam against a loopback model: make bench-model URL=... MODEL=...
+	python3 scripts/bench-suggest.py --url "$${URL:?usage: make bench-model URL=<endpoint> MODEL=<name>}" --model "$${MODEL:?usage: make bench-model URL=<endpoint> MODEL=<name>}"
 
 smoke: ## build the container and exercise every endpoint
 	bash scripts/smoke-docker.sh

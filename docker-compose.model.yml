@@ -1,0 +1,68 @@
+# anon-tool + the local suggestion model.
+#
+#   bash scripts/fetch-suggest-model.sh          # once: ~2 GB, verified by size and sha256
+#   make model                                   # = docker compose -f docker-compose.yml -f docker-compose.model.yml up -d
+#
+# WHY A SIDECAR AND NOT A MODEL IN THE IMAGE: the image stays small and the 2 GB model is cached in
+# a directory you control, reused across rebuilds.
+#
+# WHY `network_mode: service:anon-tool` AND NOT A PORT MAPPING: the seam that talks to the model is
+# loopback-only by decision (DEC-0018, DEC-0019) — it accepts `localhost`, `127.0.0.0/8` and `::1`
+# and refuses anything else *before a byte is sent*. A second service on the default compose network
+# has its own IP, so the seam would refuse it, correctly. Sharing the UI container's network
+# namespace makes 127.0.0.1 the same loopback for both processes: the model binds 127.0.0.1:8080,
+# the UI reaches it, and the invariant is honoured instead of weakened. Nothing new is exposed: the
+# port is not published and the socket is not reachable from the host or the LAN.
+services:
+  anon-tool:
+    command:
+      - "--suggest-url"
+      - "http://127.0.0.1:8080/v1/chat/completions"
+      - "--suggest-model"
+      - "qwen2.5-3b-instruct"
+      - "--suggest-max-tokens"
+      - "512"
+      - "--suggest-timeout"
+      - "120"
+    # No `depends_on` here: the sidecar already depends on THIS service (it borrows its network
+    # namespace), so declaring the reverse is a dependency cycle. The UI starts immediately and the
+    # panel answers 502 until the model has loaded — a real error, not a silent wait.
+
+  suggest-model:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: anon-tool-model
+    network_mode: "service:anon-tool"
+    volumes:
+      - "${ANON_MODEL_DIR:-$HOME/.anon/models}:/models:ro"
+    command:
+      - "--model"
+      - "/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+      - "--alias"
+      - "qwen2.5-3b-instruct"
+      - "--host"
+      - "127.0.0.1"
+      - "--port"
+      - "8080"
+      - "--ctx-size"
+      - "8192"
+      - "--threads"
+      - "${ANON_MODEL_THREADS:-6}"
+      - "--no-webui"
+    # Bounded on purpose: an unbounded reply is the failure mode measured on the bigger model
+    # (~138 s, 4096 tokens, empty answer). The server also stops at the context size.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:8080/health
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
