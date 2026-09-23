@@ -177,12 +177,17 @@ Brescia
 ```
 
 ```bash
+python3 anon.py --list-catalogs                          # what is installed
+python3 anon.py file.txt --catalogs vendors              # IT vendors (one line per company)
 python3 anon.py file.txt --catalogs it-cities,free-mail-domains
 python3 anon.py file.txt --patterns legal,identity
 ```
 
 Every catalog is **off by default**. Redacting more is not automatically better: a report where
-each city has become `[CITTÀ-1]` loses its substance and protects almost nothing extra. See
+each city has become `[CITTÀ-1]` loses its substance and protects almost nothing extra. The one
+catalog written for every infrastructure report is `vendors.txt` — hardware and software
+manufacturers, one line per company, split into a case-sensitive block (`Dell`, `Canon`, `Axis`,
+`HP`: names that are also ordinary Italian or English words) and a case-insensitive one. See
 `catalogs/README.md`.
 
 ## Security posture

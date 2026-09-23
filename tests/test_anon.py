@@ -22,6 +22,7 @@ import unittest
 import zipfile
 from unittest import mock
 from pathlib import Path
+import xml.etree.ElementTree as ElementTree
 
 sys.dont_write_bytecode = True  # keep ~/.anon free of __pycache__ from the importlib loads below
 
@@ -858,6 +859,206 @@ class DirectivesTest(unittest.TestCase):
         entities = self.entities("@type CLIENTE\nAcme\n@type PERSONA\n\nMario Rossi\n")
         types = {ptype for _s, _e, ptype in anon.detect("Acme e Mario Rossi", entities)}
         self.assertEqual(types, {"CLIENTE", "PERSONA"})
+
+
+class VendorsCatalogTest(unittest.TestCase):
+    """The shipped `catalogs/vendors.txt` — what it MUST match, and what it must NOT.
+
+    A data file has no other way to fail loudly, so the properties that are load-bearing are pinned
+    here: `@match case-sensitive` on the ambiguous names (it is what keeps `Dell` from eating
+    `dell'aria`, and `Intel` from eating a line of code), whole-word anchoring (`Dell` must not
+    match `DellOrto`), the case-insensitive block, and the container path never rewriting an XML
+    ATTRIBUTE — `urn:schemas-microsoft-com:vml` replaced by a placeholder would leave a package
+    that is no longer valid. One entry is a DECLARED false positive and is pinned as such rather
+    than silently blessed: see the file's own header.
+    """
+
+    # `HOME/catalogs/...`: the engine's own tree — the repository when run from the repository,
+    # `~/.anon` when run from the live tree, and the same file in both.
+    CATALOG = HOME / "catalogs" / "vendors.txt"
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-vendors-"))
+        (self.tmp / "catalogs").mkdir()
+        shutil.copyfile(self.CATALOG, self.tmp / "catalogs" / "vendors.txt")
+        self.env = {**os.environ, "ANON_HOME": str(self.tmp)}
+        self.entities = anon.load_entities(self.CATALOG)
+        self.size = anon.entity_count(self.entities)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_anon(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ANON_PY), *args], capture_output=True, text=True, env=self.env, check=False
+        )
+
+    def matched(self, text: str) -> list[str]:
+        """Only the vendor hits: the pattern rules are other people's business here."""
+        return [text[s:e] for s, e, ptype in anon.detect(text, self.entities) if ptype == "FORNITORE"]
+
+    # --- the shipped artifact ---
+
+    def test_the_list_ships_typed_and_fully_declared(self) -> None:
+        self.assertTrue(self.CATALOG.is_file(), f"the catalog ships at {self.CATALOG}")
+        self.assertEqual({entity.type for entity in self.entities}, {"FORNITORE"})
+        self.assertGreaterEqual(self.size, 100, "a vendor starter set that is not even 100 rows is not one")
+        # Read the FILE, not the parsed entities: `load_entities` already dedups, so asking it
+        # whether there are duplicates is asking it to grade itself. A line that is silently
+        # dropped (or declared twice) is what this must catch.
+        header = self.CATALOG.read_text(encoding="utf-8")
+        declared = [
+            line.strip().casefold()
+            for line in header.splitlines()
+            if line.strip() and not line.startswith(("#", "@"))
+        ]
+        self.assertEqual(len(declared), len(set(declared)), "the list declares the same name twice")
+        self.assertEqual(len(declared), self.size, "a declared line is not a live entry")
+
+    def test_the_count_stated_to_the_user_comes_from_the_file(self) -> None:
+        header = self.CATALOG.read_text(encoding="utf-8")
+        self.assertIn(f"adds {self.size} entries", header)
+        listing = self.run_anon("--list-catalogs")
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertIn(f"vendors\t{self.size} entries", listing.stdout)
+
+    # --- why the first block is case-sensitive ---
+
+    def test_the_italian_elision_is_not_redacted(self) -> None:
+        for text in (
+            "la configurazione dell'aria compressa",
+            "i problemi dell'ufficio",
+            "il colore dell'università di Bologna",
+        ):
+            self.assertEqual(self.matched(text), [], f"{text!r} must stay intact")
+
+    def test_an_ordinary_word_that_shares_a_vendor_name_is_not_redacted(self) -> None:
+        for text in (
+            "il canon 35 della fotocamera",
+            "l'axis del grafico",
+            "una foglia di acer campestre",
+            "il ginepro (juniper)",
+            "my brother in law",
+            "a tenable position",
+            "the oracle said",
+            "the amazon river",
+            "un indizio su intel raccolto",
+            "lo slack del cingolo",
+        ):
+            self.assertEqual(self.matched(text), [], f"{text!r} must stay intact")
+
+    def test_a_lowercase_spelling_of_a_first_block_name_is_not_redacted(self) -> None:
+        self.assertEqual(self.matched("hp 123 e un cavo incrociato"), [], "`hp` is not `HP`")
+        self.assertEqual(self.matched("una mela, non una apple"), [], "`apple` is a fruit here")
+        self.assertTrue(self.matched("HP LaserJet"), "the proper spelling is redacted")
+
+    def test_no_second_block_name_is_an_ordinary_word(self) -> None:
+        """Block 2 is `@match insensitive`, so an ordinary word there is redacted in lowercase.
+
+        Six of these were found by an adversarial review AFTER the list first shipped, and `cisco`
+        (a fish — and, unlike the six, an enum-listed word) plus `okta` (a cloud-cover unit) by the
+        review of the fix. This pins the shapes that were found; a name added LATER is still
+        unguarded, which is `docs/OPEN-ISSUES.md` #37.
+        """
+        for text in (
+            "un gigabyte di memoria",
+            "she wore a red hat",
+            "avast, ye landlubbers",
+            "in vino veritas",
+            "il trend micro del mercato",
+            "la western digital del film",
+            "the cisco is a freshwater whitefish",
+            "due okta di copertura nuvolosa",
+        ):
+            self.assertEqual(self.matched(text), [], f"{text!r} must stay intact")
+        for text in (
+            "un modulo da 64 Gigabyte",
+            "Red Hat Enterprise Linux",
+            "Avast Free Antivirus",
+            "Veritas Backup Exec",
+            "Trend Micro Apex One",
+            "Western Digital Blue",
+            "switch Cisco Catalyst",
+            "Okta Identity Cloud",
+        ):
+            self.assertTrue(self.matched(text), f"{text!r} must be redacted")
+
+    def test_a_vendor_inside_a_longer_word_is_not_matched(self) -> None:
+        for text in ("DellOrto e figli snc", "MikroTikSwitch", "il connettore HPX"):
+            self.assertEqual(self.matched(text), [], f"{text!r} is one word, not a vendor")
+
+    def test_the_declared_elision_false_positive_is_what_the_header_says(self) -> None:
+        # DECLARED RESIDUAL, not a claim of correctness: an apostrophe is not a word character and
+        # the format has no per-entry exclusion, so the sentence-initial article is eaten.
+        self.assertEqual(self.matched("Dell'azienda risulta in regola"), ["Dell"])
+
+    # --- the second block, and what the map does with it ---
+
+    def test_a_second_block_name_matches_however_it_is_capitalized(self) -> None:
+        for text in ("sonicwall tz", "SonicWall NSa", "SONICWALL", "un NAS Synology", "un SanDisk"):
+            self.assertTrue(self.matched(text), f"{text!r} must be redacted")
+        # The names whose lowercase is not a word live with the insensitive block: a lowercase
+        # spelling in a hostname, a filename or a spreadsheet must still match. `un server ibm` used
+        # to be a MISS (the acronyms sat in the case-sensitive block for the wrong reason).
+        for text in ("aruba cloud", "kingston RAM", "eaton UPS", "un server ibm", "un server amd",
+                     "un ups apc", "un server hpe"):
+            self.assertTrue(self.matched(text), f"{text!r} must be redacted")
+
+    def test_the_map_keeps_the_exact_spelling_it_found(self) -> None:
+        redacted, entries, counts = anon.anonymize(
+            "SonicWall in sede e sonicwall in filiale", self.entities, include_heuristics=False, tag="aaaaaa"
+        )
+        # Declared consequence of `@match insensitive`: one company, two spellings, two placeholders.
+        # What matters is that neither original is lost, so `deanon` restores both as written.
+        self.assertEqual(counts, {"FORNITORE": 2})
+        self.assertEqual({entry["original"] for entry in entries.values()}, {"SonicWall", "sonicwall"})
+        self.assertNotIn("sonicwall", redacted.lower())
+
+    # --- the whole point: it is opt-in, and it is safe on a container ---
+
+    def test_the_list_is_inert_until_it_is_selected(self) -> None:
+        src = self.tmp / "nota.txt"
+        src.write_text("Server Dell con backup Veeam.\n", encoding="utf-8")
+        off = self.run_anon(str(src), "--check")
+        self.assertEqual(off.returncode, 0, "without --catalogs the names are not findings")
+        on = self.run_anon(str(src), "--catalogs", "vendors", "--check")
+        self.assertEqual(on.returncode, 1, "selected, they are")
+
+    def test_xml_namespaces_survive_the_redaction(self) -> None:
+        """`urn:schemas-microsoft-com:vml` is a vendor name in an ATTRIBUTE: it must not move.
+
+        Redacting it would replace part of a namespace URI with a placeholder — the package stops
+        being valid and the document is destroyed, which is worse than any under-redaction.
+        """
+        docx = self.tmp / "edge.docx"
+        with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "[Content_Types].xml",
+                '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+                'content-types"><Default Extension="xml" ContentType="application/xml"/></Types>',
+            )
+            archive.writestr(
+                "word/document.xml",
+                '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+                'wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml"><w:body>'
+                "<w:p><w:r><w:t>Server Dell con Microsoft Windows e backup Veeam.</w:t></w:r></w:p>"
+                "</w:body></w:document>",
+            )
+
+        out = self.tmp / "edge.redacted.docx"
+        res = self.run_anon(str(docx), "--catalogs", "vendors", "--out", str(out))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertTrue(zipfile.is_zipfile(out), "the output is still a container")
+
+        body = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+        self.assertIn('xmlns:v="urn:schemas-microsoft-com:vml"', body, "the attribute was rewritten")
+        self.assertIn("schemas.openxmlformats.org", body)
+        ElementTree.fromstring(body)  # the part is still well-formed XML
+
+        text = anon.container_text(out)
+        for value in ("Dell", "Microsoft", "Veeam"):
+            self.assertNotIn(value, text, f"{value} survived in the visible text")
+        self.assertIn("[FORNITORE-1-", text)
 
 
 class AuditTest(unittest.TestCase):

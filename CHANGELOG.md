@@ -10,6 +10,64 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Added
+
+- **A vendor catalog for infrastructure reports: `catalogs/vendors.txt`** (116 entries,
+  `@type FORNITORE`) — hardware and software manufacturers, one line per COMPANY, ticked on demand
+  like any other catalog (`--catalogs vendors`, or the checkbox in the UI). The list is split into
+  two blocks and that split is the design, with ONE rule: `@match case-sensitive` for the names whose
+  lowercase is also an ordinary word or unit (`Dell`/`dell'aria`, `Canon`/`canon`, `Axis`/`axis`,
+  `Acer` the maple genus, `Apple`/`apple`, `Juniper`, `Brother`, `Snowflake`, `Slack`, `Elastic`,
+  `Tenable`, `Xerox`, `Adobe` the building material, `Google`/`to google`, `Oracle`,
+  `Intel`/"threat intel", `Cisco` and `Barracuda` the fish, `Siemens` the SI unit, `Okta` the
+  cloud-cover unit, `Gigabyte` the unit, `HP` horsepower, `SAP` tree sap, `Red Hat`) and
+  `@match insensitive` for the rest, so a lowercase spelling in a filename, a hostname or a
+  spreadsheet matches too (`un server ibm`). The rule is measurable — `grep -ix "<name>"
+  /usr/share/dict/words` — which is how the wrong-block entries below were found.
+  The list was sized up before shipping with `scripts/fp-sweep.py` (which now takes `--entities`, so
+  a candidate list can be measured the same way): on the first candidate (54 clean source/doc files,
+  measured before this file shipped) `Docker` alone accounted for 37 of the 49 hits — three quarters
+  of the noise from one word — so it is out, together with `Kubernetes` and `Ubuntu` (the word is the
+  TECHNOLOGY), and `LG`, `F5`, `MSI`, `AVG`, `Sharp`, `Crucial`, `Canonical`, `Meta`, `Zoom` (the
+  surface is a common acronym or an ordinary word; the company is listed as `F5 Networks`). The
+  declared gaps are in the file's header: product/model names, the lowercase spelling of a
+  case-sensitive name, and the sentence-initial Italian elision (`Dell'azienda risulta…` IS redacted
+  — an apostrophe is not a word character, and the format has no per-entry exclusion).
+- **Fifteen names that were in the wrong block, found by the two adversarial reviews — and the false
+  rationale that put four of them there.** The first review found `Gigabyte` (the unit), `Red Hat`,
+  `Avast`, `Veritas`, `Trend Micro` and `Western Digital` in the case-insensitive block, where
+  `un gigabyte di memoria` and `she wore a red hat` would have been redacted — the exact failure the
+  two-block split exists to prevent — plus `Aruba`/`Kingston`/`Eaton` needlessly case-sensitive. The
+  review of that fix then found the opposite error twice over: `Cisco` (a fish, and an enum-listed
+  word) had been moved INTO the insensitive block by the fix itself, `Okta` (a cloud-cover unit) was
+  still there, and `IBM`/`AMD`/`HPE`/`APC` were sitting in the case-sensitive one because the header
+  called them "identifiers in source code" — a rationale that does not survive a word list (`ibm` is
+  neither a word nor a variable name), and which cost a real MISS: `un server ibm` was not redacted.
+  All fifteen moved, the rule is now one line instead of a judgement call, and six wrong-block
+  entries plus the under-redaction direction are pinned by
+  `VendorsCatalogTest::test_no_second_block_name_is_an_ordinary_word` and
+  `::test_a_second_block_name_matches_however_it_is_capitalized`. A name added LATER is still
+  unguarded: `docs/OPEN-ISSUES.md` #37 asks for the word-list check to become a gate, and records
+  that the system word list alone would not have been enough (it misses `gigabyte`, `google`,
+  `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`).
+  The reviews also found a tautological assertion in the size test (it compared `entity_count` with
+  itself; it now reads the declared LINES, which is what catches a duplicated or silently dropped
+  entry) and a vacuous one (`a4`).
+- **`VendorsCatalogTest`** (12 tests) pins the properties a data file cannot otherwise fail on:
+  case-sensitivity on the homographs, whole-word anchoring (`Dell` must not match `DellOrto`), the
+  case-insensitive block, the exact spelling kept in the map (`SonicWall` + `sonicwall` = two
+  placeholders, declared), inertness until the catalog is selected, and — the one that would have
+  destroyed a document — that the container path never rewrites an XML ATTRIBUTE, so
+  `urn:schemas-microsoft-com:vml` survives and the package stays valid.
+- **`scripts/fp-sweep.py` takes `--entities`**, so a candidate dictionary or catalog can be sized up
+  before it ships. The catalog files are left out of the corpus only in that mode: excluding them
+  from the DEFAULT sweep would have hidden 34 real pattern matches (a host in a catalog comment, a
+  phone number in its prose), which is precisely what the tool exists to report. A `--entities` path
+  that does not exist is now a refusal (exit 2) instead of an empty dictionary reported as "clean".
+- **`scripts/check-doc-numbers.py` now binds the size of the shipped catalogs** to the files
+  themselves, in `catalogs/README.md` and in the `vendors.txt` header (the number in this changelog
+  is history, and out of scope like every other one here).
+
 ### Changed
 
 - **The redacted document is streamed instead of base64-encoded into the JSON response.** It is

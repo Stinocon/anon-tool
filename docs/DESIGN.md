@@ -161,6 +161,11 @@ Prato
   it, so `@context` is a property of a block, not of the file. `@context off` closes the block —
   otherwise narrowing a context would mean reordering the file.
 - Catalogs are **off by default** and ticked on demand ("anonimizza: …").
+- The shipped vendor list (`catalogs/vendors.txt`) uses the same switch for a different problem:
+  it is **two blocks**, `@match case-sensitive` for the vendor names that are also ordinary words or
+  short acronyms (`Dell`/`dell'aria`, `Canon`/`canon`, `Axis`/`axis`, `HP`) and `@match insensitive`
+  for the rest, so a lowercase spelling matches without `dell'aria` being eaten. Its declared gaps
+  (product/model names, the sentence-initial elision) are stated in the file's own header.
 - Pattern groups (regex rules) are tagged (`identity`, `network`, `fintech`, `it-legal`) and
   toggled the same way.
 

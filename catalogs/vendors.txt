@@ -1,0 +1,201 @@
+# catalogs/vendors.txt — hardware and software vendors of the IT sector (starter list).
+#
+# WHAT IT IS
+#   The manufacturers whose names appear in an infrastructure report: servers, network gear,
+#   storage, printers, endpoints, security and infrastructure software. ONE LINE PER COMPANY, not
+#   per product — `Fortinet` is here, `FortiGate`/`NSa 2700` are not.
+#
+# WHY IT IS OPT-IN
+#   The vendor mix is part of what makes a document attributable: "firewall SonicWall, backup Veeam,
+#   virtualizzazione VMware" describes the client's stack. It says nothing on its own, so the list
+#   is NOT applied unless you select it (`--catalogs vendors`, or the checkbox in the UI).
+#
+# WHY THERE ARE TWO BLOCKS, AND WHY THE FIRST ONE MATTERS
+#   A vendor name that is ALSO an ordinary word must not be matched case-insensitively, or the
+#   redaction eats the text around it. Block 1 is `@match case-sensitive` for exactly those names:
+#   `Dell`/`dell'aria`, `Canon`/`canon`, `Axis`/`axis`, `Acer` (the maple genus), `Apple`/`apple`,
+#   `Juniper`/`juniper`, `Brother`/`brother`, `Xerox`/`xerox`, `Adobe` (the building material),
+#   `Google`/`to google`, `Oracle`/`oracle`, `Amazon` (the river), `Slack`/`slack`, `Elastic`,
+#   `Snowflake`, `Confluence`, `Tenable`, `Barracuda` (the fish), `Cisco` (the fish), `Siemens` (the
+#   SI unit), `Okta` (the cloud-cover unit), `Gigabyte` (the unit), `HP` (horsepower), `SAP` (tree
+#   sap), `Intel`/"threat intel", and the multi-word names whose every word is ordinary (`Red Hat`,
+#   `Trend Micro`, `Western Digital`, `Check Point`).
+#   Block 2 is `@match insensitive`, for names whose lowercase is NOT a word, so a lowercase
+#   spelling in a filename, a hostname or a spreadsheet matches too. That is why the short all-caps
+#   brands live there — `IBM`, `AMD`, `HPE`, `APC`, `QNAP`, `SUSE`, `ESET`, `ASUS`: none of them is
+#   a word, and `un server ibm` in a spreadsheet must be redacted as much as `IBM` in prose.
+#   Consequence to know: the map keeps the EXACT spelling it found, so a document that writes both
+#   `SonicWall` and `sonicwall` gets two placeholders for the same company (deanon restores both).
+#   THE LINE IS MEASURABLE, NOT A JUDGEMENT: a name whose lowercase appears in a word list belongs
+#   in block 1. `grep -ix "<name>" /usr/share/dict/words` is the first check — but it is NOT
+#   sufficient (it misses `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`,
+#   `xerox`), which is why it is the start of the decision and `docs/OPEN-ISSUES.md` #37 asks for a
+#   real gate.
+#
+# WHAT IS NOT COVERED (declared, not forgotten)
+#   * PRODUCT AND MODEL NAMES (`FortiGate`, `PowerEdge`, `Catalyst`, `BIG-IP`, `vSphere`, `NSa`).
+#     Product families are a much larger and faster-drifting list, and they usually show up as
+#     hostnames, which the HOST rule already covers. Add the ones you meet to `~/.anon/entities.txt`.
+#   * THE LOWERCASE SPELLING OF A BLOCK-1 NAME (`dell`, `hp`, `canon`): that is the whole point of
+#     block 1.
+#   * A DECLARED FALSE POSITIVE: a sentence that opens with the elided Italian article and the
+#     company name — "Dell'azienda risulta..." — IS redacted, because an apostrophe is not a word
+#     character and no entry can express a negative lookahead. The format has no per-entry
+#     exclusion: if it bites, keep the list off for that document or drop `Dell` here.
+#   * Vendors that are ordinary words with no unambiguous form are deliberately ABSENT, not
+#     forgotten: `LG`, `F5` (the bare token IS the refresh key — the company is here as
+#     `F5 Networks`), `MSI` (the Windows installer extension), `AVG`, `Sharp`, `Crucial`,
+#     `Canonical`, `Meta` (also an Italian noun), `Zoom`, `Docker`/`Kubernetes`/`Ubuntu` (the
+#     technology, not the firm).
+#   * This list does not make a document anonymous on its own — it removes one fingerprint among
+#     several.
+#
+# MEASURED COST
+#   Selecting it adds 116 entries to the scan. The Pi guard's cap is sized for a few hundred
+#   (`scripts/bench-check.py`: 1 000 entries 0.93 MB/s against 1.60 at 200), so this list is inside
+#   the budget; `docs/OPEN-ISSUES.md` #26 tracks the general problem.
+#   A clean-corpus sweep is what decided the CONTENT, and it is not a score for this file — read it
+#   with that in mind:
+#     python3 scripts/fp-sweep.py --entities catalogs/vendors.txt --show FORNITORE
+#   The number it reports is dominated by documents that NAME vendors — this project's own docs and
+#   this header included — so it is a list of things to look at, not a false-positive rate. Outside
+#   those, what is left is the corpus talking about its own subject: `MikroTik` in the operator's
+#   notes, `microsoft` inside the OOXML namespace `urn:schemas-microsoft-com:vml`, `Slack` in a
+#   regex description. (A word list is the better tool for the block question; see below.) What the
+#   sweep removed is the entries whose word is the TECHNOLOGY rather than the firm: on the first
+#   candidate (measured before this file shipped, 54 clean source/doc files), `Docker` alone
+#   accounted for 37 of the 49 hits — three quarters of the noise from one word — and
+#   `Kubernetes`/`Ubuntu` belong to the same class. The container path never rewrites an ATTRIBUTE,
+#   so the OOXML namespace cannot be corrupted
+#   (`VendorsCatalogTest::test_xml_namespaces_survive_the_redaction`).
+#
+# HOW TO EXTEND IT
+#   Append the company, one per line, under the block that fits its surface — under `@match
+#   case-sensitive` whenever the name is also an ordinary word or unit (check it: `grep -ix`). Never
+#   invent entries and never generate them: a list that LOOKS complete but is not creates a false
+#   sense of coverage, and the header count above is bound to the file by
+#   `scripts/check-doc-numbers.py`.
+
+@type FORNITORE
+
+# --- block 1: case-sensitive (the name is also an ordinary word) ---
+@match case-sensitive
+Acer
+Adobe
+Amazon
+Apple
+Avast
+Axis
+Barracuda
+Brother
+Canon
+Check Point
+Cisco
+Confluence
+Dell
+Elastic
+Gigabyte
+Google
+HP
+Intel
+Juniper
+Okta
+Oracle
+Red Hat
+SAP
+Siemens
+Slack
+Snowflake
+Tenable
+Trend Micro
+Veritas
+Western Digital
+Xerox
+
+# --- block 2: case-insensitive (the lowercase is not a word) ---
+@match insensitive
+Acronis
+Alcatel
+AMD
+APC
+Arcserve
+Aruba
+ASUS
+Atlassian
+Avaya
+Bitdefender
+Broadcom
+Citrix
+Commvault
+CrowdStrike
+D-Link
+Dahua
+Datadog
+Datto
+Eaton
+Epson
+Ericsson
+ESET
+F5 Networks
+Fortinet
+Fujitsu
+Grafana
+Grandstream
+Hikvision
+HPE
+Huawei
+IBM
+Imperva
+Kaspersky
+Kingston
+Kyocera
+Legrand
+Lenovo
+Lexmark
+McAfee
+Microsoft
+MikroTik
+Mitel
+Nagios
+Nakivo
+NetApp
+Netgear
+Nokia
+Nutanix
+NVIDIA
+Polycom
+Proofpoint
+Proxmox
+QNAP
+Qualcomm
+Qualys
+Rapid7
+Ricoh
+Rittal
+Salesforce
+Samsung
+SanDisk
+Seagate
+SentinelOne
+ServiceNow
+SonicWall
+Sophos
+Splunk
+Supermicro
+SUSE
+Symantec
+Synology
+Toshiba
+TP-Link
+Tripp Lite
+Ubiquiti
+Veeam
+Vertiv
+VMware
+WatchGuard
+Xiaomi
+Yealink
+Zabbix
+Zimbra
+Zscaler
+Zyxel

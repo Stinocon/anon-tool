@@ -115,7 +115,16 @@ def main() -> int:
         "web/app.js",
     )
 
-    # 6. the guard's cap, when its source is reachable (cross-repository)
+    # 6. the counts stated for the shipped catalogs, bound to the files themselves
+    for name in ("it-cities", "vendors"):
+        path = ROOT / "catalogs" / f"{name}.txt"
+        claim(
+            f"catalog size ({name})",
+            rf"{anon.entity_count(anon.load_entities(path))} entries",
+            "catalogs/README.md",
+        )
+
+    # 7. the guard's cap, when its source is reachable (cross-repository)
     guard = next(
         (
             path

@@ -10,9 +10,11 @@ by rule type. On a clean corpus, each match is a candidate false positive.
     python3 scripts/fp-sweep.py                       # the default corpus
     python3 scripts/fp-sweep.py --root DIR --json     # a specific corpus, machine-readable
     python3 scripts/fp-sweep.py --show KEY --show HOST  # print the matching lines (code, not secrets)
+    python3 scripts/fp-sweep.py --entities catalogs/vendors.txt --show FORNITORE  # size up a list
 
 Corpus hygiene: the default corpus deliberately EXCLUDES private configs (Home Assistant, MikroTik,
-.env) — those hold legitimate real values, so a match there is a true positive, not a false one.
+.env) — those hold legitimate real values, so a match there is a true positive, not a false one —
+and the catalog files themselves, which are lists of the very words a catalog is meant to match.
 Pass `--root` to measure a different corpus and read the number accordingly.
 
 Deterministic: a counter over regex/dictionary matches, never an LLM judgement. It reads the
@@ -45,6 +47,10 @@ DEFAULT_ROOTS = [
 ]
 # tests/ are deliberate fixtures (they are SUPPOSED to match), so they would drown the signal.
 DEFAULT_EXCLUDES = ["*/tests/*", "*/__pycache__/*", "*/node_modules/*", "*/.git/*", "*.min.js"]
+# Excluded only while measuring a dictionary (below): the catalog files ARE lists of the words a
+# catalog is meant to match, so a hit there says nothing — but their own pattern matches (a host in
+# a comment, a phone number in the prose) are exactly what the default sweep exists to report.
+CATALOG_EXCLUDE = "*/catalogs/*"
 
 SUFFIXES = {
     ".py", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".yaml", ".yml", ".json",
@@ -78,6 +84,15 @@ def main() -> int:
     parser.add_argument("--root", action="append", help="corpus root (repeatable; default: the built-in corpus)")
     parser.add_argument("--exclude", action="append", help="fnmatch pattern to skip (repeatable)")
     parser.add_argument("--max-bytes", type=int, default=1024 * 1024, help="skip files larger than this")
+    parser.add_argument(
+        "--entities",
+        action="append",
+        help=(
+            "dictionary or catalog to scan WITH (repeatable; default: the operator's "
+            "~/.anon/entities.txt). The catalogs themselves are left out of the corpus in this "
+            "mode: a list of the words you are measuring is not evidence about them."
+        ),
+    )
     parser.add_argument("--show", action="append", default=[], metavar="TYPE", help="print matching lines for this rule type")
     parser.add_argument("--show-limit", type=int, default=40, help="how many lines --show prints per type")
     parser.add_argument("--json", action="store_true", help="machine-readable report on stdout")
@@ -85,7 +100,17 @@ def main() -> int:
 
     roots = [Path(r).expanduser() for r in (args.root or DEFAULT_ROOTS)]
     excludes = list(DEFAULT_EXCLUDES) + list(args.exclude or [])
-    entities = anon.load_entities(anon.DEFAULT_ENTITIES)
+    if args.entities:
+        excludes.append(CATALOG_EXCLUDE)
+        missing = [path for path in args.entities if not Path(path).expanduser().is_file()]
+        if missing:
+            # A typo used to be read as "zero matches": the report said the list was clean when the
+            # list had never been loaded. Refuse instead.
+            print(f"fp-sweep: no such dictionary: {', '.join(missing)}", file=sys.stderr)
+            return 2
+        entities = anon.load_entities_many(Path(path).expanduser() for path in args.entities)
+    else:
+        entities = anon.load_entities(anon.DEFAULT_ENTITIES)
     # Dictionary types are SUPPOSED to match real values; only the pattern rules can be "wrong" on
     # a clean corpus. `detect()` reports no provenance, so a dictionary entry typed like a pattern
     # (`HOST|db.intranet`) is indistinguishable from a HOST match: keep the type classified as a

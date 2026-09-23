@@ -178,10 +178,9 @@ through CDP with a real `.docx`, not only in the unit checks.
 Done: the engine (`anon.py verbale.docx` -> `verbale.redacted.docx`, part by part, output verified,
 `deanon` restores part by part), the UI (one redaction, two downloads: the `.docx` and the `.md`
 derived from the redacted file), `--check` naming the findings while keeping `unscannable`, fixtures
-proving docx/xlsx/odt/pptx in place, and the doc sweep. Commit `bb45726` and after; DEC-0015.
-
-Left: the adversarial review of the container pass (mandatory, different model). Legacy
-`.doc/.xls/.ppt`, PDF and images remain refused by design.
+proving docx/xlsx/odt/pptx in place, the doc sweep, and the adversarial review of the container pass
+(the four defects it found are closed in `a6b284b`, below). Commit `bb45726` and after; DEC-0015.
+Legacy `.doc/.xls/.ppt`, PDF and images remain refused by design.
 
 ### The structural-boundary refusal was too broad (2026-09-22, same day)
 
@@ -330,6 +329,7 @@ old reference can never point at a different item.
 | 17 | 26 | **Guard throughput vs dictionary size.** The cap is derived from a measurement, but that measurement assumed a small dictionary. Measured today (`scripts/bench-check.py`, 2 MB corpus): 200 entries 1.60 MB/s · 1 000 → 0.93 · 4 000 → 0.37 · 7 900 → 0.20. At 1 000 entries the 12 MB cap already needs 13 s of a 20 s budget; at 4 000 it exceeds it. Either measure at run time or size the cap against a declared entry count. | 12 MB / 20 s were sized on this Mac with a few hundred entries; the margin is not a property of the guard, it is a property of the dictionary. | medium |
 | 18 | 36 | ~~**A symlinked FILE inside a `--batch` tree is followed** even when the target is outside the tree or inside the private store.~~ **Fixed**: the walk resolves each candidate and skips it — saying which reason — when the target is inside the private store or leaves the scan root. A test with both kinds of link fails against the old code. The scope is the tree the operator named; a link is a way of naming something else. A HARD link is not covered (it is not dereferenceable): it resolves inside the root, so it is processed — benign, because the output is redacted and creating one needs write access to the tree, but it is the honest boundary of the fix. | `--batch` was fixed, but silently FOLLOWING a link is the same class of mistake: the tool processed a file nobody put in scope, and the private store's maps are exactly what must not leave it. | small |
 | 19 | 19 | **Phone-prefix catalog: no action.** | Deliberately not shipped: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. | — |
+| 20 | 37 | **The two-block rule of `catalogs/vendors.txt` is a prose convention, not an enforced invariant.** Two adversarial reviews of the first version moved FIFTEEN names between the blocks — six sitting in the case-insensitive one where they collide with an ordinary word (`gigabyte`, `red hat`, `avast`, `veritas`, `trend micro`, `western digital`), three needlessly case-sensitive (`aruba`, `kingston`, `eaton`), `cisco` put in the wrong block BY the fix itself, `okta` (a cloud-cover unit), and `ibm`/`amd`/`hpe`/`apc` kept case-sensitive on a rationale that was simply false — they are neither words nor identifiers, which made `un server ibm` a MISS. The wrong-block cases are pinned now, and `grep -ix "<name>" /usr/share/dict/words` finds most of them — but the system word list alone is NOT enough (it misses `gigabyte`, `google`, `veritas`, `siemens`, `okta`, `hp`, `intel`, `xerox`) and a name added LATER is still unguarded. The gate would be a `scripts/check-doc-numbers.py`-style check: every block-2 surface tested against a curated word list (the system list plus the misses above), failing the suite when a vendor name is also a word. | The class is cheap to reintroduce (one `@match` line or one appended name) and invisible in both directions — a report that comes back shredded, or a vendor left in the document. | small |
 
 ### Hygiene note kept from this pass
 
