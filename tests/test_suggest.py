@@ -410,11 +410,18 @@ class LocalModelTest(unittest.TestCase):
             report = suggest.suggest(text, backend, entities=[])
         except suggest.BackendError as error:
             elapsed = time.monotonic() - started
-            # A model that does not obey the JSON contract is an ERROR, not an empty suggestion
-            # list: measured with a 9B reasoning model, which narrated a "Thinking Process" for
-            # 43 s instead of answering. The seam is right to refuse it.
             self.assertLess(elapsed, 260, "the seam must fail on the timeout, not hang past it")
-            self.assertIn("JSON", str(error) + "JSON", "the failure must say what was wrong")
+            message = str(error)
+            # A model that obeys the transport but not the FORMAT is a legitimate outcome: measured
+            # with a 9B reasoning model, which narrated a "Thinking Process" for 43 s instead of
+            # answering JSON, and the seam refused it as an error — the whole point. A transport
+            # failure is NOT legitimate here: it means no model was exercised at all, which is what
+            # this test exists to prevent (pointing it at a dead port would otherwise pass).
+            contract_failure = "no JSON" in message or "non-JSON" in message
+            self.assertTrue(
+                contract_failure,
+                f"the endpoint answered nothing usable at the transport level: {message[:200]}",
+            )
             return
         elapsed = time.monotonic() - started
         self.assertIn("candidates", report)

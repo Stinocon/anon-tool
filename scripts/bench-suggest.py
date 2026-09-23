@@ -72,13 +72,27 @@ def main(argv: list[str] | None = None) -> int:
             report = suggest.suggest(text, backend, entities=entities)
             elapsed = time.monotonic() - started
             candidates = report["candidates"]
-            runs.append({"ok": True, "seconds": round(elapsed, 2), "candidates": len(candidates)})
+            # An EMPTY answer is not a usable answer: a model that returns valid JSON with no
+            # candidates looks like success to the seam (the format was obeyed) but is exactly the
+            # failure this benchmark exists to expose — the 9B returned nothing usable, and so does
+            # a mute model. Counted separately, and it does not count as answered.
+            runs.append({
+                "ok": bool(candidates),
+                "empty": not candidates,
+                "seconds": round(elapsed, 2),
+                "candidates": len(candidates),
+            })
         except suggest.BackendError as error:
             elapsed = time.monotonic() - started
             runs.append({"ok": False, "seconds": round(elapsed, 2), "error": str(error)[:200]})
         if not args.json:
             run = runs[-1]
-            state = f"{run['candidates']} candidate(s)" if run["ok"] else f"ERROR {run['error']}"
+            if run["ok"]:
+                state = f"{run['candidates']} candidate(s)"
+            elif run.get("empty"):
+                state = "EMPTY ANSWER (valid JSON, no candidates)"
+            else:
+                state = f"ERROR {run['error']}"
             print(f"  run {index + 1}/{args.repeat}: {run['seconds']:>7.2f}s  {state}")
 
     ok = [run for run in runs if run["ok"]]
@@ -89,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         "runs": runs,
         "median_seconds": round(statistics.median([run["seconds"] for run in runs]), 2) if runs else None,
         "answered": f"{len(ok)}/{len(runs)}",
+        "empty_answers": sum(1 for run in runs if run.get("empty")),
         "median_candidates": round(statistics.median([run["candidates"] for run in ok]), 1) if ok else None,
     }
     if args.json:
@@ -100,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"answered     : {summary['answered']}")
         print(f"median time  : {summary['median_seconds']}s for one usable answer")
         print(f"median props : {summary['median_candidates']}")
-    return 0 if ok else 2
+    return 0 if ok and len(ok) == len(runs) else 2
 
 
 if __name__ == "__main__":

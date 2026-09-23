@@ -37,7 +37,8 @@ telemetry, no credentials.
 The AI re-enters only *after* redaction, when you or an agent analyze the redacted text.
 
 **The suggestion model can live in the container, beside the UI.** `make model` downloads
-Qwen2.5-3B-Instruct (Q4_K_M, ~2 GB, verified by size and sha256) and starts it as a sidecar that
+Qwen2.5-3B-Instruct (Q4_K_M, ~2 GB; the size and sha256 come from the model repository's
+metadata and are confirmed only when a first download completes) and starts it as a sidecar that
 **shares the UI container's network namespace** (`network_mode: service:anon-tool`). That detail is
 the whole point: the seam is loopback-only by decision (DEC-0018, DEC-0019), a second service on the
 compose network would have its own IP and be refused, while in a shared namespace `127.0.0.1:8080`

@@ -7,8 +7,10 @@
 # bigger model that thinks until its budget runs out answers nothing at all — measured with a 9B
 # (~138 s and an empty reply on a rich text), which is why this one is bounded and small.
 #
-# The download is verified by SIZE and SHA256 before it is put in place: a truncated or substituted
-# file would make the panel fail in a way that looks like a configuration problem.
+# The download is checked against the SIZE and SHA256 published by the model repository (read from
+# its metadata API, and NOT yet confirmed against a real file — the constants below become verified
+# the first time this script completes). The check happens BEFORE the file is put in place: a
+# truncated or substituted download is refused, and an unverifiable one never looks installed.
 set -euo pipefail
 
 MODEL="${ANON_SUGGEST_MODEL_FILE:-qwen2.5-3b-instruct-q4_k_m.gguf}"

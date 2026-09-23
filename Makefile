@@ -49,7 +49,7 @@ test: ## engine + web + local-model seam + UI load check + doc numbers (no Docke
 	node tests/ui_load_check.mjs
 	python3 scripts/check-doc-numbers.py
 
-model: ## download the local suggestion model (~2 GB, verified) and start it beside the UI
+model: ## download the local suggestion model (~2 GB, checksum-checked) and start it beside the UI
 	bash scripts/fetch-suggest-model.sh
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.model.yml up -d
 
