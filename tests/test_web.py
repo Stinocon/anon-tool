@@ -84,6 +84,77 @@ class StaticUiTest(unittest.TestCase):
         self.assertIn("REVEAL_TTL_MS", self.JS)
         self.assertIn('$("hide-map").addEventListener', self.JS)
 
+    def _element_html(self) -> dict:
+        """id -> inner HTML for every element, via a parser (nested tags break a regex)."""
+        from html.parser import HTMLParser
+
+        source = self.HTML
+
+        class Collector(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=False)
+                self.stack: list[dict] = []
+                self.found: dict[str, str] = {}
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ("br", "meta", "link", "input", "img", "hr"):
+                    return
+                self.stack.append({"tag": tag, "id": dict(attrs).get("id"), "start": self.getpos()})
+
+            def handle_endtag(self, tag):
+                for index in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[index]["tag"] == tag:
+                        node = self.stack.pop(index)
+                        break
+                else:
+                    return
+                if node["id"]:
+                    # inner HTML is re-read from the source between this tag and its close: the
+                    # parser does not expose offsets, so the collector is only used for the ids.
+                    self.found[node["id"]] = ""
+
+        collector = Collector()
+        collector.feed(source)
+        # inner HTML by regex on the id, good enough because the assertion below compares
+        # STRUCTURE (ids and interactive tags), not text
+        out = {}
+        for key in set(re.findall(r'id="([^"]+)"', source)):
+            match = re.search(rf'<[a-z0-9]+[^>]*\bid="{re.escape(key)}"[^>]*>', source)
+            if not match:
+                continue
+            start = match.end()
+            end = source.find("</", start)
+            out[key] = source[start:end] if end > 0 else ""
+        return out
+
+    def test_a_translation_never_drops_an_interactive_child_or_a_live_value(self) -> None:
+        """The English value must keep everything the Italian element carries.
+
+        The first version replaced a `<label>`'s inner HTML and deleted the pattern checkboxes
+        inside it: in English the summary reported "no patterns" while every pattern still ran, and
+        switching back re-checked what the user had unticked. A translated element must not own an
+        interactive child, and must not own a LIVE child either (`#upload-limit`, `#entities-path`
+        are written by app.js, so a re-inserted copy would freeze at its load-time value).
+        """
+        inside = self._element_html()
+        pairs = re.findall(r'"#([a-z0-9-]+)":\s*\{\s*inner:\s*("(?:[^"\\]|\\.)*")', self.I18N)
+        self.assertGreater(len(pairs), 30, "the dictionary must not shrink to nothing")
+        for key, literal in pairs:
+            italian = inside.get(key, "")
+            english = json.loads(literal)
+            self.assertNotEqual(italian, "", f"{key}: the element must exist in index.html")
+            for live_id in re.findall(r'id="([^"]+)"', italian):
+                self.assertIn(
+                    live_id, english,
+                    f"{key}: the translation drops the child element id={live_id!r}, which would "
+                    "detach a live value or a control",
+                )
+            for tag in ("input", "button", "select", "textarea"):
+                self.assertEqual(
+                    len(re.findall(rf"<{tag}\b", italian)), len(re.findall(rf"<{tag}\b", english)),
+                    f"{key}: the translation changes the number of <{tag}> elements",
+                )
+
     def test_every_translation_key_still_exists_in_the_html(self) -> None:
         """A translation key that no longer matches an element is a DEFECT, not clutter.
 

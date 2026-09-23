@@ -23,14 +23,19 @@ const EN = {
   "#tab-audit": { inner: "Check" },
   "#tab-entities": { inner: "Dictionary" },
   "#drop-anon-title": { inner: "Drop the document here" },
-  "#drop-anon-hint": {
-    inner:
-      'doc · docx · pdf · txt · md · json · yaml · csv — up to <span id="upload-limit">160 MB</span>, or paste the text below',
-  },
+  "#drop-anon-hint": { inner: "doc · docx · pdf · txt · md · json · yaml · csv — up to" },
+  "#drop-anon-hint-tail": { inner: ", or paste the text below" },
   "#opt-pattern-legend": { inner: "Patterns" },
-  "#opt-identity": { inner: '<span>Identity</span> <span class="muted">email, URL, credentials</span>' },
-  "#opt-network": { inner: '<span>Network</span> <span class="muted">IPs, phones, hostnames</span>' },
-  "#opt-legal": { inner: '<span>Legal</span> <span class="muted">tax code, VAT, IBAN, plates, addresses</span>' },
+  // Keyed on the TEXT spans, never on the <label>: replacing a label's inner HTML destroys the
+  // <input> inside it — the pattern checkboxes disappeared in English, the summary then reported
+  // "no patterns" while all of them still ran, and switching back re-checked boxes the user had
+  // unticked. A translated element must never own an interactive child.
+  "#opt-identity-name": { inner: "Identity" },
+  "#opt-identity-hint": { inner: "email, URL, credentials" },
+  "#opt-network-name": { inner: "Network" },
+  "#opt-network-hint": { inner: "IPs, phones, hostnames" },
+  "#opt-legal-name": { inner: "Legal" },
+  "#opt-legal-hint": { inner: "tax code, VAT, IBAN, plates, addresses" },
   "#opt-catalogs-legend": { inner: 'Catalogs <span class="muted">— off: they redact heavily</span>' },
   "#catalogs-loading": { inner: "loading…" },
   "#entities-note": { inner: 'The <strong>custom dictionary</strong> is always active (the «Dictionary» tab).' },
@@ -65,10 +70,8 @@ const EN = {
       'One line per entity: <code>TIPO|value</code>, or just <code>value</code>. Aliases: <code>TIPO|value|alias</code>. Directives: <code>@type</code>, <code>@stem</code>, <code>@match case-sensitive</code>, <code>@context regex</code>',
   },
   "#entities-file-label": { inner: "File" },
-  "#entities-path-note": {
-    inner:
-      'File: <code id="entities-path">~/.anon/entities.txt</code> — it stays on your machine, outside any repository.',
-  },
+  "#entities-file-prefix": { inner: "File:" },
+  "#entities-path-tail": { inner: "— it stays on your machine, outside any repository." },
   "#save-entities": { inner: "Save" },
   "#download-entities": { inner: "Download the file" },
   "#suggest-title": { inner: "Suggestions from the local model" },

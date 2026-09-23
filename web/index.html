@@ -52,7 +52,7 @@
       <label class="drop" id="drop-anon">
         <input type="file" id="file-anon" hidden>
         <span class="drop-title" id="drop-anon-title">Trascina qui il documento</span>
-        <span class="muted small" id="drop-anon-hint">doc · docx · pdf · txt · md · json · yaml · csv — fino a <span id="upload-limit">160 MB</span>, oppure incolla il testo qui sotto</span>
+        <span class="muted small"><span id="drop-anon-hint">doc · docx · pdf · txt · md · json · yaml · csv — fino a</span> <span id="upload-limit">160 MB</span><span id="drop-anon-hint-tail">, oppure incolla il testo qui sotto</span></span>
       </label>
       <textarea id="text-anon" rows="6" placeholder="…incolla qui il testo da anonimizzare" spellcheck="false" aria-label="Testo da anonimizzare"></textarea>
 
@@ -61,9 +61,9 @@
         <div class="options-grid">
           <fieldset>
             <legend id="opt-pattern-legend">Pattern</legend>
-            <label id="opt-identity"><input type="checkbox" class="pattern" value="identity" checked> <span>Identità</span> <span class="muted">email, URL, credenziali</span></label>
-            <label id="opt-network"><input type="checkbox" class="pattern" value="network" checked> <span>Rete</span> <span class="muted">IP, telefoni, hostname</span></label>
-            <label id="opt-legal"><input type="checkbox" class="pattern" value="legal" checked> <span>Legale</span> <span class="muted">CF, P.IVA, IBAN, targa, indirizzi</span></label>
+            <label id="opt-identity"><input type="checkbox" class="pattern" value="identity" checked> <span id="opt-identity-name">Identità</span> <span class="muted" id="opt-identity-hint">email, URL, credenziali</span></label>
+            <label id="opt-network"><input type="checkbox" class="pattern" value="network" checked> <span id="opt-network-name">Rete</span> <span class="muted" id="opt-network-hint">IP, telefoni, hostname</span></label>
+            <label id="opt-legal"><input type="checkbox" class="pattern" value="legal" checked> <span id="opt-legal-name">Legale</span> <span class="muted" id="opt-legal-hint">CF, P.IVA, IBAN, targa, indirizzi</span></label>
           </fieldset>
           <fieldset>
             <legend id="opt-catalogs-legend">Cataloghi <span class="muted">— spenti: redigono molto</span></legend>
@@ -168,7 +168,7 @@
         <button id="download-entities">Scarica il file</button>
         <span id="entities-status" class="status" role="status" aria-live="polite"></span>
       </div>
-      <p class="muted small" id="entities-path-note">File: <code id="entities-path">~/.anon/entities.txt</code> — resta sulla tua macchina, fuori da ogni repository.</p>
+      <p class="muted small"><span id="entities-file-prefix">File:</span> <code id="entities-path">~/.anon/entities.txt</code> <span id="entities-path-tail">— resta sulla tua macchina, fuori da ogni repository.</span></p>
     </div>
 
     <!-- Il pannello si vede SEMPRE, anche senza modello: dice come accenderlo. Senza configurazione
