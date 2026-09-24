@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import array
 import fnmatch
+import hashlib
 import ipaddress
 import json
 import os
@@ -49,7 +50,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape as _sax_escape
 from typing import Callable, Iterable
 
-VERSION = "1.7.0"
+VERSION = "2.0.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
@@ -64,6 +65,82 @@ DICTIONARIES = {"entities": DEFAULT_ENTITIES, "people": DEFAULT_PEOPLE, "clients
 DEFAULT_MAPS = ANON_HOME / "maps"
 DEFAULT_ALLOW = ANON_HOME / "allow.txt"
 CATALOGS_DIR = ANON_HOME / "catalogs"
+
+# The code a build SHIPS: the fingerprint below covers exactly these paths, so the same algorithm on
+# the host (the repository) and inside the container (/app) answers one question — is the running
+# build the current code? `convert.py` is optional: it follows the image variant (`with_convert`),
+# so the full image (which has it) and the slim one (which does not) are each compared against their
+# own file set. `catalogs/` is data (`ANON_HOME/catalogs`, mounted over), not shipped code.
+CODE_FINGERPRINT_FILES = (
+    "anon.py",
+    "deanon.py",
+    "suggest.py",
+    "docker-entrypoint.sh",
+    "requirements-anydoc.txt",
+)
+CODE_FINGERPRINT_DIRS = ("web",)
+# The `.dockerignore` entries that can appear under the shipped dirs, listed here rather than parsed:
+# a file the build never copies must not move the digest, or a macOS `.DS_Store` landing in `web/`
+# would report a container stale that no rebuild can fix. A NEW ignore pattern in `.dockerignore`
+# that could match a file under `CODE_FINGERPRINT_DIRS` has to be added here too. The data suffixes
+# (`.map.json`, `.redacted.*`, `.deanon.*`) are deliberately NOT mapped: they cannot occur under
+# `web/`, and mapping patterns that cannot match would be noise.
+CODE_FINGERPRINT_IGNORED_DIRS = ("__pycache__", ".git", ".venv", "venv")
+CODE_FINGERPRINT_IGNORED_NAMES = (".DS_Store", ".env", ".gitignore")
+CODE_FINGERPRINT_IGNORED_SUFFIXES = (".pyc", ".md")
+
+
+def code_fingerprint(root: Path | None = None, *, with_convert: bool | None = None) -> str:
+    """A stable digest of the shipped code (engine + front-end), for the running-container check.
+
+    Deterministic on purpose: sorted relative paths, length-prefixed raw bytes, no mtime and no
+    environment, so two checkouts of the same code hash the same and a single edited byte changes
+    the digest. `with_convert=None` follows the tree (the file is included only if it is present);
+    a caller that knows the image variant states it, so the full build and the slim build are each
+    compared against their own file set. The web server reports the digest in `/api/state`;
+    `scripts/check-container-fresh.py` compares it with the repository's, which is how a container
+    that was never rebuilt after a fix is caught.
+    """
+    base = Path(root) if root is not None else Path(__file__).resolve().parent
+    names = list(CODE_FINGERPRINT_FILES)
+    if with_convert is None:
+        with_convert = (base / "convert.py").is_file()
+    if with_convert:
+        names.append("convert.py")
+
+    paths: list[Path] = []
+    for name in names:
+        candidate = base / name
+        if candidate.is_file():
+            paths.append(candidate)
+    for name in CODE_FINGERPRINT_DIRS:
+        directory = base / name
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix in CODE_FINGERPRINT_IGNORED_SUFFIXES:
+                continue
+            if path.name in CODE_FINGERPRINT_IGNORED_NAMES:
+                continue
+            # RELATIVE parts: `path.parts` spans the absolute path, so a checkout living under a
+            # directory named `venv` would filter out every file and the digest would stop moving.
+            if any(part in CODE_FINGERPRINT_IGNORED_DIRS for part in path.relative_to(base).parts):
+                continue
+            paths.append(path)
+
+    digest = hashlib.sha256()
+    for path in sorted(paths, key=lambda item: item.relative_to(base).as_posix()):
+        content = path.read_bytes()
+        digest.update(path.relative_to(base).as_posix().encode("utf-8"))
+        digest.update(b"\x00")
+        # Length-prefixed: without it the boundary between one file's bytes and the next file's name
+        # is ambiguous, and two different file sets can collide.
+        digest.update(str(len(content)).encode("ascii"))
+        digest.update(b"\x00")
+        digest.update(content)
+    return digest.hexdigest()
 
 # `[EMAIL-1]` is the bare form; `[EMAIL-1-a3f9]` carries a per-map tag. The tag is what makes a
 # WRONG MAP detectable: placeholders are numbered per document, so without it a document from run

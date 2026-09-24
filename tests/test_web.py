@@ -1032,6 +1032,16 @@ class WebUiTest(unittest.TestCase):
         self.assertEqual(status, 200, info)
         self.assertEqual(info["max_upload_bytes"], 160 * 1024 * 1024)
 
+    def test_state_reports_the_build_fingerprint(self) -> None:
+        """The page shows the build and `check-container-fresh.py` compares it: the version alone
+        moves only on a release, so it cannot tell a stale container from a current one."""
+        status, info = self.call("/api/state")
+        self.assertEqual(status, 200, info)
+        build = info["build"]
+        self.assertIsInstance(build, str)
+        self.assertEqual(len(build), 64)
+        self.assertTrue(all(character in "0123456789abcdef" for character in build), build)
+
     def test_the_map_count_is_not_capped_by_the_listing(self) -> None:
         """`/api/state` counted through the capped list: 300 maps would have reported 100."""
         before = len(list((self.tmp / "maps").glob("*.map.json")))

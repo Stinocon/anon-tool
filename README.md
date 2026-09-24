@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>v1.7.0</strong> — <a href="CHANGELOG.md">changelog</a>
+  <strong>v2.0.0</strong> — <a href="CHANGELOG.md">changelog</a>
 </p>
 
 ---
@@ -156,6 +156,14 @@ cannot open, falls back to the Markdown alone and says so. The reason not to red
 independently: the same placeholder would end up meaning two different values.
 
 `make up | down | logs | native | test | smoke` wraps the same operations.
+
+**A code change reaches the browser only after the container is rebuilt.** The image bakes the code
+(the file set is `anon.code_fingerprint`'s, not a list repeated here); the `~/.anon` volume holds data only. `make up` rebuilds (and `make up MODEL=1`
+keeps the suggestion-model sidecar attached), then `make check-container` — the `container-fresh`
+gate in `.pi/verify.json` — compares the build fingerprint the container reports of itself with the
+repository's and fails when a running container is stale. The invariant is `DEC-0024`. The version cannot serve as that marker: it
+moves on a release, not on a commit, and the header shows the build fingerprint next to it for
+exactly that reason.
 
 The upload cap is a default, not a wall: `ANON_MAX_UPLOAD_BYTES` (160 MB, exposed to the page
 through `/api/state` so the UI can refuse an oversized file before spending the transfer) raises it

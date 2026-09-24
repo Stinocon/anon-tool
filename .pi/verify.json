@@ -1,0 +1,7 @@
+{
+  "gates": [
+    { "name": "tests", "command": "make test" },
+    { "name": "container-fresh", "command": "python3 scripts/check-container-fresh.py" }
+  ],
+  "timeoutMs": 600000
+}

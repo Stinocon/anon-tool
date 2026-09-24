@@ -957,6 +957,78 @@ class CliTest(unittest.TestCase):
         self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
 
 
+class CodeFingerprintTest(unittest.TestCase):
+    """The build fingerprint is what makes a stale container detectable: deterministic, over the
+    shipped files, and moving the moment one of them is edited."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-fingerprint-"))
+        (self.tmp / "web").mkdir()
+        (self.tmp / "anon.py").write_text("x = 1\n", encoding="utf-8")
+        (self.tmp / "deanon.py").write_text("y = 2\n", encoding="utf-8")
+        (self.tmp / "suggest.py").write_text("z = 3\n", encoding="utf-8")
+        (self.tmp / "web" / "app.js").write_text("// a\n", encoding="utf-8")
+        (self.tmp / "web" / "index.html").write_text("<p></p>\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_same_tree_hashes_the_same(self) -> None:
+        first = anon.code_fingerprint(self.tmp)
+        self.assertEqual(first, anon.code_fingerprint(self.tmp), "the digest must be deterministic")
+        self.assertEqual(len(first), 64)
+
+    def test_an_edit_to_a_shipped_file_changes_the_digest_and_copy_artifacts_do_not(self) -> None:
+        first = anon.code_fingerprint(self.tmp)
+        (self.tmp / "web" / "app.js").write_text("// changed\n", encoding="utf-8")
+        changed = anon.code_fingerprint(self.tmp)
+        self.assertNotEqual(first, changed, "an edited shipped file must move the digest")
+        # Copy artifacts a build never ships must not move it, or a macOS `.DS_Store` landing in
+        # `web/` would report a container stale that no rebuild could fix.
+        (self.tmp / "web" / "__pycache__").mkdir()
+        (self.tmp / "web" / "__pycache__" / "app.pyc").write_bytes(b"\x00")
+        (self.tmp / "web" / ".DS_Store").write_bytes(b"\x00")
+        self.assertEqual(changed, anon.code_fingerprint(self.tmp))
+
+    def test_convert_follows_the_variant_so_slim_and_full_do_not_read_as_stale(self) -> None:
+        """`convert.py` is shipped by the full image only: it must move the digest when present, and
+        be excludable so a slim build is compared against its own file set."""
+        without = anon.code_fingerprint(self.tmp)  # the tree has no convert.py yet
+        self.assertEqual(without, anon.code_fingerprint(self.tmp, with_convert=False))
+        self.assertEqual(without, anon.code_fingerprint(self.tmp, with_convert=True))
+        (self.tmp / "convert.py").write_text("print()\n", encoding="utf-8")
+        automatic = anon.code_fingerprint(self.tmp)
+        self.assertNotEqual(without, automatic, "a present convert.py must move the digest")
+        self.assertEqual(automatic, anon.code_fingerprint(self.tmp, with_convert=True))
+        self.assertEqual(without, anon.code_fingerprint(self.tmp, with_convert=False))
+
+    def test_a_parent_directory_named_like_an_ignored_dir_does_not_blank_the_digest(self) -> None:
+        """`path.parts` used to span the ABSOLUTE path: a checkout under a directory named `venv`
+        had every file filtered out and the digest stopped moving, so a stale container read fresh.
+        The filter must look only at the path relative to the root."""
+        root = Path(tempfile.mkdtemp(prefix="anon-fingerprint-parent-"))
+        repo = root / "venv" / "repo"
+        (repo / "web").mkdir(parents=True)
+        (repo / "anon.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "web" / "app.js").write_text("// a\n", encoding="utf-8")
+        try:
+            before = anon.code_fingerprint(repo)
+            (repo / "web" / "app.js").write_text("// b\n", encoding="utf-8")
+            self.assertNotEqual(before, anon.code_fingerprint(repo))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_the_container_fresh_gate_is_wired_and_the_script_exists(self) -> None:
+        """A script nobody runs is a comment: the gate has to declare it."""
+        declaration = HOME / ".pi" / "verify.json"
+        self.assertTrue(declaration.is_file(), f"the gate declaration is missing: {declaration}")
+        verify = json.loads(declaration.read_text(encoding="utf-8"))
+        gates = {gate["name"]: gate["command"] for gate in verify["gates"]}
+        self.assertIn("container-fresh", gates)
+        self.assertIn("check-container-fresh.py", gates["container-fresh"])
+        self.assertTrue((HOME / "scripts" / "check-container-fresh.py").is_file())
+
+
 class AddressCorpusTest(unittest.TestCase):
     """The address rule, measured on a corpus instead of reasoned about.
 

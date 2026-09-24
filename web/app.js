@@ -284,7 +284,10 @@ function refreshButtons() {
 
 async function boot() {
   const info = await request("/api/state");
-  $("version").textContent = `v${info.version} · ${info.schema}`;
+  // Version AND the build fingerprint: two builds of one version are otherwise indistinguishable,
+  // and a container left behind after a fix then looks current. The full digest is in the tooltip.
+  $("version").textContent = `v${info.version} · ${info.schema} · ${String(info.build || "?").slice(0, 8)}`;
+  $("version").title = info.build ? `build ${info.build}` : "";
   const converter = $("converter-badge");
   converter.textContent = info.converter ? i18n.t("converter.badge.yes") : i18n.t("converter.badge.no");
   converter.className = info.converter ? "badge badge-ok" : "badge badge-warn";

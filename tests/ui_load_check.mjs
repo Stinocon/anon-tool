@@ -114,6 +114,7 @@ const stubPayload = (url) => {
     version: "test", schema: "anon/1", catalogs: [], patterns: ["identity"],
     maps_count: 0, converter: false, suggest: false, suggest_backend: null,
     suggest_max_chars: 20000, suggest_timeout: 60,
+    build: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678abcdef001122334455667788",
     entities_path: "/tmp/entities.txt",
     max_upload_bytes: 160 * 1024 * 1024,
   };
@@ -205,6 +206,13 @@ try {
   check(
     "the badge reports the seam as unconfigured",
     document.getElementById("suggest-state").textContent === "non configurato",
+  );
+
+  // La versione da sola non distingue due build: l'header deve mostrare anche la fingerprint.
+  check(
+    "the header shows the short build fingerprint",
+    document.getElementById("version").textContent.includes("a1b2c3d4"),
+    document.getElementById("version").textContent,
   );
 
   // Il contatore deve dire quanti caratteri sono in finestra: senza, un testo lungo sembra solo

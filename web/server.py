@@ -617,6 +617,11 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "schema": anon.SCHEMA,
             "version": anon.VERSION,
+            # The fingerprint of the code this build serves: the page shows it, and
+            # `scripts/check-container-fresh.py` compares it with the repository's to catch a
+            # container that was never rebuilt after a fix (the version alone never moves between
+            # commits, so it cannot tell a stale container from a current one).
+            "build": anon.code_fingerprint(),
             "catalogs": anon.list_catalogs(),
             "patterns": list(anon.PATTERN_FAMILIES),
             "maps_count": len(self._map_files()),

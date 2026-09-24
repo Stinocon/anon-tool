@@ -10,8 +10,16 @@ enforces that they agree.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-24
+
 ### Added
 
+- **The running container can no longer drift from the code.** `/api/state` reports a `build`
+  fingerprint of the code a build ships (the file set is `anon.code_fingerprint`'s), the header shows its short form, and
+  `scripts/check-container-fresh.py` compares it with the repository: a container left on an old
+  build fails the `container-fresh` gate in `.pi/verify.json` and prints the command that fixes it.
+  The version number never moved between commits, so a stale container looked current — which is how
+  a translated string shipped "fixed" and still showed Italian.
 - The interface speaks Italian and English, with Italian as the default: a header selector, the
   choice kept in `localStorage`, the Italian text in `index.html` as source and fallback, and
   `web/i18n.js` holding the English keyed by selector. Every string `app.js` composes goes through
@@ -145,6 +153,9 @@ enforces that they agree.
 
 ### Changed
 
+- **2.0.0: the local-model seam, the bilingual interface and the vendor/product catalogs are
+  gathered into a major release.** No interface is removed; the number marks the scope of the
+  release, and the build fingerprint above is the first thing it ships.
 - **The redacted document is streamed instead of base64-encoded into the JSON response.** It is
   published under `~/.anon/downloads/` (0600, pruned after an hour) and fetched from
   `GET /api/download/<id>` in 64 KB blocks, so the server holds one block at a time instead of

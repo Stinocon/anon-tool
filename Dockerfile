@@ -28,6 +28,9 @@ COPY requirements-anydoc.txt ./
 COPY catalogs ./catalogs
 COPY web ./web
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint
+# Also kept in /app so the build fingerprint (`anon.code_fingerprint`) sees the entrypoint: it is
+# code the image ships, and a change to it must count as a code change.
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 # Staged OUTSIDE /app: a smarter image must not claim a converter it does not have (/api/state
 # would answer `converter: true` and the UI would offer docx/pdf uploads that then fail). COPY
 # cannot be conditional, so presence is decided by the same RUN that installs the dependency.

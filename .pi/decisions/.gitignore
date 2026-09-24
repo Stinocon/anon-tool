@@ -1,0 +1,4 @@
+# The verification trail is derived: `verify.py` writes it from the evidence each run, so it is not
+# a source of truth and must not enter git. The decisions themselves ARE tracked — they are the
+# invariants a later change has to respect.
+verification.json

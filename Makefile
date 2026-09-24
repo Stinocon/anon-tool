@@ -13,7 +13,7 @@ SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model
+.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -21,12 +21,14 @@ help:
 up: ## start the container (loopback only). MODEL=1 keeps the suggestion model attached
 	$(COMPOSE) $(if $(MODEL),-f docker-compose.yml -f docker-compose.model.yml,) up -d --build
 	@echo "anon-tool on http://127.0.0.1:$(PORT)"
+	@python3 scripts/check-container-fresh.py  # a build that is up but stale is not "up"
 
 up-slim: ## start the text-only variant (no converter, port $(SLIM_PORT))
 	# The port is passed explicitly: compose reads ANON_SLIM_PORT, and printing a different
 	# variable than the one that binds the socket is how a URL ends up being wrong.
 	ANON_SLIM_PORT=$(SLIM_PORT) $(COMPOSE) --profile slim up -d --build anon-tool-slim
 	@echo "anon-tool (slim) on http://127.0.0.1:$(SLIM_PORT)"
+	@python3 scripts/check-container-fresh.py  # the same invariant on the slim path
 
 down: ## stop the container and the suggestion model, if it is running
 	# The model override is included on purpose: bringing down only the default project leaves the
@@ -63,6 +65,9 @@ bench-model: ## measure the seam against a loopback model: make bench-model URL=
 
 smoke: ## build the container and exercise every endpoint
 	bash scripts/smoke-docker.sh
+
+check-container: ## fail if a running container does not serve the current code
+	python3 scripts/check-container-fresh.py
 
 clean: ## remove the image (the data in $(ANON_HOME) is untouched)
 	docker rmi $(IMAGE) 2>/dev/null || true
