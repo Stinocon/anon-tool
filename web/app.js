@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestions: [] };
+const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestions: [] };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -17,7 +17,7 @@ async function request(path, options) {
   } catch {
     payload = {};
   }
-  if (!response.ok) throw new Error(payload.error || `richiesta fallita (${response.status})`);
+  if (!response.ok) throw new Error(payload.error || i18n.t("error.request", { status: response.status }));
   return payload;
 }
 
@@ -34,54 +34,69 @@ const humanSize = (bytes) => {
   return `${Math.max(1, Math.round(bytes / 1024))} kB`;
 };
 
-let progressTimer = null;
-let progressShownAt = 0;
+// Two bars reuse this code: the anonymization one and the model one, in different tabs. Each bar
+// keeps its OWN timer and start time — a single shared state made a suggest run stop the
+// anonymization bar, the upload's percentage write into the wrong bar, and vice versa.
 const PROGRESS_MIN_MS = 700; // a bar that blinks for 200ms is worse than none: keep it perceptible
+const PROGRESS_ANON = "anon-progress";
+const PROGRESS_SUGGEST = "suggest-progress";
+const progressState = new Map(); // bar id -> { timer, shownAt }
 
-function progressStart(label) {
-  progressShownAt = Date.now();
-  $("anon-progress").hidden = false;
-  $("anon-progress").classList.remove("is-waiting");
-  $("anon-progress-fill").style.width = "2%";
-  $("anon-progress-fill").textContent = "";
-  $("anon-progress-label").textContent = label;
+function progressStateOf(bar) {
+  let state = progressState.get(bar);
+  if (!state) {
+    state = { timer: null, shownAt: 0 };
+    progressState.set(bar, state);
+  }
+  return state;
 }
 
-function progressPercent(fraction) {
+function progressStart(label, bar = PROGRESS_ANON) {
+  progressStateOf(bar).shownAt = Date.now();
+  $(bar).hidden = false;
+  $(bar).classList.remove("is-waiting");
+  $(`${bar}-fill`).style.width = "2%";
+  $(`${bar}-fill`).textContent = "";
+  $(`${bar}-label`).textContent = label;
+}
+
+function progressPercent(fraction, bar = PROGRESS_ANON) {
   const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
-  $("anon-progress-fill").style.width = `${percent}%`;
-  $("anon-progress-fill").textContent = `${percent}%`;
+  $(`${bar}-fill`).style.width = `${percent}%`;
+  $(`${bar}-fill`).textContent = `${percent}%`;
 }
 
 /** The conversion and the anonymization happen inside ONE request, so there is no percentage to
     report while they run. The bar stops claiming one and shows elapsed time instead of a lie. */
-function progressWait(label) {
-  $("anon-progress").classList.add("is-waiting");
+function progressWait(label, bar = PROGRESS_ANON) {
+  const state = progressStateOf(bar);
+  $(bar).classList.add("is-waiting");
   const started = Date.now();
   const tick = () => {
     const seconds = Math.round((Date.now() - started) / 1000);
-    $("anon-progress-label").textContent = `${label} — ${seconds}s`;
+    $(`${bar}-label`).textContent = `${label} — ${seconds}s`;
   };
   tick();
-  clearInterval(progressTimer);
-  progressTimer = setInterval(tick, 1000);
+  clearInterval(state.timer);
+  state.timer = setInterval(tick, 1000);
 }
 
-function progressStop() {
-  clearInterval(progressTimer);
-  progressTimer = null;
-  const shown = Date.now() - progressShownAt;
+function progressStop(bar = PROGRESS_ANON) {
+  const state = progressStateOf(bar);
+  clearInterval(state.timer);
+  state.timer = null;
+  const shown = Date.now() - state.shownAt;
   if (shown < PROGRESS_MIN_MS) {
     // Hide LATER, not now: the point is that the operator sees the phases, not that the element
-    // is gone as fast as possible.
-    setTimeout(progressStop, PROGRESS_MIN_MS - shown);
+    // is gone as fast as possible. The bar is captured so the deferred stop stops THIS bar only.
+    setTimeout(() => progressStop(bar), PROGRESS_MIN_MS - shown);
     return;
   }
-  $("anon-progress").hidden = true;
-  $("anon-progress").classList.remove("is-waiting");
-  $("anon-progress-fill").style.width = "0%";
-  $("anon-progress-fill").textContent = "";
-  $("anon-progress-label").textContent = "";
+  $(bar).hidden = true;
+  $(bar).classList.remove("is-waiting");
+  $(`${bar}-fill`).style.width = "0%";
+  $(`${bar}-fill`).textContent = "";
+  $(`${bar}-label`).textContent = "";
 }
 
 /** POST that reports upload progress — `fetch` cannot. */
@@ -102,17 +117,17 @@ function requestWithProgress(path, headers, body, onProgress) {
         payload = {};
       }
       if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
-      else reject(new Error(payload.error || `richiesta fallita (${xhr.status})`));
+      else reject(new Error(payload.error || i18n.t("error.request", { status: xhr.status })));
     };
-    xhr.onerror = () => reject(new Error("caricamento interrotto (rete)"));
+    xhr.onerror = () => reject(new Error(i18n.t("error.network")));
     xhr.send(body);
   });
 }
 
-function show(button, busy, busyLabel = "Elaborazione…") {
+function show(button, busy, busyLabel) {
   if (busy) {
     button.dataset.label = button.textContent;
-    button.textContent = busyLabel;
+    button.textContent = busyLabel || i18n.t("busy.default");
     button.disabled = true;
   } else {
     if (button.dataset.label) button.textContent = button.dataset.label;
@@ -126,7 +141,7 @@ function chips(container, counts) {
   if (!entries.length) {
     const span = document.createElement("span");
     span.className = "chip chip-zero";
-    span.textContent = "nessuna sostituzione";
+    span.textContent = i18n.t("chips.none");
     container.append(span);
     return;
   }
@@ -206,9 +221,10 @@ document.querySelectorAll(".tab").forEach((tab, index, all) => {
 });
 
 /* ------------------------------------------------------------------ i18n
- * i18n.js is loaded before this file. If it is missing (a stale cache, a partial deploy) the
- * interface must stay Italian and usable, not throw on the first t(): the fallback returns the
- * Italian string instead of the key, so a missing dictionary never shows "theme.dark" to a user. */
+ * i18n.js is loaded before this file. If it is missing (a stale cache, a partial deploy) the page
+ * must not throw on the first t(). This fallback covers only the keys it LISTS and returns the key
+ * for the rest, so a missing dictionary degrades to key names — not to Italian, which lives in
+ * i18n.js as the one source, and not to a dead page. */
 const i18n = (() => {
   if (window.AnonI18n) return window.AnonI18n;
   const italian = {
@@ -246,8 +262,14 @@ function optionsSummary() {
   const patterns = selected(".pattern");
   const catalogs = selected(".catalog");
   const parts = [
-    patterns.length === 3 ? "tutti i pattern" : patterns.length ? `pattern: ${patterns.join(", ")}` : "nessun pattern",
-    catalogs.length ? `cataloghi: ${catalogs.join(", ")}` : "nessun catalogo",
+    patterns.length === 3
+      ? i18n.t("summary.allPatterns")
+      : patterns.length
+        ? i18n.t("summary.patterns", { list: patterns.join(", ") })
+        : i18n.t("summary.noPatterns"),
+    catalogs.length
+      ? i18n.t("summary.catalogs", { list: catalogs.join(", ") })
+      : i18n.t("summary.noCatalogs"),
   ];
   $("options-summary").textContent = `${i18n.t("options")} — ${parts.join(" · ")}`;
 }
@@ -283,6 +305,12 @@ async function boot() {
   $("suggest-state").textContent = state.suggest ? i18n.t("suggest.configured") : i18n.t("suggest.unconfigured");
   $("suggest-state").className = state.suggest ? "badge badge-ok" : "badge badge-warn";
   if (state.suggest) $("suggest-backend").textContent = info.suggest_backend || i18n.t("suggest.localModel");
+  // I limiti del modello vengono dal server, non da una copia qui: la finestra e il timeout sono
+  // suoi, e una seconda copia li farebbe divergere senza che nessuno se ne accorga.
+  state.suggestMaxChars = info.suggest_max_chars || null;
+  state.suggestTimeout = info.suggest_timeout || null;
+  updateSuggestLimits();
+  updateSuggestCount();
 
   state.converter = Boolean(info.converter);
   state.suggestBackend = info.suggest_backend || "";
@@ -290,13 +318,16 @@ async function boot() {
   const catalogs = info.catalogs || [];
   $("catalogs").innerHTML = "";
   if (!catalogs.length) {
-    $("catalogs").innerHTML = '<span class="muted small">nessun catalogo installato</span>';
+    const empty = document.createElement("span");
+    empty.className = "muted small";
+    empty.textContent = i18n.t("catalogs.none");
+    $("catalogs").append(empty);
   }
   for (const catalog of catalogs) {
     const label = document.createElement("label");
     label.innerHTML =
       `<input type="checkbox" class="catalog" value="${catalog.name}"> ` +
-      `<span>${catalog.name}</span> <span class="muted">${catalog.entries} voci</span>`;
+      `<span>${catalog.name}</span> <span class="muted">${i18n.t("catalogs.entries", { n: catalog.entries })}</span>`;
     label.querySelector("input").addEventListener("change", optionsSummary);
     $("catalogs").append(label);
   }
@@ -319,7 +350,10 @@ async function loadMaps() {
     list.append(note);
   }
   if (!maps.length) {
-    list.innerHTML = '<p class="map-empty">Nessuna mappa: anonimizza qualcosa nella prima scheda.</p>';
+    const empty = document.createElement("p");
+    empty.className = "map-empty";
+    empty.textContent = i18n.t("maps.none");
+    list.append(empty);
     return;
   }
   for (const map of maps) {
@@ -339,7 +373,7 @@ async function loadMaps() {
       `<input type="radio" name="map" value="${map.id}">` +
       `<span><span class="map-title">${map.id}</span><br>` +
       `<span class="map-meta">${(map.created || "").slice(0, 16).replace("T", " ")} · ` +
-      `${map.entries} voci · ${counts}${map.source ? ` · ${map.source}` : ""}</span></span>`;
+      `${i18n.t("maps.entries", { n: map.entries })} · ${counts}${map.source ? ` · ${map.source}` : ""}</span></span>`;
     const radio = card.querySelector("input");
     radio.addEventListener("change", () => {
       state.selectedMap = radio.value;
@@ -421,7 +455,7 @@ $("run-anon").addEventListener("click", async () => {
     } else {
       setStatus($("anon-status"), i18n.t("status.rulesApplied", { n: result.rules_applied }), "ok");
     }
-    $("mapping").innerHTML = '<span class="muted small">non ancora mostrata</span>';
+    $("mapping").innerHTML = `<span class="muted small">${i18n.t("mapping.notShown")}</span>`;
     $("anon-result").scrollIntoView({ block: "nearest" });
     await loadMaps();
   } catch (error) {
@@ -467,12 +501,12 @@ $("download-document").addEventListener("click", async () => {
 const REVEAL_TTL_MS = 60000;
 let revealTimer = null;
 
-function relockMapping(message = "valori reali rimossi dalla pagina") {
+function relockMapping(message) {
   if (revealTimer) {
     clearTimeout(revealTimer);
     revealTimer = null;
   }
-  $("mapping").innerHTML = `<span class="muted small">${message}</span>`;
+  $("mapping").innerHTML = `<span class="muted small">${message || i18n.t("mapping.relocked")}</span>`;
   $("hide-map").hidden = true;
 }
 
@@ -495,7 +529,7 @@ $("reveal-map").addEventListener("click", async () => {
     }
     $("hide-map").hidden = false;
     if (revealTimer) clearTimeout(revealTimer);
-    revealTimer = setTimeout(() => relockMapping("valori reali rimossi dalla pagina (tempo scaduto)"), REVEAL_TTL_MS);
+    revealTimer = setTimeout(() => relockMapping(i18n.t("mapping.relockedTimeout")), REVEAL_TTL_MS);
   } catch (error) {
     $("mapping").textContent = String(error.message || error);
   }
@@ -539,7 +573,7 @@ $("run-deanon").addEventListener("click", async () => {
     const extension = extensionOf(state.deanonFile.name);
     download(`${stripExtension(state.deanonFile.name)}-finale${extension}`, null, result.content_b64);
     setStatus($("deanon-status"),
-      report.complete ? "fatto: file scaricato" : "INCOMPLETO: vedi il dettaglio",
+      report.complete ? i18n.t("deanon.downloaded") : i18n.t("deanon.incompleteDetail"),
       report.complete ? "ok" : "error");
   } catch (error) {
     setStatus($("deanon-status"), String(error.message || error), "error");
@@ -597,11 +631,11 @@ $("run-audit").addEventListener("click", async () => {
     for (const item of result.near_miss || []) {
       const row = document.createElement("div");
       row.className = "row";
-      row.innerHTML = `<span class="k">riga ${item.line}</span><span class="muted">${item.kind} · ${item.type}</span><span></span>`;
+      row.innerHTML = `<span class="k">${i18n.t("audit.line", { n: item.line })}</span><span class="muted">${item.kind} · ${item.type}</span><span></span>`;
       row.lastChild.textContent = item.token ? `${item.token} ~ ${item.entity}` : item.token_masked;
       near.append(row);
     }
-    setStatus($("audit-status"), `verdetto: ${result.verdict}`, result.verdict === "clean" ? "ok" : "");
+    setStatus($("audit-status"), i18n.t("audit.verdict", { verdict: result.verdict }), result.verdict === "clean" ? "ok" : "");
   } catch (error) {
     setStatus($("audit-status"), String(error.message || error), "error");
   } finally {
@@ -685,6 +719,31 @@ function renderSuggestions(proposals) {
   }
 }
 
+/* I limiti del pannello: la finestra di caratteri che il modello riceve e il timeout della
+   chiamata. I numeri arrivano da `/api/state`; qui c'e' solo il testo che li nomina. */
+function updateSuggestLimits() {
+  const element = $("suggest-limits");
+  if (!element) return;
+  element.textContent = state.suggestMaxChars && state.suggestTimeout
+    ? i18n.t("suggest.limits", { max: state.suggestMaxChars, timeout: Math.round(state.suggestTimeout) })
+    : "";
+}
+
+/** Quanti caratteri sono stati incollati, e quanti ne ricevera' il modello: il resto non parte. */
+function updateSuggestCount() {
+  const element = $("suggest-count");
+  if (!element) return;
+  const text = $("suggest-text").value;
+  if (!text.length) {
+    element.textContent = "";
+    return;
+  }
+  const max = state.suggestMaxChars;
+  element.textContent = max
+    ? i18n.t("suggest.count", { n: text.length, max }) + (text.length > max ? i18n.t("suggest.countOver") : "")
+    : String(text.length);
+}
+
 $("suggest-run").addEventListener("click", async () => {
   const button = $("suggest-run");
   const text = $("suggest-text").value;
@@ -693,7 +752,11 @@ $("suggest-run").addEventListener("click", async () => {
     return;
   }
   button.disabled = true;
-  setStatus($("suggest-status"), i18n.t("suggest.reading"), "");
+  // La chiamata al modello e' sincrona e puo' durare fino al timeout: la barra mostra i secondi
+  // che passano invece di lasciare l'etichetta ferma, che si legge come "bloccato".
+  setStatus($("suggest-status"), "", "");
+  progressStart(i18n.t("suggest.reading"), PROGRESS_SUGGEST);
+  progressWait(i18n.t("suggest.reading"), PROGRESS_SUGGEST);
   try {
     const report = await request("/api/suggest", {
       method: "POST",
@@ -715,6 +778,7 @@ $("suggest-run").addEventListener("click", async () => {
     renderSuggestions([]);
     setStatus($("suggest-status"), String(error.message || error), "error");
   } finally {
+    progressStop(PROGRESS_SUGGEST);
     button.disabled = false;
   }
 });
@@ -745,17 +809,17 @@ $("suggest-add").addEventListener("click", () => {
   area.value = `${area.value.replace(/\s*$/, "")}\n${chosen.join("\n")}\n`;
   $("save-entities").disabled = false;
   renderSuggestions([]);
-  const added = `${chosen.length} aggiunte: premi Salva, poi rilancia l'anonimizzazione`;
+  const added = i18n.t("entities.added", { n: chosen.length });
   setStatus(
     $("suggest-status"),
-    skipped.length ? `${added} — ${skipped.length} non aggiunte (contengono «|» o un a capo)` : added,
+    skipped.length ? added + i18n.t("entities.addedSkipped", { n: skipped.length }) : added,
     skipped.length ? "error" : "ok",
   );
 });
 
 $("save-entities").addEventListener("click", async () => {
   const button = $("save-entities");
-  show(button, true, "Salvo…");
+  show(button, true, i18n.t("busy.saving"));
   try {
     const result = await request(`/api/entities?file=${encodeURIComponent(state.entitiesFile)}`, {
       method: "PUT",
@@ -823,6 +887,7 @@ dropzone($("drop-audit"), $("file-audit"), async (file) => {
 });
 
 for (const id of ["text-anon", "text-audit"]) $(id).addEventListener("input", refreshButtons);
+$("suggest-text").addEventListener("input", updateSuggestCount);
 $("entities-text").addEventListener("input", refreshButtons);
 document.querySelectorAll(".pattern").forEach((input) => input.addEventListener("change", optionsSummary));
 
@@ -836,6 +901,8 @@ function renderRuntimeLabels() {
   if (state.suggest) {
     $("suggest-backend").textContent = state.suggestBackend || i18n.t("suggest.localModel");
   }
+  updateSuggestLimits();
+  updateSuggestCount();
 }
 window.addEventListener("anon:lang-changed", () => {
   applyTheme(document.documentElement.dataset.theme || "dark");

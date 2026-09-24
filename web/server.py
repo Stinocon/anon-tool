@@ -623,6 +623,10 @@ class Handler(BaseHTTPRequestHandler):
             "converter": CONVERTER.is_file(),
             "suggest": SUGGEST_BACKEND is not None,
             "suggest_backend": SUGGEST_BACKEND.name if SUGGEST_BACKEND else None,
+            # The model's own bounds, stated by the server rather than copied into the page: the
+            # window is the module constant, the timeout belongs to the configured backend.
+            "suggest_max_chars": suggest_engine.DEFAULT_MAX_CHARS,
+            "suggest_timeout": getattr(SUGGEST_BACKEND, "timeout", suggest_engine.DEFAULT_TIMEOUT),
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),
             "entities_paths": {name: str(path) for name, path in anon.DICTIONARIES.items()},

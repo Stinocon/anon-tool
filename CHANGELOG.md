@@ -155,9 +155,20 @@ enforces that they agree.
   per visible character, whole-process RSS, not the index alone), at ~23% more time. The script runs
   both implementations, each in its own process, so the number can be re-measured instead of
   remembered.
+- **The suggestion panel declares the local model's bounds and shows the call moving.** The
+  character window that reaches the model (`suggest.DEFAULT_MAX_CHARS`, 20 000) and the timeout
+  (`--suggest-timeout`, 60 s) are stated in the panel from `/api/state` — the same rule as the upload
+  cap. A live counter under the textarea says how many characters are pasted and how many reach the
+  model, and the call drives the elapsed-seconds bar the anonymization uses, so a long text reads as
+  working instead of frozen until the 502.
 
 ### Fixed
 
+- **The English interface still showed Italian in the labels `app.js` composes.** The option summary
+  (`Opzioni — tutti i pattern · nessun catalogo`), the catalog list and its "N voci", the empty
+  states, the deanonimization verdict and the dictionary-add message were written straight into the
+  code, so the key test could not see them and the language switch never reached them. All of them
+  now go through `web/i18n.js`, and a test fails if those words reappear as literals in `app.js`.
 - **An IPv4 address at the end of a sentence was left in the output.** The pattern's trailing guard
   was `(?![\w.])`, which rejects the prefix of a longer dotted run (`.40.5`) but also rejects the
   full stop that closes the sentence: `10.20.30.40.` matched nothing, and a report writes an address

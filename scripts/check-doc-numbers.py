@@ -121,6 +121,14 @@ def main() -> int:
     # 6. the locator threshold: the number in DESIGN is the constant that decides which locator runs
     claim("scan word threshold", rf"{anon.SCAN_WORD_SOURCES_MIN} is the middle", "docs/DESIGN.md")
 
+    # 6b. the local model's bounds, as declared to the operator: the window that reaches it and the
+    # timeout we wait for an answer. Both are the seam's own constants, and the README states them.
+    import suggest  # noqa: E402 - the engine is already importable from ROOT
+
+    window = f"{suggest.DEFAULT_MAX_CHARS:,}".replace(",", " ")
+    claim("suggest window (README)", rf"{window} characters", "README.md")
+    claim("suggest timeout (README)", rf"{suggest.DEFAULT_TIMEOUT:g} s", "README.md")
+
     # 7. the counts stated for the shipped catalogs, bound to the files themselves
     catalogs = {name: ROOT / "catalogs" / f"{name}.txt" for name in ("it-cities", "vendors", "products")}
     for name, path in catalogs.items():

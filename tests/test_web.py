@@ -146,6 +146,35 @@ class StaticUiTest(unittest.TestCase):
         self.assertEqual(sorted(used - it_keys), [], "keys used in app.js and missing from the table")
         self.assertEqual(sorted(used - en_keys), [], "keys used in app.js without an English string")
 
+    def test_the_labels_app_js_composes_come_from_the_table_not_the_code(self) -> None:
+        """A string written straight into app.js is invisible to the dictionary, so it stays
+        Italian in an English session: `Opzioni — tutti i pattern · nessun catalogo` shipped that
+        way, because a hard-coded literal passes the key test above. These words may live only in
+        the i18n table."""
+        banned = [
+            "tutti i pattern",
+            "nessun pattern",
+            "nessun catalogo",
+            "nessuna sostituzione",
+            "Nessuna mappa: anonimizza",
+            "non ancora mostrata",
+            "valori reali rimossi dalla pagina",
+            "fatto: file scaricato",
+            "INCOMPLETO: vedi il dettaglio",
+            "aggiunte: premi Salva",
+            "Elaborazione…",
+            "Salvo…",
+            "richiesta fallita",
+            "caricamento interrotto",
+            "} voci",
+            "riga ${",
+            "verdetto:",
+        ]
+        for phrase in banned:
+            self.assertNotIn(
+                phrase, self.JS, f"{phrase!r} is hard-coded in app.js, so it can never translate"
+            )
+
     def test_a_translation_never_drops_an_interactive_child_or_a_live_value(self) -> None:
         """The English value must keep everything the Italian element carries.
 
@@ -239,7 +268,8 @@ class StaticUiTest(unittest.TestCase):
         # The CALL, not just the helper: asserting that the filter exists while nothing uses it is
         # an assertion that cannot fail. (Measured: removing the call left the suite green.)
         self.assertIn("dictionaryLine(type, proposal.value)", self.JS)
-        self.assertIn("non aggiunte", self.JS)
+        # The message now lives in the i18n table: the code must name the key, not the words.
+        self.assertIn('i18n.t("entities.addedSkipped"', self.JS)
 
     def test_a_capped_candidate_scan_is_stated_out_loud(self) -> None:
         """`candidates_capped` means the list is partial: silence would read as 'nothing found'."""
@@ -343,6 +373,29 @@ class SuggestTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(body["suggest"])
         self.assertIn("fake", body["suggest_backend"])
+
+    def test_the_state_states_the_model_window_and_timeout(self) -> None:
+        """The page learns the model's bounds from the server — the character window that reaches
+        it, and the timeout after which the call gives up — instead of keeping a copy that drifts
+        (the same rule as the upload cap). A long text with no declared window is what made the
+        panel look frozen before it timed out."""
+        status, body = self.call("/api/state")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["suggest_max_chars"], 20000, "the module's declared window")
+        self.assertEqual(body["suggest_timeout"], 60.0)
+
+        process, port, token = self._spawn(
+            self.tmp,
+            "--suggest-url", "http://127.0.0.1:9/v1/chat/completions",
+            "--suggest-model", "dead", "--suggest-timeout", "12",
+        )
+        try:
+            status, configured = self.call("/api/state", server=(process, port, token))
+            self.assertEqual(status, 200, configured)
+            self.assertEqual(configured["suggest_timeout"], 12.0, "the timeout is the backend's own")
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
 
     def test_proposals_are_located_and_a_hallucination_is_dropped(self) -> None:
         status, body = self.call("/api/suggest", {"text": "Il cliente Contoso ha rinnovato."})

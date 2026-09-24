@@ -113,6 +113,7 @@ const stubPayload = (url) => {
   return {
     version: "test", schema: "anon/1", catalogs: [], patterns: ["identity"],
     maps_count: 0, converter: false, suggest: false, suggest_backend: null,
+    suggest_max_chars: 20000, suggest_timeout: 60,
     entities_path: "/tmp/entities.txt",
     max_upload_bytes: 160 * 1024 * 1024,
   };
@@ -204,6 +205,18 @@ try {
   check(
     "the badge reports the seam as unconfigured",
     document.getElementById("suggest-state").textContent === "non configurato",
+  );
+
+  // Il contatore deve dire quanti caratteri sono in finestra: senza, un testo lungo sembra solo
+  // lento e va in timeout senza che l'operatore capisca perché.
+  const suggestText = document.getElementById("suggest-text");
+  suggestText.value = "a".repeat(25000);
+  suggestText.dispatchEvent({ type: "input" });
+  check(
+    "the character counter names the window when the text exceeds it",
+    /25000/.test(document.getElementById("suggest-count").textContent) &&
+      /20000/.test(document.getElementById("suggest-count").textContent),
+    document.getElementById("suggest-count").textContent,
   );
 
   if (failures.length) {

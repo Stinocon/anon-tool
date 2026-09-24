@@ -255,6 +255,15 @@ model is the part to choose: a small instruct model, or a bigger `--max-tokens`,
 call. What the seam guarantees is that a proposal is never taken on trust and a failure never looks
 like a clean document.
 
+**How much text it will actually read, declared up front.** The model receives at most the first
+**20 000 characters** of the text (`--max-chars`, on both the CLI and the UI's own window); the UI
+counts them live as you paste and says so, and the CLI reports `analyzed_chars` / `TRUNCATED`. That
+transport cap is not the practical limit: on this CPU a page or two already takes minutes, and the
+request gives up after the **60 s** timeout (`--timeout` on `suggest.py`, `--suggest-timeout` on the
+UI server) — a long text does not hang, it answers with an error. The panel shows elapsed seconds
+while it waits, so the call reads as working rather than frozen. To read more at once, split the
+document, raise the timeout, or point the seam at a faster model.
+
 ```bash
 python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
     --url http://127.0.0.1:11434/v1/chat/completions --model <nome-modello> --json

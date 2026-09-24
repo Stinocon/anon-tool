@@ -190,12 +190,18 @@
         Il pannello non scrive nulla da solo.
       </p>
       <p class="muted small"><span id="suggest-model-label">Modello:</span> <code id="suggest-backend">—</code></p>
+      <p class="muted small" id="suggest-limits"></p>
       <textarea id="suggest-text" rows="6" spellcheck="false"
         placeholder="…incolla qui il testo da far leggere al modello locale"
         aria-label="Testo per i suggerimenti"></textarea>
+      <p class="muted small" id="suggest-count"></p>
       <div class="actions">
         <button id="suggest-run" class="primary">Suggerisci</button>
         <span id="suggest-status" class="status" role="status" aria-live="polite"></span>
+      </div>
+      <div class="progress" id="suggest-progress" hidden>
+        <div class="progress-track"><div class="progress-fill" id="suggest-progress-fill"></div></div>
+        <span class="progress-label" id="suggest-progress-label" role="status" aria-live="polite"></span>
       </div>
       <p class="hint" id="suggest-hint">
         Un modello <em>reasoning</em> può impiegare decine di secondi, e può non rispondere affatto:
