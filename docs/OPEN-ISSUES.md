@@ -365,9 +365,12 @@ chosen by the same rule and checked by the gate above — the eight additions th
 words (`Ruckus`, `Arista`, `Oki`, `Zebra`, `Moxa`, `Sage`, `New Relic`, `Open Text`) carry their
 word, and the cost was re-measured at the new size (`scripts/bench-check.py --entities 164 --mb 5`,
 1.82 MB/s against the guard's 12 MB / 20 s). Declared and NOT closed: product and model names
-(`FortiGate`, `PowerEdge`, `BIG-IP`) remain out of scope by design, and the sentence-initial
-Italian elision (`Dell'azienda risulta…`) remains a KNOWN false positive that the format cannot
-express an exclusion for.
+(`FortiGate`, `PowerEdge`, `BIG-IP`) remain out of scope by design. The sentence-initial Italian
+elision (`Dell'azienda risulta…`) was a KNOWN false positive and is now CLOSED (2026-09-25): an
+entry followed by an apostrophe and a letter is the elided article, and the entity regex rejects it
+for every entry (`VendorsCatalogTest::test_the_elided_article_is_not_a_vendor`,
+`DirectivesTest::test_an_entity_followed_by_an_elided_article_is_not_matched`). The mirror residue,
+an elided article left with nothing after it (`via Un' 3`), is closed too, against `ELIDED_ARTICLES`.
 
 ## A hunt for defects in the areas the tests do NOT assert (2026-09-23)
 

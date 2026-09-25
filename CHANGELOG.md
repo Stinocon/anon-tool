@@ -30,6 +30,11 @@ enforces that they agree.
 
 ### Fixed
 
+- An elided Italian article no longer turns a proper name into a false positive: `Dell'azienda` is
+  "of the company", not the vendor Dell. The entity regex now rejects an entry followed by an
+  apostrophe and a letter, so it holds for EVERY entry, not just the vendor list; and the mirror
+  residue — an elided article left with nothing after it (`via Un' 3`) — is no longer an address,
+  against a bounded `ELIDED_ARTICLES` list.
 - A valid IBAN followed by a word was left in clear: the body matched `IT60 … 456 entro` (the
   `[A-Z0-9]` class is case-insensitive) and the checksum then rejected the over-long value, so the
   real IBAN was never redacted. The checksum now decides where the value ends: the loose body keeps

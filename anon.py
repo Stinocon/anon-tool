@@ -409,6 +409,20 @@ ADDRESS_SRC = (
 )
 ADDRESS_RE = re.compile(ADDRESS_SRC, re.IGNORECASE)
 
+# Elidable Italian function words, WITHOUT their apostrophe: when a truncation-apostrophe token
+# reduces to one of these (`Un'`, `Dell'`, `All'`), what followed was elided, not truncated — an
+# article left with nothing after it, not a street name. A list is needed because the two shapes are
+# otherwise identical; bounded on purpose (articles, prepositions, the common contractions).
+ELIDED_ARTICLES = frozenset({
+    "un", "uno", "una", "il", "lo", "la", "l", "gli", "le", "i",
+    "del", "dello", "della", "dei", "degli", "delle",
+    "al", "allo", "alla", "ai", "agli", "alle",
+    "dal", "dallo", "dalla", "dai", "dagli", "dalle",
+    "nel", "nello", "nella", "nei", "negli", "nelle",
+    "sul", "sullo", "sulla", "sui", "sugli", "sulle",
+    "col", "coi", "coll", "quest", "quell", "bell", "grand", "sant", "tutt", "mezz",
+})
+
 
 def _address_street(value: str) -> str | None:
     """The street-name part of a matched address, with its ORIGINAL capitalization.
@@ -449,15 +463,14 @@ def _valid_address(value: str) -> bool:
         # mechanically distinguishable: a MEDIAL apostrophe elides an article (the name is what
         # follows), a TRAILING one truncates the name itself — so a token that ends with an
         # apostrophe is read before it too. Only the LAST token, because the article of a name
-        # whose space is misplaced (`via L' anno scorso, 3`) also ends with an apostrophe; what
-        # stays is the residue below, declared rather than guessed at.
+        # whose space is misplaced (`via L' anno scorso, 3`) also ends with an apostrophe.
         #
-        # Declared residue: a capitalized elided article left with nothing after it (`via Un' 3`)
-        # still reads as a truncated name. Closing it would take a list of Italian article forms,
-        # which is a second dictionary to keep true.
+        # An article left with nothing after it (`via Un' 3`) reduces to `Un`, which is why the
+        # reduced form is checked against ELIDED_ARTICLES: a capital letter is necessary but not
+        # sufficient, and this residue is now closed instead of declared.
         if index == len(tokens) - 1 and token.endswith(("'", "\u2019")):
             truncated = token.rstrip("'\u2019").rsplit("'", 1)[-1].rsplit("\u2019", 1)[-1]
-            if truncated[:1].isupper():
+            if truncated[:1].isupper() and truncated.casefold() not in ELIDED_ARTICLES:
                 return True
     return False
 
@@ -709,7 +722,7 @@ def _entity_regexes(
         normalized_inner = unicodedata.normalize(form, inner)
         normalized_context = unicodedata.normalize(form, context) if context else None
         normalized_prefix = f"(?:{normalized_context})(?<!\\w)" if context else prefix
-        full = f"{normalized_prefix}(?P<{ENTITY_GROUP}>{normalized_inner})(?!\\w)"
+        full = f"{normalized_prefix}(?P<{ENTITY_GROUP}>{normalized_inner})(?!\\w)(?!['\u2019]\\w)"
         if full in seen:  # pure-ASCII entries normalize to the same pattern twice
             continue
         seen.add(full)

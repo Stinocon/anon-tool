@@ -1079,6 +1079,10 @@ class AddressCorpusTest(unittest.TestCase):
         "via Un' anno intero, 3",
         "il viale alberato 2 piani",
         "nessun indirizzo in questa riga",
+        # Un articolo eliso rimasto senza nome: la forma ridotta e' `Un`, che e' un articolo, non un
+        # nome troncato (prima era un residuo dichiarato; ora `ELIDED_ARTICLES` lo chiude).
+        "via Un' 3",
+        "via dell' 3",
         "via roma 12 in minuscolo (trade-off dichiarato: non redatto)",
         "il corso d'acqua 2 metri",
     )
@@ -1259,6 +1263,12 @@ class DirectivesTest(unittest.TestCase):
             with self.subTest(line=line), self.assertRaises(ValueError) as ctx:
                 self.entities(line)
             self.assertIn("contains a space", str(ctx.exception))
+
+    def test_an_entity_followed_by_an_elided_article_is_not_matched(self) -> None:
+        """The elision is a property of the MATCH, not of the vendor list: any entry behaves so."""
+        entities = self.entities("AZIENDA|Dell\n")
+        self.assertEqual(anon.detect("Dell'azienda cresce", entities), [])
+        self.assertTrue(anon.detect("un server Dell", entities))
 
     def test_case_sensitive_keeps_lowercase_words_intact(self) -> None:
         entities = self.entities("@type CITTÀ\n@match case-sensitive\nPrato\n")
@@ -1591,10 +1601,14 @@ class VendorsCatalogTest(CatalogBlocksTest):
         for text in ("DellOrto e figli snc", "NetgearSwitch", "il connettore HPX"):
             self.assertEqual(self.matched(text), [], f"{text!r} is one word, not a vendor")
 
-    def test_the_declared_elision_false_positive_is_what_the_header_says(self) -> None:
-        # DECLARED RESIDUAL, not a claim of correctness: an apostrophe is not a word character and
-        # the format has no per-entry exclusion, so the sentence-initial article is eaten.
-        self.assertEqual(self.matched("Dell'azienda risulta in regola"), ["Dell"])
+    def test_the_elided_article_is_not_a_vendor(self) -> None:
+        """`Dell'azienda` is "of the company", not the vendor Dell: an entry followed by an
+        apostrophe and a letter is an elided Italian article. This was a DECLARED false positive;
+        it is closed at the entity regex, so it holds for EVERY dictionary entry, not just Dell."""
+        self.assertEqual(self.matched("Dell'azienda risulta in regola"), [])
+        # A real reference still matches: the lookahead only fires on apostrophe + letter.
+        self.assertEqual(self.matched("l'ordine per Dell è partito"), ["Dell"])
+        self.assertEqual(self.matched("server Dell in sede"), ["Dell"])
 
     # --- the second block, and what the map does with it ---
 

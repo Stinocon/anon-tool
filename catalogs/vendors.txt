@@ -52,10 +52,6 @@
 #     hostnames, which the HOST rule already covers. Add the ones you meet to `~/.anon/entities.txt`.
 #   * THE LOWERCASE SPELLING OF A BLOCK-1 NAME (`dell`, `hp`, `canon`): that is the whole point of
 #     block 1.
-#   * A DECLARED FALSE POSITIVE: a sentence that opens with the elided Italian article and the
-#     company name — "Dell'azienda risulta..." — IS redacted, because an apostrophe is not a word
-#     character and no entry can express a negative lookahead. The format has no per-entry
-#     exclusion: if it bites, keep the list off for that document or drop `Dell` here.
 #   * Vendors that are ordinary words with no unambiguous form are deliberately ABSENT, not
 #     forgotten: `LG`, `F5` (the bare token IS the refresh key — the company is here as
 #     `F5 Networks`), `MSI` (the Windows installer extension), `AVG`, `Sharp`, `Crucial`,

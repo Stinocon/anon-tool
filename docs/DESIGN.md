@@ -201,7 +201,9 @@ Prato
   it is **two blocks**, `@match case-sensitive` for the vendor names that are also ordinary words or
   short acronyms (`Dell`/`dell'aria`, `Canon`/`canon`, `Axis`/`axis`, `HP`) and `@match insensitive`
   for the rest, so a lowercase spelling matches without `dell'aria` being eaten. Its declared gaps
-  (product/model names, the sentence-initial elision) are stated in the file's own header.
+  (product/model names) are stated in the file's own header; the sentence-initial elision
+  (`Dell'azienda risulta…`) is no longer one of them — an entry followed by an apostrophe and a
+  letter is the elided article, and the entity regex rejects it for every entry.
 - Pattern groups (regex rules) are tagged (`identity`, `network`, `fintech`, `it-legal`) and
   toggled the same way.
 
