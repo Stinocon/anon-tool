@@ -315,6 +315,17 @@ Declared residuals of the sweep:
   leftover, and text inside a comment cannot escape a `--`; a value that must not travel belongs in
   the document text, not in its comments.
 
+  The same scanner treats a construct with NO terminator (a `<` that never closes, a comment or an
+  instruction that is never closed) as ordinary TEXT. That is the fail-safe direction, and it is a
+  fixed defect, not a residual: an earlier version of the scanner ran the span to the end of the part
+  instead, which took the whole tail out of the redaction and out of the verification at once — the
+  same blind spot on both sides, so a value was delivered while the tool reported nothing found.
+- `_is_pdf` (`web/server.py`) classifies by a `%PDF-<version>` match anywhere in the first 1032
+  bytes, the same definition `anon.sniff` uses. A non-PDF carrying that byte sequence in its head is
+  therefore offered back as a rebuilt PDF of its own redacted text: benign — the content is the
+  redacted text and the response says the layout was rebuilt — but it is a mismatch between the name
+  and the bytes, accepted deliberately for consistency with the container check.
+
 ### Adversarial review of the container pass (2026-09-22) — every finding accounted for
 
 Review by a different model on the engine + UI of the container pass. Four real defects, all fixed

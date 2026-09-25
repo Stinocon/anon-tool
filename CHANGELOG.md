@@ -17,7 +17,10 @@ enforces that they agree.
   markup span early, leaking the tail into the visible text and shifting every offset after it —
   a value could hide in the disagreement between the file and its reading. `MARKUP_RE` (`<[^>]*>`)
   is replaced by a scanner in `anon.py`; a CDATA body is now scanned as text, and the body of an XML
-  comment is declared as not scanned (it is never rendered).
+  comment is declared as not scanned (it is never rendered). A construct with NO terminator — a `<`
+  that never closes — is treated as text instead: hiding the tail behind it would take it out of the
+  redaction and out of the verification at the same time, so a value would be delivered while the
+  tool reported that it found nothing.
 
 ### Added
 

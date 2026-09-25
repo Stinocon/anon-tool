@@ -1915,7 +1915,8 @@ XML_SUFFIXES = (".xml", ".rels")
 
 def _tag_end(xml: str, start: int) -> int:
     """Index just past the `>` that closes a tag opened at `start`, ignoring `>` inside a quoted
-    attribute value — `<w:t x="a&gt;b">` is one tag, not two (writing the literal `>` here)."""
+    attribute value — `<w:t x="a&gt;b">` is one tag, not two (writing the literal `>` here).
+    `-1` when there is no closing `>`, including one swallowed by an unterminated quote."""
     index = start
     quote = ""
     while index < len(xml):
@@ -1928,12 +1929,12 @@ def _tag_end(xml: str, start: int) -> int:
         elif char == ">":
             return index + 1
         index += 1
-    return len(xml)
+    return -1
 
 
 def _declaration_end(xml: str, start: int) -> int:
     """Index just past the `>` that closes a `<!DOCTYPE`/`<!ENTITY`, honouring an internal subset
-    (`[ ... ]`), which may itself contain `>`."""
+    (`[ ... ]`), which may itself contain `>`; `-1` when there is no such `>`."""
     index = start
     quote = ""
     depth = 0
@@ -1951,7 +1952,7 @@ def _declaration_end(xml: str, start: int) -> int:
         elif char == ">" and depth == 0:
             return index + 1
         index += 1
-    return len(xml)
+    return -1
 
 
 def markup_spans(xml: str):
@@ -1965,6 +1966,12 @@ def markup_spans(xml: str):
       * a CDATA body is character data, i.e. TEXT — the old regex dropped part of it as markup.
     The CDATA body is therefore left as text (only its two delimiters are markup); the body of a
     comment is not, because a reader never sees it.
+
+    A construct with NO terminator is not markup either: a `<` that never closes is ordinary text,
+    and letting the span run to the end of the part would take that text out of the redaction AND
+    out of the verification at the same time — the same blind spot on both sides, which is the one
+    failure this file refuses. Hiding less is the safe direction; the old regex, requiring a `>`,
+    happened to do the same.
     """
     index = 0
     length = len(xml)
@@ -1973,8 +1980,8 @@ def markup_spans(xml: str):
         if start == -1:
             return
         if xml.startswith("<!--", start):
-            end = xml.find("-->", start + 4)
-            end = length if end == -1 else end + 3
+            close = xml.find("-->", start + 4)
+            end = -1 if close == -1 else close + 3
         elif xml.startswith("<![CDATA[", start):
             yield (start, start + 9)
             close = xml.find("]]>", start + 9)
@@ -1984,12 +1991,16 @@ def markup_spans(xml: str):
             index = close + 3
             continue
         elif xml.startswith("<?", start):
-            end = xml.find("?>", start + 2)
-            end = length if end == -1 else end + 2
+            close = xml.find("?>", start + 2)
+            end = -1 if close == -1 else close + 2
         elif xml.startswith("<!", start):
             end = _declaration_end(xml, start + 2)
         else:
             end = _tag_end(xml, start + 1)
+        if end == -1:
+            # The `<` is text: scan from just after it, so the value it was hiding is seen.
+            index = start + 1
+            continue
         yield (start, end)
         index = end
 

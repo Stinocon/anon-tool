@@ -1932,12 +1932,27 @@ class MarkupTokenTest(unittest.TestCase):
         self.assertEqual(visible, "ciao")
         self.assertEqual("".join(xml[offset] for offset in offsets), "ciao")
 
+    @staticmethod
+    def _redact_part(tmp: Path, part: str):
+        """Redact a one-part container and return `(completed process, output path)`."""
+        docx = tmp / "edge.docx"
+        with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "[Content_Types].xml",
+                '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
+                'package/2006/content-types"/>',
+            )
+            archive.writestr("word/document.xml", part)
+        out = tmp / "edge.redacted.docx"
+        run = subprocess.run([sys.executable, str(ANON_PY), str(docx), "--out", str(out)],
+                             capture_output=True, text=True)
+        return run, out
+
     def test_the_container_pass_redacts_beside_a_gt_attribute_and_inside_cdata(self) -> None:
         """End to end: the value after a `>`-bearing attribute and the value inside CDATA both go,
         and the package is still a legal document."""
         tmp = Path(tempfile.mkdtemp(prefix="anon-markup-"))
         try:
-            docx = tmp / "edge.docx"
             body = (
                 '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
                 '<w:p w:rsid="a>b"><w:r><w:t>Prima mario.rossi@contoso.it dopo</w:t></w:r></w:p>'
@@ -1945,16 +1960,7 @@ class MarkupTokenTest(unittest.TestCase):
                 "<w:p><w:r><w:t><![CDATA[cd: altro.test@contoso.it]]></w:t></w:r></w:p>"
                 "</w:body></w:document>"
             )
-            with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr(
-                    "[Content_Types].xml",
-                    '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
-                    'package/2006/content-types"/>',
-                )
-                archive.writestr("word/document.xml", body)
-            out = tmp / "edge.redacted.docx"
-            run = subprocess.run([sys.executable, str(ANON_PY), str(docx), "--out", str(out)],
-                                 capture_output=True, text=True)
+            run, out = self._redact_part(tmp, body)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             text = anon.container_text(out)
             self.assertIn("[EMAIL-1-", text)
@@ -1967,6 +1973,34 @@ class MarkupTokenTest(unittest.TestCase):
             # DECLARED: an XML comment is never rendered, so it is not scanned as text. See
             # docs/OPEN-ISSUES.md; the value here is expected to remain.
             self.assertIn("valore@nascosto.it", part)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_an_unterminated_construct_is_text_not_markup(self) -> None:
+        """A `<` that never closes is ordinary text: letting its span run to the end of the part
+        would take that text out of the redaction AND out of the verification at once — the same
+        blind spot on both sides, which is how a value is delivered while the tool reports that it
+        found nothing. The old regex required a `>`, so it did the safe thing here by accident."""
+        for xml in ("a < b", "pre <!-- unterminated", "pre <?pi unterminated",
+                    '<a x="v>unterminated quote'):
+            self.assertEqual(anon.visible_text(xml), xml, xml)
+
+    def test_an_unterminated_tag_does_not_hide_the_value_after_it(self) -> None:
+        """The end-to-end form of the same defect: the tail must be scanned, so the address is
+        redacted and the verification (which shares this view) can see it."""
+        tmp = Path(tempfile.mkdtemp(prefix="anon-markup-"))
+        try:
+            part = (
+                '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+                "<w:p><w:r><w:t>keep</w:t></w:r></w:p></w:body></w:document>"
+                "trailing <x mario.rossi@contoso.it"
+            )
+            run, out = self._redact_part(tmp, part)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertNotIn("mario.rossi@contoso.it", anon.container_text(out))
+            self.assertNotIn("mario.rossi@contoso.it",
+                             zipfile.ZipFile(out).read("word/document.xml").decode("utf-8"))
+            self.assertIn("[EMAIL-1-", anon.container_text(out))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
