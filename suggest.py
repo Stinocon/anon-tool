@@ -58,6 +58,32 @@ DEFAULT_MAX_TOKENS = 1024
 MIN_VALUE_LENGTH = 3
 MAX_OCCURRENCES = 20
 
+# The shape the model is asked for, as a JSON Schema, so the BACKEND constrains the decoding
+# instead of the seam defending against a free-form answer afterwards. A reasoning model that
+# narrates its "Thinking Process" instead of answering cannot produce it at all when the grammar is
+# pinned: the failure class disappears rather than being reported. The seam's fail-closed handling
+# stays — a constrained backend can still time out, 500 or truncate.
+CANDIDATES_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "candidates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                    "type": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["candidates"],
+    "additionalProperties": False,
+}
+
 
 class BackendError(RuntimeError):
     """The backend did not answer usably. Always fatal: never an empty result set."""
@@ -222,12 +248,14 @@ class LoopbackBackend:
         api_key: str | None = None,
         headers: dict[str, str] | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        constrained: bool = False,
     ) -> None:
         self.url = check_loopback(url)
         self.model = model
         self.timeout = timeout
         self.transport = transport or _http_post
         self.max_tokens = max_tokens
+        self.constrained = constrained
         self.headers = dict(headers or {})
         # An explicit `--header Authorization:` wins over `--api-key`: the operator wrote it by hand.
         if api_key and not any(name.lower() == "authorization" for name in self.headers):
@@ -250,6 +278,14 @@ class LoopbackBackend:
             "max_tokens": self.max_tokens,
             "stream": False,
         }
+        if self.constrained:
+            # Supported by llama.cpp, vLLM and the OpenAI-compatible servers that implement the
+            # `json_schema` response format. Off by default: an endpoint that rejects the field
+            # would turn every call into a 400, and a local Ollama may not accept it.
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "candidates", "schema": CANDIDATES_SCHEMA},
+            }
         try:
             raw = self.transport(payload, self.url, self.timeout, self.headers)
         except Exception as exc:  # noqa: BLE001 - every transport failure is the same failure here
@@ -420,6 +456,7 @@ def build_backend(args: argparse.Namespace) -> NullBackend | LoopbackBackend:
         api_key=(args.api_key or "").strip() or None,
         headers=parse_headers(args.header),
         max_tokens=args.max_tokens,
+        constrained=getattr(args, "constrained", False),
     )
 
 
@@ -455,6 +492,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                         help=f"how much of the document to send (default {DEFAULT_MAX_CHARS}); always declared")
     parser.add_argument("--limit", type=int, default=100, help="how many candidates to report (default 100)")
+    parser.add_argument(
+        "--constrained", action="store_true",
+        help="pin the answer to the JSON schema (llama.cpp/vLLM): a backend that would narrate instead "
+        "of answering cannot produce a non-schema reply. Off by default, for endpoints that reject it.",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
     return parser
 

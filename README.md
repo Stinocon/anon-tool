@@ -299,6 +299,12 @@ python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
 - **The model never decides what is redacted**: a value it returns that is not in the document is
   dropped, and applying a proposal stays `anon.py`'s job.
 
+**The answer's SHAPE is enforced, not hoped for.** `--suggest-constrained` puts a JSON Schema in the
+request (`--constrained` on `suggest.py`) and the backend constrains the decoding to it, so a model
+that would narrate its "thinking process" cannot produce a non-schema reply — the failure class is
+removed, not reported. It is **off by default**: an endpoint that rejects the field would turn every
+call into a 400, and the shipped sidecar is where it is turned on.
+
 The panel is always in the Dizionario tab and tells you whether the seam is configured; with no
 model it is inert and says how to enable it.
 

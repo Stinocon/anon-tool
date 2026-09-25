@@ -163,6 +163,7 @@ def build_suggest_backend(args: argparse.Namespace) -> suggest_engine.Backend | 
         headers=suggest_engine.parse_headers(args.suggest_header),
         max_tokens=args.suggest_max_tokens,
         timeout=args.suggest_timeout,
+        constrained=getattr(args, "suggest_constrained", False),
     )
 
 
@@ -632,6 +633,7 @@ class Handler(BaseHTTPRequestHandler):
             # window is the module constant, the timeout belongs to the configured backend.
             "suggest_max_chars": suggest_engine.DEFAULT_MAX_CHARS,
             "suggest_timeout": getattr(SUGGEST_BACKEND, "timeout", suggest_engine.DEFAULT_TIMEOUT),
+            "suggest_constrained": bool(getattr(SUGGEST_BACKEND, "constrained", False)),
             "maps_dir": str(anon.DEFAULT_MAPS),
             "entities_path": str(anon.DEFAULT_ENTITIES),
             "entities_paths": {name: str(path) for name, path in anon.DICTIONARIES.items()},
@@ -902,6 +904,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=suggest_engine.DEFAULT_TIMEOUT,
         help=f"seconds to wait for the local model (default {suggest_engine.DEFAULT_TIMEOUT:g})",
+    )
+    parser.add_argument(
+        "--suggest-constrained",
+        action="store_true",
+        help="pin the model's answer to the JSON schema (llama.cpp/vLLM); off by default so an "
+        "endpoint that rejects the field is not turned into a 400 on every call",
     )
     parser.add_argument(
         "--allow-lan",

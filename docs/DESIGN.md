@@ -244,6 +244,12 @@ on the server; inert without them — the panel is always visible and says so). 
 edited — the write path that already exists — and the operator still presses Save and re-runs the
 redaction: the seam never writes.
 
+The answer's shape is pinned by the backend's decoding where the endpoint supports it
+(`--suggest-constrained`, on for the shipped sidecar): the request carries a JSON Schema for
+`{"candidates": [{"value", "type", "reason"}]}`, so a model that would narrate instead of answering
+is never given the chance to. The seam stays fail-closed regardless — a constrained backend can still
+time out, 500 or truncate.
+
 A model now ships: Qwen2.5-3B-Instruct (Q4_K_M), started by `make model` as a sidecar that shares
 the UI container's network namespace, so its `127.0.0.1:8080` is the same loopback the seam already
 accepts and nothing new is published (loopback-only and fail-closed are unchanged, DEC-0018/0019).

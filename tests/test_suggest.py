@@ -119,6 +119,27 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(seen["headers"]["x-mtplx-client"], "pi")
         self.assertEqual(seen["headers"]["Authorization"], "Bearer local-key")
 
+    def test_constrained_decoding_pins_the_answer_to_the_schema(self) -> None:
+        """The shape is enforced by the BACKEND's decoding, not defended against afterwards."""
+        seen: dict[str, object] = {}
+
+        def transport(payload, url, timeout, headers):  # noqa: ANN001, ARG001
+            seen.update(payload=payload)
+            return completion('{"candidates": []}')
+
+        free = suggest.LoopbackBackend("http://127.0.0.1:8080/v1/chat/completions", "qwen", transport=transport)
+        free.complete("testo")
+        # Default OFF: an endpoint that rejects the field must not become a 400 on every call.
+        self.assertNotIn("response_format", seen["payload"])
+
+        pinned = suggest.LoopbackBackend("http://127.0.0.1:8080/v1/chat/completions", "qwen",
+                                         transport=transport, constrained=True)
+        pinned.complete("testo")
+        response_format = seen["payload"]["response_format"]  # type: ignore[index]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(response_format["json_schema"]["schema"]["required"], ["candidates"])
+        self.assertEqual(response_format["json_schema"]["schema"]["additionalProperties"], False)
+
     def test_a_failing_transport_is_an_error_never_an_empty_answer(self) -> None:
         def transport(payload, url, timeout, headers):  # noqa: ANN001, ARG001
             raise TimeoutError("no answer in 60s")
@@ -430,6 +451,21 @@ class LocalModelTest(unittest.TestCase):
             # Whatever the model proposed, it must have been LOCALIZED in the text by the engine:
             # a value that is not in the document cannot be a candidate.
             self.assertIn(candidate["value"], text)
+
+    def test_a_constrained_backend_obeys_the_schema_on_a_real_model(self) -> None:
+        """With the schema pinned, a reply that is not the schema cannot exist.
+
+        Opt-in (`ANON_MODEL_CONSTRAINED=1`): an endpoint that REJECTS the `response_format` field
+        would fail here, correctly, and that is not what the default run is asserting.
+        """
+        if not os.environ.get("ANON_MODEL_CONSTRAINED"):
+            self.skipTest("set ANON_MODEL_CONSTRAINED=1 to exercise constrained decoding")
+        backend = suggest.LoopbackBackend(
+            self.URL, self.MODEL, timeout=float(os.environ.get("ANON_MODEL_TIMEOUT", "200")), constrained=True
+        )
+        text = "Verbale per il cliente di Ancona: referente il dott. Rossi, tel. 02 1234567."
+        report = suggest.suggest(text, backend, entities=[])
+        self.assertIn("candidates", report)
 
 
 if __name__ == "__main__":

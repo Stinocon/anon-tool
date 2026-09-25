@@ -12,6 +12,11 @@ enforces that they agree.
 
 ### Added
 
+- Constrained decoding for the suggestion seam: `--suggest-constrained` (server), `--constrained`
+  (`suggest.py`) put a JSON Schema in the request so a llama.cpp/vLLM backend constrains the answer
+  to `{"candidates": [...]}`. Off by default; the shipped sidecar turns it on. The failure class
+  "narrated a Thinking Process instead of answering JSON" is removed at the decoding, not reported
+  after it.
 - A labelled, synthetic recall corpus (`tests/corpus.py`) and `scripts/recall-sweep.py` (`make
   recall`): the false-negative direction `fp-sweep.py` never measured. `RecallCorpusTest` runs it in
   `make test`, so a value a document declares sensitive that the engine starts missing fails the

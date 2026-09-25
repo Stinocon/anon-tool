@@ -24,6 +24,7 @@ services:
       - "512"
       - "--suggest-timeout"
       - "120"
+      - "--suggest-constrained"
     # No `depends_on` here: the sidecar already depends on THIS service (it borrows its network
     # namespace), so declaring the reverse is a dependency cycle. The UI starts immediately and the
     # panel answers 502 until the model has loaded — a real error, not a silent wait.
