@@ -46,9 +46,10 @@ the whole point: the seam is loopback-only by decision (DEC-0018, DEC-0019), a s
 compose network would have its own IP and be refused, while in a shared namespace `127.0.0.1:8080`
 is the same loopback for both — the invariant is honoured, not weakened, and nothing new is exposed
 (the port is not published). The model is for *extraction* (name the strings worth redacting), not
-reasoning: measured through the seam, a 9B reasoning model spent 43 s and answered with a
-"Thinking Process" narrative instead of JSON, which the seam reported as an error — correctly. A
-small instruct model with a bounded `--max-tokens` is the right shape, and that is what ships.
+reasoning: a 9B reasoning model answered with a "Thinking Process" narrative instead of JSON, which
+the seam reported as an error rather than an empty list — correctly. A small instruct model with a
+bounded `--max-tokens` is the right shape, and that is what ships. The full measured picture,
+including the runs that fail, is in the seam section below.
 `make bench-model URL=… MODEL=…` measures any loopback endpoint. **Measured end to end** (UI → server →
 model, this machine, 6 CPU threads): a 570-character Italian report answered in **37.3 s** with **5
 proposals** — Ancona, Milano, Prato, Bologna and one address — of which four were NOT found by the
@@ -265,12 +266,15 @@ Configured, not running: the panel names the model it will call and the bounds i
 only ever *proposes*, and approving a proposal is an ordinary dictionary edit.
 
 Measured on this machine, and worth knowing before you expect magic: a **reasoning** model spends
-its whole budget thinking. A local Qwen3.5-9B spent 138 s and 4096 tokens on a one-sentence text and
-still returned an empty answer — the CLI said *"the backend did not answer: …"* (exit 2) and the UI
-showed *"the local model did not answer: …"* (HTTP 502) instead of pretending it found nothing. That is the correct behaviour, and it means the
-model is the part to choose: a small instruct model, or a bigger `--max-tokens`, is the operator's
-call. What the seam guarantees is that a proposal is never taken on trust and a failure never looks
-like a clean document.
+its whole budget thinking, and its failures wear different faces. The local MTPLX Qwen3.5-9B is the
+case in point: a one-sentence text gets a correct proposal in about 30 s; a richer text spends
+**138 s and 4096 tokens** and returns nothing (`finish_reason: length`); and in one run it answered
+after **43.4 s** with a "Thinking Process" narrative instead of JSON. Every one of those is reported
+as an error — the CLI says *"the backend did not answer: …"* (exit 2) and the UI shows *"the local
+model did not answer: …"* (HTTP 502) — instead of pretending it found nothing. That is the correct
+behaviour, and it means the model is the part to choose: a small instruct model, or a bigger
+`--max-tokens`, is the operator's call. What the seam guarantees is that a proposal is never taken
+on trust and a failure never looks like a clean document.
 
 **How much text it will actually read, declared up front.** The model receives at most the first
 **20 000 characters** of the text (`--max-chars`, on both the CLI and the UI's own window); the UI

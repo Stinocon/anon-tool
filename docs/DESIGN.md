@@ -253,11 +253,12 @@ found by the deterministic engine: exactly the contextual reference the dictiona
 latency that keeps the panel a step you choose rather than a step in the upload path.
 
 The negative measurement that chose the shape: a 9B **reasoning** model thinks until its budget ends.
-A local Qwen3.5-9B spent 138 s and 4096 tokens and returned nothing (`finish_reason: length`), which
-the seam reported as an error — correctly. The prompt asks for JSON only and `reasoning_content` is
-a fallback, so the deficit was the model's, not the plumbing's. A small instruct model with a
-bounded `--max-tokens` is what ships; `make bench-model URL=… MODEL=…` measures any loopback
-endpoint.
+The local MTPLX Qwen3.5-9B answers a one-sentence text in about 30 s with a correct proposal, but a
+richer text spends 138 s and 4096 tokens and returns nothing (`finish_reason: length`), and one run
+answered after 43.4 s with a "Thinking Process" narrative instead of JSON. The seam reported each as
+an error — correctly. The prompt asks for JSON only and `reasoning_content` is a fallback, so the
+deficit was the model's, not the plumbing's. A small instruct model with a bounded `--max-tokens` is
+what ships; `make bench-model URL=… MODEL=…` measures any loopback endpoint.
 
 ## 8. Known limits (deliberate)
 
