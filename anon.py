@@ -380,6 +380,11 @@ class Rule:
     # When the validator rejects a match, retry with trailing labels removed. A hostname
     # followed by a file extension (`db01.azienda.it.log`) must still yield the host.
     shrink_labels: bool = False
+    # When the validator rejects a match, retry with trailing WHITESPACE-SEPARATED tokens removed.
+    # An IBAN is written with irregular spacing, so a loose body (`[A-Z0-9]\s?` repeated) is what
+    # matches every grouping — but it can also run into the token that FOLLOWS the code. The
+    # checksum decides where the value really ends: `IT60 … 456 entro` keeps `IT60 … 456`.
+    shrink_words: bool = False
 
 
 # Ordered by confidence: a URL/email/JWT/key span is claimed before any heuristic can
@@ -522,14 +527,15 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "IBAN",
-        # Groups of four, NOT "any alnum with an optional space after it": the loose form ran into
-        # the word that FOLLOWS the code — `IT60 … 456 entro` matched, the checksum then rejected
-        # the over-long value, and the real IBAN was left in clear (found by the recall corpus).
-        # An Italian IBAN is `IT` + 2 check digits + groups of four (the last may be 1-4), optionally
-        # spaced. `[A-Z0-9]{4}` on purpose: a group boundary is what stops the match at `456`.
-        re.compile(r"(?<![\w])IT\s?\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?(?![\w])", re.IGNORECASE),
+        # A loose body — any alnum with an optional single space — because the REAL groupings vary
+        # (`IT60X0542811101000000123456`, `IT60 X054 2811 … 456`, `IT60 X 05428 11101 000000123456`).
+        # That is also why it can over-run into the following token under IGNORECASE: `shrink_words`
+        # below drops trailing tokens until the checksum accepts the longest valid prefix, which
+        # turns `IT60 … 456 entro` back into `IT60 … 456` instead of rejecting the whole match.
+        re.compile(r"(?<![\w])IT\s?\d{2}\s?[A-Z]\s?(?:[A-Z0-9]\s?){10,30}(?![\w])", re.IGNORECASE),
         validator=_valid_iban,
         family="legal",
+        shrink_words=True,
     ),
     Rule(
         "TARGA",
@@ -791,6 +797,11 @@ def load_entities(path: Path) -> list[Entity]:
             if name == "type":
                 if not argument:
                     raise ValueError(f"{path}:{lineno}: @type needs a value")
+                if any(ch.isspace() for ch in argument):
+                    raise ValueError(
+                        f"{path}:{lineno}: the type {argument!r} contains a space — a type is one token "
+                        f"(the explicit line form is `TYPE|value`, the alias form `TYPE|value|alias`)"
+                    )
                 ptype = argument.upper()
             elif name == "stem":
                 if argument.lower() not in _TRUE + _FALSE:
@@ -1372,17 +1383,30 @@ def detect(
                     end -= 1
             value = text[start:end]
             if rule.validator is not None and not rule.validator(value):
-                if not rule.shrink_labels:
+                shrunk: str | None = None
+                if rule.shrink_labels:
+                    # `db01.azienda.it.log`: drop trailing labels until a real TLD is reached.
+                    candidate = value
+                    while "." in candidate:
+                        candidate = candidate.rsplit(".", 1)[0]
+                        if rule.validator(candidate):
+                            shrunk = candidate
+                            break
+                elif rule.shrink_words:
+                    # `IT60 … 456 entro`: drop trailing whitespace-separated tokens until the
+                    # checksum accepts the longest valid prefix.
+                    candidate = value.rstrip()
+                    while True:
+                        head, separator, _tail = candidate.rpartition(" ")
+                        if not separator:
+                            break
+                        candidate = head.rstrip()
+                        if rule.validator(candidate):
+                            shrunk = candidate
+                            break
+                if shrunk is None:
                     continue
-                # `db01.azienda.it.log`: drop trailing labels until a real TLD is reached.
-                shrunk = value
-                while "." in shrunk:
-                    shrunk = shrunk.rsplit(".", 1)[0]
-                    if rule.validator(shrunk):
-                        end, value = start + len(shrunk), shrunk
-                        break
-                else:
-                    continue
+                end, value = start + len(shrunk), shrunk
             collect(start, end, priority, rule.type, value)
 
     for index, rule in enumerate(RULES):

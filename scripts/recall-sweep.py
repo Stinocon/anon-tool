@@ -10,7 +10,9 @@ cover? A value with no covered occurrence is a LEAK.
     python3 scripts/recall-sweep.py --json       # the same numbers, machine-readable
 
 Exit 1 if any declared value is left uncovered or any `must_not` string is redacted, 0 otherwise —
-so it doubles as a gate. The corpus is synthetic and self-contained: it declares its own dictionary
+so it doubles as a gate. A value is checked PER OCCURRENCE: covered once but left in clear elsewhere
+is a leak. `type_mismatch` (a value redacted under another type) is report-only — it is still not
+leaked. The corpus is synthetic and self-contained: it declares its own dictionary
 and reads the catalogs from THIS repository (`catalogs/`), never from `~/.anon`, so the number is
 the same on any machine and no private data is involved.
 
@@ -58,16 +60,6 @@ def _occurrences(text: str, value: str) -> list[int]:
     return [m.start() for m in re.finditer(re.escape(value), text)]
 
 
-def _covering(found, text: str, value: str) -> list[tuple[int, int, str]]:
-    """Detected spans that FULLY contain at least one occurrence of `value`."""
-    out = []
-    for start, end, ptype in found:
-        span = text[start:end]
-        if value in span:
-            out.append((start, end, ptype))
-    return out
-
-
 def evaluate(documents) -> dict:
     """Run every document and return {per_type, leaks, violations, ...}."""
     per_type: dict[str, dict[str, int]] = {}
@@ -92,28 +84,38 @@ def evaluate(documents) -> dict:
                 total_declared += 1
                 stats = per_type.setdefault(want, {"declared": 0, "covered": 0, "typed": 0})
                 stats["declared"] += 1
-                cover = _covering(found, text, value)
-                if cover:
+                # PER OCCURRENCE, not per value: a value covered once and left in clear elsewhere
+                # still names somebody there. A single covered occurrence must not satisfy the gate.
+                in_clear = 0
+                cover_types: set[str] = set()
+                for m in _occurrences(text, value):
+                    hits = [ptype for s, e, ptype in found if s <= m and m + len(value) <= e]
+                    if not hits:
+                        in_clear += 1
+                        continue
+                    expected_spans.append((m, m + len(value)))
+                    cover_types.update(hits)
+                if in_clear:
+                    leaks.append({"document": doc["name"], "value": value, "type": want,
+                                  "occurrences_in_clear": in_clear})
+                else:
                     stats["covered"] += 1
-                    if any(ptype == want for _s, _e, ptype in cover):
+                    if want in cover_types:
                         stats["typed"] += 1
                     else:
-                        type_mismatch.append({
-                            "document": doc["name"], "value": value,
-                            "want": want, "got": cover[0][2],
-                        })
-                    for m in _occurrences(text, value):
-                        if any(s <= m and m + len(value) <= e for s, e, _t in found):
-                            expected_spans.append((m, m + len(value)))
-                else:
-                    leaks.append({"document": doc["name"], "value": value, "type": want})
+                        # Report-only: a value redacted under a DIFFERENT type is still not leaked,
+                        # so a mismatch never fails the gate (it is a labelling quality signal).
+                        type_mismatch.append({"document": doc["name"], "value": value,
+                                              "want": want, "got": sorted(cover_types)})
 
             for value in doc.get("must_not", []):
-                cover = _covering(found, text, value)
-                if cover:
-                    violations.append({"document": doc["name"], "value": value,
-                                       "covered_by": [{"type": t, "text": text[s:e]}
-                                                      for s, e, t in cover]})
+                # OVERLAP, not full containment: a span that redacts only PART of a `must_not` string
+                # (e.g. `via del tutto` inside `in via del tutto eccezionale, 3`) is a false positive too.
+                bad = [{"type": ptype, "text": text[s:e]}
+                       for m in _occurrences(text, value)
+                       for s, e, ptype in found if s < m + len(value) and m < e]
+                if bad:
+                    violations.append({"document": doc["name"], "value": value, "covered_by": bad})
 
             for value, ptype, why in doc.get("declared_fp", []):
                 declared_fp.append({"document": doc["name"], "value": value,

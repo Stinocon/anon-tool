@@ -45,7 +45,7 @@ DOCUMENTS: list[Document] = [
             "Oggetto: verbale di sopralluogo presso la sede di Ancona.\n"
             "\n"
             "Cliente Contoso S.r.l., referente Mario Rossi (m.rossi@contoso.it, +39 335 1234567).\n"
-            "Sede in Via Roma 12, 60100 Ancona (AN).\n"
+            "Sede in Via Roma 12, 60100 (AN).\n"
             "Firewall FortiGate, hostname fw-ancona.contoso.local, indirizzo 10.42.7.19.\n"
             "Server Dell PowerEdge R740 su 10.42.7.20, seconda NIC su 2001:db8::42.\n"
             "Portale https://vpn.contoso.it accessibile dal browser.\n"
@@ -71,12 +71,7 @@ DOCUMENTS: list[Document] = [
             ("Catalyst", "PRODOTTO"),
             ("Giulia Bianchi", "PERSONA"),
         ],
-        # A city in an address, WITHOUT the catalog's marker (`sede di`), is not redacted by
-        # design: `it-cities` is context-gated so a report is not shredded. Declared, not hidden.
         "must_not": ["60100", "R740", "2960"],
-        "known_miss": [
-            ("Ancona (AN)", "a city in an address without the `sede di` marker: the catalog is context-gated"),
-        ],
     },
     {
         "name": "contratto-fornitura",
@@ -92,6 +87,7 @@ DOCUMENTS: list[Document] = [
             "Pagamento sul conto IT60 X054 2811 1010 0000 0123 456 entro trenta giorni.\n"
             "Sede operativa: Corso Buenos Aires 12.\n"
             "Automezzo aziendale targato AB123CD.\n"
+            "IBAN malformato con doppio spazio: IT60 X054  2811 1010 0000 0123 456.\n"
         ),
         "must_find": [
             ("Northwind S.p.A.", "AZIENDA"),
@@ -102,6 +98,10 @@ DOCUMENTS: list[Document] = [
             ("AB123CD", "TARGA"),
         ],
         "must_not": ["committente", "fornitura"],
+        # Pre-existing hole, declared: two spaces between groups stop the loose body at `IT60 X054`,
+        # which is not a valid IBAN on its own. Rare (a copy/paste artefact), and re-opening `\s*`
+        # between characters is what caused the over-match this pass fixed.
+        "known_miss": [("IT60 X054  2811 1010 0000 0123 456", "double space between groups")],
     },
     {
         "name": "log-config",
@@ -160,6 +160,18 @@ DOCUMENTS: list[Document] = [
         "known_miss": [
             ("il cliente di Brescia", "contextual reference: no catalog, no marker"),
             ("Giovanni Neri", "proper name absent from the dictionary"),
+        ],
+    },
+    {
+        "name": "contextual-city",
+        "entities": "",
+        "catalogs": ["it-cities"],
+        "patterns": None,
+        "text": "Trasferta ad Ancona per il collaudo del firewall.\n",
+        "must_find": [],
+        "must_not": [],
+        "known_miss": [
+            ("Ancona", "a city without the `sede di` marker: `it-cities` is context-gated by design"),
         ],
     },
 ]

@@ -1178,6 +1178,22 @@ class ValidatorTest(unittest.TestCase):
         self.assertEqual(ibans, ["IT60 X054 2811 1010 0000 0123 456"])
         self.assertFalse(any("entro" in text[s:e] for s, e, _ptype in found))
 
+    def test_every_italian_iban_grouping_is_redacted(self) -> None:
+        """The checksum decides where the value ends: a loose body matches every real grouping and
+        `shrink_words` trims only the token that follows, so no grouping is lost (the first fix —
+        groups of four — left the bank-statement form `IT60 X 05428 …` in clear)."""
+        for text in (
+            "conto IT60 X054 2811 1010 0000 0123 456 fine",
+            "conto IT60X0542811101000000123456 fine",
+            "conto IT60 X 05428 11101 000000123456 fine",
+            "conto IT60 X05 428 111 010 000 001 234 56 fine",
+            "conto it60 x054 2811 1010 0000 0123 456 fine",
+        ):
+            with self.subTest(text=text):
+                found = [text[s:e] for s, e, ptype in anon.detect(text, []) if ptype == "IBAN"]
+                self.assertEqual(len(found), 1, f"IBAN not redacted in {text!r}")
+                self.assertNotIn("fine", found[0])
+
     def test_targa(self) -> None:
         self.assertTrue(anon._valid_targa("AB123CD"))
         self.assertFalse(anon._valid_targa("AB1234C"))
@@ -1237,10 +1253,12 @@ class DirectivesTest(unittest.TestCase):
 
     def test_a_type_with_a_space_is_rejected_loudly(self) -> None:
         """`Mario Rossi|m.rossi@x.it` under an `@type` reads as TYPE=`Mario Rossi`, value=email, and
-        the NAME is then never redacted. The mistake must fail, not leak."""
-        with self.assertRaises(ValueError) as ctx:
-            self.entities("@type PERSONA\nMario Rossi|m.rossi@x.it\n")
-        self.assertIn("TYPE|value|alias", str(ctx.exception))
+        the NAME is then never redacted. The mistake must fail, not leak — in BOTH spellings, so the
+        grammar is one rule everywhere."""
+        for line in ("@type PERSONA\nMario Rossi|m.rossi@x.it\n", "@type RAGIONE SOCIALE\nContoso\n"):
+            with self.subTest(line=line), self.assertRaises(ValueError) as ctx:
+                self.entities(line)
+            self.assertIn("contains a space", str(ctx.exception))
 
     def test_case_sensitive_keeps_lowercase_words_intact(self) -> None:
         entities = self.entities("@type CITTÀ\n@match case-sensitive\nPrato\n")

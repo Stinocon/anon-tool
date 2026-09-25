@@ -26,7 +26,8 @@ enforces that they agree.
 
 - A valid IBAN followed by a word was left in clear: the body matched `IT60 … 456 entro` (the
   `[A-Z0-9]` class is case-insensitive) and the checksum then rejected the over-long value, so the
-  real IBAN was never redacted. The body is now groups of four and stops at the last real group.
+  real IBAN was never redacted. The checksum now decides where the value ends: the loose body keeps
+  every real grouping and `shrink_words` drops the trailing token the match ran into.
 - The README's alias example (`Mario Rossi|m.rossi@x.it` under `@type PERSONA`) made the FIRST field
   the type, so the person's name was never redacted. The loader now rejects a type containing a
   space with a message naming the correct form, and the README gives it.

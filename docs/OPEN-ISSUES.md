@@ -28,16 +28,28 @@ fixed**:
 
 - **A valid IBAN followed by a word was left in clear.** The body was `(?:[A-Z0-9]\s?){10,30}` with
   `re.IGNORECASE`, so `IT60 … 456 entro` matched (lowercase letters are `[A-Z0-9]` under IGNORECASE);
-  the checksum then rejected the over-long value and the real IBAN was never redacted. The body is
-  now groups of four (`IT` + 2 digits + `(?:\s?[A-Z0-9]{4}){2,7}` + a final 1-4), which stops at the
-  last real group. `ValidatorTest::test_an_iban_followed_by_a_word_is_still_redacted`.
+  the checksum then rejected the over-long value and the real IBAN was never redacted. The checksum
+  now decides where the value ends: the loose body keeps every real grouping (the bank-statement
+  form `IT60 X 05428 11101 000000123456` included), and a new `shrink_words` drops the trailing
+  token the match ran into. `ValidatorTest::test_every_italian_iban_grouping_is_redacted` and
+  `::test_an_iban_followed_by_a_word_is_still_redacted`.
 - **The README's alias example was a leak.** It showed `Mario Rossi|m.rossi@x.it` under
   `@type PERSONA`, but the parser reads the FIRST field as the type: the line became TYPE=`Mario
   Rossi`, value=`m.rossi@x.it`, so the person's NAME was never redacted and the email wore a
   nonsense placeholder type. The README now gives `PERSONA|Mario Rossi|m.rossi@x.it` (or
-  `|value|alias` under the `@type`), and the loader **rejects** a type containing a space with a
-  message naming the correct form — a silent leak turned into a loud error.
-  `DirectivesTest::test_a_type_with_a_space_is_rejected_loudly`.
+  `|value|alias` under the `@type`), and the loader **rejects** a type containing a space — in both
+  spellings (`TYPE|value` and `@type`) — with a message naming the correct form, turning a silent
+  leak into a loud error. `DirectivesTest::test_a_type_with_a_space_is_rejected_loudly`.
+
+**The adversarial review of this change found real gaps, all fixed in it.** The FIRST IBAN fix
+(groups of four) was itself a regression — it left the common bank-statement grouping
+`IT60 X 05428 11101 000000123456` in clear — so it was replaced by the loose body + checksum-driven
+shrink above. And the oracle was per-VALUE, not per-OCCURRENCE: a value covered once and left in
+clear elsewhere (`sede di Ancona. Poi Ancona …`) passed the gate. It is now per-occurrence, and the
+`must_not` check is by OVERLAP (a span redacting part of a `must_not` string is a false positive
+too). `type_mismatch` stays report-only, declared: a value redacted under another type is still not
+leaked. Pre-existing and declared: a double space between IBAN groups (`IT60 X054  2811 …`) stops
+the loose body before the checksum can finish (`tests/corpus.py` known_miss).
 
 What the corpus does NOT yet measure, declared: the recall of the dictionary itself on a REAL
 human-written document (the corpus is synthetic and its dictionary is authored to be found), the
