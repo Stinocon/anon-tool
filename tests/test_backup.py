@@ -183,6 +183,32 @@ class BackupTest(unittest.TestCase):
         info.mode = 0o600
         return (info, data)
 
+    @staticmethod
+    def directory(name: str, mode: int = 0o700) -> tuple[tarfile.TarInfo, None]:
+        info = tarfile.TarInfo(name)
+        info.type = tarfile.DIRTYPE
+        info.mode = mode
+        return (info, None)
+
+    def shimmed(self, commands: list[str]) -> dict[str, str]:
+        """A PATH whose `commands` record whether they inherited the passphrase, then run for real."""
+        shim = self.tmp / "shim"
+        shim.mkdir(exist_ok=True)
+        self.seen = self.tmp / "child-env.txt"
+        for name in commands:
+            real = shutil.which(name)
+            self.assertIsNotNone(real, f"{name} is not in PATH")
+            script = shim / name
+            script.write_text(
+                "#!/bin/sh\n"
+                f'if [ -n "${{ANON_BACKUP_PASSPHRASE:-}}" ]; then echo LEAKED:{name} >> {self.seen}; '
+                f'else echo CLEAN:{name} >> {self.seen}; fi\n'
+                f'exec {real} "$@"\n',
+                encoding="utf-8",
+            )
+            os.chmod(script, 0o755)
+        return {"PATH": f"{shim}:{os.environ['PATH']}"}
+
     # ---- the round trip ------------------------------------------------------------------------
 
     def test_a_backup_restores_byte_for_byte(self) -> None:
@@ -459,28 +485,77 @@ class BackupTest(unittest.TestCase):
         self.assertIn("manifest lists", done.stderr)
         self.assertFalse(target.exists())
 
-    def test_the_passphrase_is_not_inherited_by_a_child(self) -> None:
-        """The env path is documented; it must not reach the children the script spawns."""
-        shim = self.tmp / "shim"
-        shim.mkdir()
-        seen = self.tmp / "child-env.txt"
-        fake = shim / "openssl"
-        fake.write_text(
-            "#!/bin/sh\n"
-            f'if [ -n "${{ANON_BACKUP_PASSPHRASE:-}}" ]; then echo LEAKED >> {seen}; '
-            f'else echo CLEAN >> {seen}; fi\n'
-            f'exec {OPENSSL} "$@"\n',
-            encoding="utf-8",
-        )
-        os.chmod(fake, 0o755)
+    def test_no_program_started_before_the_passphrase_is_read_inherits_it(self) -> None:
+        """The env path is documented; it must not reach ANY program the script starts.
+
+        Not only `openssl`: the default destination uses `date`, the destination directory uses
+        `dirname` and `mkdir`, the scratch tree uses `mktemp`. Each of them must run with the
+        variable already removed from the environment.
+        """
+        env = self.shimmed(["openssl", "dirname", "mkdir", "date", "mktemp"])
         home = self.make_home()
         archive = self.tmp / "store.enc"
-        done = self.run_script("backup", f"--home={home}", f"--out={archive}",
-                               extra_env={"PATH": f"{shim}:{os.environ['PATH']}"})
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}", extra_env=env)
         self.assertEqual(done.returncode, 0, done.stderr)
-        transcript = seen.read_text(encoding="utf-8")
+        restored = self.run_script("restore", str(archive), str(self.tmp / "restored"), extra_env=env)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        transcript = self.seen.read_text(encoding="utf-8")
         self.assertIn("CLEAN", transcript)
-        self.assertNotIn("LEAKED", transcript)
+        self.assertNotIn("LEAKED", transcript, transcript)
+
+    def test_the_archive_carries_no_extended_attributes(self) -> None:
+        """The snapshot is contents, paths and modes.
+
+        bsdtar records the macOS `com.apple.*` xattrs twice over — as `._name` members (which GNU tar
+        extracts as real files) and as PAX records — so the tar invocation passes `--no-xattrs`.
+        On Linux there is nothing to strip and this passes trivially.
+        """
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        raw = self.raw_members(archive)
+        self.assertFalse([n for n in raw if "/._" in n or n.startswith("._")], raw)
+        for member in tarfile.open(fileobj=io.BytesIO(self.decrypt(archive)), mode="r:gz").getmembers():
+            keys = [k for k in member.pax_headers if "xattr" in k.lower() or "acl" in k.lower()]
+            self.assertFalse(keys, f"{member.name}: {keys}")
+
+    def test_a_file_named_like_macos_metadata_is_refused_by_name(self) -> None:
+        """A real `._something` cannot be archived by bsdtar, which reads that name as AppleDouble
+        metadata for its sibling.
+
+        Measured: with such a file in the store, the archive bsdtar writes is corrupt ("Truncated
+        input file") and cannot be extracted — with `COPYFILE_DISABLE=1`, with `--no-xattrs`, with
+        `--no-mac-metadata` and with every pair of them. So the name is refused here, with the file
+        named and the remedy given, rather than producing a broken archive or dropping it silently.
+        """
+        home = self.make_home()
+        real = home / "._entities.txt"
+        real.write_text("a real file with that name, not macOS metadata\n", encoding="utf-8")
+        archive = self.tmp / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("macOS metadata", done.stderr)
+        self.assertIn("._entities.txt", done.stderr)
+        self.assertFalse(archive.exists())
+
+    def test_a_directory_member_is_refused(self) -> None:
+        """Our archive holds files only, and a directory member is not harmless.
+
+        A member named `.` carrying mode 0777 is applied by `-p` to the restore TARGET itself, so a
+        crafted archive took the store from 0700 to 0777 — with a `sub/MANIFEST.sha256` directory
+        written on the way (in no manifest, and `find -type f` never counted it).
+        """
+        archive = self.tmp / "dirs.enc"
+        self.make_archive_with_extras(
+            {"maps/a.json": b"real\n"},
+            [self.directory(".", 0o777), self.directory("sub/MANIFEST.sha256")],
+            archive,
+        )
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("plain file", done.stderr)
+        self.assertFalse(target.exists())
 
     def test_the_destination_directory_is_created_when_it_does_not_exist(self) -> None:
         home = self.make_home()

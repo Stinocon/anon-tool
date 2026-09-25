@@ -566,9 +566,43 @@ Linux and the restore then failed its own count check. `COPYFILE_DISABLE=1` keep
 contents and paths; `test_the_archive_holds_the_files_and_nothing_else` is the gate, and it is a
 no-op where such members are never created.
 
-Frozen records are not rewritten. `DEC-0033` still says "18 test" (the reviewed suite is 25) and
-names a script that belongs to a private repository; `verify_decisions` passes, so the record is not
-stale in substance. Both drifts are recorded here, for the operator to decide, and neither was
+### Verifying the fixes found three more (2026-09-25, second round)
+
+Same file, same tier: the fixes above were themselves new code on the store's critical path, and the
+first round had found security-class defects, so the exception in the one-round rule applied. Four
+findings, all accepted and fixed — and the round-1 conclusion above was **wrong**: `COPYFILE_DISABLE`
+is not enough.
+
+- **MEDIUM — `tar xpzf` let the archive set the store root to 0777.** A member named `.` carrying
+  mode 0777 is applied by `-p` to the restore TARGET itself: reproduced, the target went from 700 to
+  777, with a directory named `sub/MANIFEST.sha256` written on the way (in no manifest, invisible to
+  `shasum -c`, and uncounted because `find -type f` ignores directories). The audit now refuses
+  anything that is not a regular file, which closes both at once — our own archive is built from
+  `find -type f` and holds no directory member.
+- **MEDIUM — `COPYFILE_DISABLE=1` alone was not a fix.** It removes the generated `._name` member but
+  leaves the xattr PAX records (measured: `LIBARCHIVE.xattr.com.apple.*` on every member), and a file
+  genuinely NAMED `._entities.txt` in the store made bsdtar write a **truncated** archive — no backup
+  at all, reported as "the payload is not a readable tar". Both flags are applied now,
+  `COPYFILE_DISABLE=1` and `--no-xattrs`: 0 metadata members and 0 xattr records on a real 539-file
+  store, and the same archive extracts with GNU tar 1.35 in the container with rc=0 and no warnings.
+- **LOW, and structural — a real `._x` name cannot be archived by bsdtar at all.** After two rounds
+  of tuning the same mechanism (`COPYFILE_DISABLE` alone, `--no-xattrs` alone, `--no-mac-metadata` on
+  creation, and the pairs) the archive is truncated in every combination: bsdtar reads that name as
+  AppleDouble metadata for its sibling. Tuning stopped there and the name is **refused, by name**, with
+  the remedy in the message — fail-closed, no silent data loss, and the store untouched.
+- **LOW — programs started before the passphrase was read inherited it.** The usage text promised the
+  variable was gone "before the first child runs", but `date` (the default destination), `dirname`,
+  `mkdir` and `mktemp` all ran before the `unset`. The read and the `unset` are now the first thing
+  each command does, and a PATH shim over `openssl`, `dirname`, `mkdir`, `date` and `mktemp` asserts
+  it rather than trusting the sentence.
+
+Verification of the fixes: **28 tests and 18 mutations, every one biting** — including a mutation per
+flag, per arm of the name checks, and the audit's type predicate. On the real store: 539 files, file
+sets and sha256 identical, 0 metadata members, 0 xattr records.
+
+Frozen records are not rewritten. `DEC-0033` says "18 test" (the suite is now 28) and names a script
+that belongs to a private repository; `verify_decisions` passes, so the record is not stale in
+substance. Both drifts are recorded here, for the operator to decide, and neither was
 edited into a `validated` file.
 
 ### Hygiene note kept from this pass

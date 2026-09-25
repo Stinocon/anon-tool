@@ -127,10 +127,19 @@ Three details are load-bearing and were each found by breaking them:
   store file named `-C.redacted` was read as the option `-C .redacted` and silently DROPPED — no
   archive could be written until it was removed. Every operand is `./`-prefixed, which is also what
   lets the manifest and the tree share one archive across two `-C`s.
-- **macOS metadata is not the store.** bsdtar records the `com.apple.*` xattrs as `._name` members;
-  libarchive hides them when listing, so only a member COUNT sees them, and GNU tar extracts them as
-  real files — measured here, the same archive planted `._entities.txt` on Linux. `COPYFILE_DISABLE=1`
-  keeps the archive to contents and paths.
+- **macOS metadata is not the store, and removing it takes two flags.** bsdtar records the
+  `com.apple.*` xattrs twice over: as a generated `._name` MEMBER, which libarchive then hides when
+  listing (only a member COUNT sees it) and which GNU tar extracts as a real file — measured here,
+  the archive written before the fix planted `._entities.txt` on Linux — and as PAX records inside
+  the members. `COPYFILE_DISABLE=1` removes the member and `--no-xattrs` the records; removing only
+  one leaves the other, and neither helps a file that is genuinely NAMED `._something`: bsdtar reads
+  that name as metadata for its sibling and writes an archive that will not extract, with every flag
+  combination measured. So that name is refused, with the file named, rather than written broken.
+- **The archive holds regular files only.** The audit used to accept directories too, and a member
+  named `.` carrying mode 0777 is applied by `-p` to the restore TARGET itself: a crafted archive
+  took the store from 0700 to 0777, and a directory named `sub/MANIFEST.sha256` was written on the
+  way (in no manifest, and `find -type f` never counted it). The archive is built from `find -type f`
+  and nothing else, so anything that is not a regular file is refused.
 
 ## 5. Dictionary matching (what "the same entity" means)
 

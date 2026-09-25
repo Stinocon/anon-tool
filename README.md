@@ -376,19 +376,22 @@ it never deletes: a non-empty `~/.anon` is **moved** to `~/.anon.pre-restore-<da
 `--force` asks for that.
 
 What goes in: everything under `~/.anon` except `models/` (2 GB, re-downloadable with `make model`),
-`__pycache__/` and `*.pyc`. Contents and paths travel, the filesystem's bookkeeping does not: macOS
-xattr metadata is left out, so an archive made on a Mac extracts cleanly with GNU tar on Linux, and
-the modes come back as they were. The passphrase is asked for and never stored anywhere; scripted use
-can set `ANON_BACKUP_PASSPHRASE`, which is also why it is not the default — the variable is read once
-and removed before any child runs, but a same-user process can still read it from the environment
-while the script is starting.
+`__pycache__/` and `*.pyc`. Contents, paths and modes travel; the filesystem's own bookkeeping
+does not — extended attributes and ACLs are stripped, so an archive made on a Mac extracts cleanly
+with GNU tar on Linux. The passphrase is asked for and never stored anywhere; scripted use can set
+`ANON_BACKUP_PASSPHRASE`, which is also why it is not the default — the variable is read once and
+removed before the script starts any other program, but a same-user process can still read it from
+the environment while the script is starting.
 
 Limits, stated rather than implied: no scheduler, no remote destination, no key management, and no
 AEAD — CBC alone cannot prove *who* wrote an archive, so the manifest inside detects a modified or
-damaged payload while the passphrase's secrecy is what keeps an archive authentic. A stored file
-whose name contains a newline is refused by name (the manifest is line-based), an empty directory is
-not restored (the engine creates the ones it writes into), and lose the passphrase and the archive
-is lost, by design. `scripts/anon-home-backup.sh` and `tests/test_backup.py` are the whole mechanism.
+damaged payload while the passphrase's secrecy is what keeps an archive authentic. Two names a tar
+cannot carry faithfully are refused by name instead of producing a broken archive: a stored file
+whose name contains a newline (the manifest is line-based), and one whose name starts with `._`
+(bsdtar reads that as AppleDouble metadata for its sibling and writes an archive that will not
+extract). An empty directory is not restored — the engine creates the ones it writes into — and lose
+the passphrase and the archive is lost, by design. `scripts/anon-home-backup.sh` and
+`tests/test_backup.py` are the whole mechanism.
 
 ## Security posture
 
