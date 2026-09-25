@@ -305,11 +305,15 @@ Declared residuals of the sweep:
   redaction REFUSES and names the part, while `--check`, `--audit` and `--batch --check` answer
   `unscannable` / "container refused" — correct (fail-closed) but less specific. `--batch` now keeps
   the message; the two check modes deliberately keep the shape the Pi guard reads;
-- `MARKUP_RE` (`<[^>]*>`) mis-tokenizes a tag whose ATTRIBUTE VALUE contains `>` (legal XML), and a
-  CDATA block or comment containing one: the tail leaks into the visible text and shifts the offsets
-  around it. The element NAME is still parsed, so the container signature stays right; what suffers is
-  the text near such a construct, where a match could hide. Legal and rare in Office output, pre-existing,
-  now written down instead of waiting to be discovered.
+- `markup_spans` (`anon.py`) now finds where markup ends without being fooled by a `>` inside a
+  quoted attribute value, in a comment, in a CDATA body, or in a doctype's internal subset — the
+  old `MARKUP_RE` (`<[^>]*>`) moved the text boundary on each of them, and a boundary that disagrees
+  with the file is how a value lands in the gap neither the redaction nor the verification looks at.
+  A CDATA body is TEXT and is therefore scanned; ONE boundary stays unlooked-at ON PURPOSE: the BODY
+  of an XML comment (`<!-- ... -->`) is markup here, so a value written inside it is neither redacted
+  nor reported. A comment is never rendered, the checker shares this view so it raises no false
+  leftover, and text inside a comment cannot escape a `--`; a value that must not travel belongs in
+  the document text, not in its comments.
 
 ### Adversarial review of the container pass (2026-09-22) — every finding accounted for
 

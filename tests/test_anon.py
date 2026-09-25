@@ -1905,6 +1905,72 @@ class StructuredFormatTest(unittest.TestCase):
             self.assertIn("version", payload)
 
 
+class MarkupTokenTest(unittest.TestCase):
+    """`markup_spans` decides where MARKUP ends and TEXT begins — the boundary a value hides on, since
+    the redaction and the verification share this one view. `MARKUP_RE = <[^>]*>` moved that boundary
+    on three constructs that are legal XML: a `>` inside a quoted attribute, a comment containing one,
+    a CDATA section containing one. Each test below FAILS against the regex (checked by re-injecting
+    it), not merely passes against the scanner.
+    """
+
+    def test_a_tag_with_a_gt_inside_an_attribute_is_one_tag(self) -> None:
+        self.assertEqual(anon.visible_text('<w:p w:rsid="a>b"><w:t>ciao</w:t></w:p>'), "ciao")
+
+    def test_a_comment_containing_a_gt_is_skipped_whole(self) -> None:
+        self.assertEqual(anon.visible_text("<a><!-- x > y -->ciao</a>"), "ciao")
+
+    def test_a_cdata_body_is_text_and_keeps_its_gt(self) -> None:
+        self.assertEqual(anon.visible_text("<a><![CDATA[pre > post]]></a>"), "pre > post")
+
+    def test_an_instruction_and_a_doctype_with_a_subset_are_skipped(self) -> None:
+        xml = '<?xml version="1.0"?><!DOCTYPE a [ <!ENTITY x ">"> ]><a>ciao</a>'
+        self.assertEqual(anon.visible_text(xml), "ciao")
+
+    def test_offsets_point_back_to_the_same_characters(self) -> None:
+        xml = '<w:p w:rsid="a>b"><w:t>ciao</w:t></w:p>'
+        visible, offsets = anon.visible_index(xml)
+        self.assertEqual(visible, "ciao")
+        self.assertEqual("".join(xml[offset] for offset in offsets), "ciao")
+
+    def test_the_container_pass_redacts_beside_a_gt_attribute_and_inside_cdata(self) -> None:
+        """End to end: the value after a `>`-bearing attribute and the value inside CDATA both go,
+        and the package is still a legal document."""
+        tmp = Path(tempfile.mkdtemp(prefix="anon-markup-"))
+        try:
+            docx = tmp / "edge.docx"
+            body = (
+                '<?xml version="1.0"?><w:document xmlns:w="x"><w:body>'
+                '<w:p w:rsid="a>b"><w:r><w:t>Prima mario.rossi@contoso.it dopo</w:t></w:r></w:p>'
+                "<!-- nota interna, mai resa: valore@nascosto.it -->"
+                "<w:p><w:r><w:t><![CDATA[cd: altro.test@contoso.it]]></w:t></w:r></w:p>"
+                "</w:body></w:document>"
+            )
+            with zipfile.ZipFile(docx, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "[Content_Types].xml",
+                    '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
+                    'package/2006/content-types"/>',
+                )
+                archive.writestr("word/document.xml", body)
+            out = tmp / "edge.redacted.docx"
+            run = subprocess.run([sys.executable, str(ANON_PY), str(docx), "--out", str(out)],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            text = anon.container_text(out)
+            self.assertIn("[EMAIL-1-", text)
+            self.assertNotIn("mario.rossi@contoso.it", text)
+            self.assertNotIn("altro.test@contoso.it", text)
+            part = zipfile.ZipFile(out).read("word/document.xml").decode("utf-8")
+            ElementTree.fromstring(part)  # the part is still well-formed XML
+            self.assertIn('w:rsid="a>b"', part, "the attribute was rewritten")
+            self.assertIn("<![CDATA[cd: ", part, "the CDATA framing was lost")
+            # DECLARED: an XML comment is never rendered, so it is not scanned as text. See
+            # docs/OPEN-ISSUES.md; the value here is expected to remain.
+            self.assertIn("valore@nascosto.it", part)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class DeanonContainerTest(unittest.TestCase):
     """Office containers (docx/odt) are ZIPs of XML parts: deanon must rewrite them in place."""
 

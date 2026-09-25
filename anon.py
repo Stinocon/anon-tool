@@ -1910,8 +1910,88 @@ def tag_of(entries: dict[str, dict[str, str]]) -> str | None:
 # directions of the tool — writing a placeholder in, restoring a value out — need the same three
 # primitives, so they live here and `deanon.py` imports them: two copies of "what a text part is"
 # would drift, and the drift would be invisible until a document was wrong.
-MARKUP_RE = re.compile(r"<[^>]*>")
 XML_SUFFIXES = (".xml", ".rels")
+
+
+def _tag_end(xml: str, start: int) -> int:
+    """Index just past the `>` that closes a tag opened at `start`, ignoring `>` inside a quoted
+    attribute value — `<w:t x="a&gt;b">` is one tag, not two (writing the literal `>` here)."""
+    index = start
+    quote = ""
+    while index < len(xml):
+        char = xml[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == ">":
+            return index + 1
+        index += 1
+    return len(xml)
+
+
+def _declaration_end(xml: str, start: int) -> int:
+    """Index just past the `>` that closes a `<!DOCTYPE`/`<!ENTITY`, honouring an internal subset
+    (`[ ... ]`), which may itself contain `>`."""
+    index = start
+    quote = ""
+    depth = 0
+    while index < len(xml):
+        char = xml[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "[":
+            depth += 1
+        elif char == "]":
+            depth = max(0, depth - 1)
+        elif char == ">" and depth == 0:
+            return index + 1
+        index += 1
+    return len(xml)
+
+
+def markup_spans(xml: str):
+    """(start, end) of every MARKUP span: a tag, a comment, a PI, a declaration, a CDATA delimiter.
+
+    This replaced `MARKUP_RE = re.compile(r"<[^>]*>")`, which was wrong in three ways, each of them
+    moving a text boundary — and a boundary that disagrees with the file is how a value ends up in
+    the gap nothing looks at (the redaction and the verification share this view, so both miss it):
+      * a `>` inside a QUOTED ATTRIBUTE VALUE ended the tag early (legal XML);
+      * a comment or a CDATA section containing `>` leaked its tail into the visible text;
+      * a CDATA body is character data, i.e. TEXT — the old regex dropped part of it as markup.
+    The CDATA body is therefore left as text (only its two delimiters are markup); the body of a
+    comment is not, because a reader never sees it.
+    """
+    index = 0
+    length = len(xml)
+    while index < length:
+        start = xml.find("<", index)
+        if start == -1:
+            return
+        if xml.startswith("<!--", start):
+            end = xml.find("-->", start + 4)
+            end = length if end == -1 else end + 3
+        elif xml.startswith("<![CDATA[", start):
+            yield (start, start + 9)
+            close = xml.find("]]>", start + 9)
+            if close == -1:
+                return
+            yield (close, close + 3)
+            index = close + 3
+            continue
+        elif xml.startswith("<?", start):
+            end = xml.find("?>", start + 2)
+            end = length if end == -1 else end + 2
+        elif xml.startswith("<!", start):
+            end = _declaration_end(xml, start + 2)
+        else:
+            end = _tag_end(xml, start + 1)
+        yield (start, end)
+        index = end
 
 # A ZIP part can legally be UTF-16/UTF-32 encoded (OOXML allows it); decoded as UTF-8 its
 # placeholders are NUL-interleaved and would be neither replaced nor detected.
@@ -1924,8 +2004,14 @@ CONTAINER_BOMS = (
 
 
 def visible_text(xml: str) -> str:
-    """The text a reader of the document would see, approximated by dropping every tag."""
-    return MARKUP_RE.sub("", xml)
+    """The text a reader of the document would see: everything that is not markup."""
+    parts: list[str] = []
+    position = 0
+    for start, end in markup_spans(xml):
+        parts.append(xml[position:start])
+        position = end
+    parts.append(xml[position:])
+    return "".join(parts)
 
 
 def decode_part(blob: bytes) -> tuple[str | None, str | None]:
@@ -2028,17 +2114,17 @@ def _walk_parts(xml: str, separator: str):
     opened = 0
     position = 0
     length = 0
-    for match in MARKUP_RE.finditer(xml):
-        chunk = xml[position:match.start()]
+    for start, end in markup_spans(xml):
+        chunk = xml[position:start]
         segments.append((length, position, tuple(stack)))
         chunks.append(chunk)
-        offsets.extend(range(position, match.start()))
+        offsets.extend(range(position, start))
         length += len(chunk)
         if separator:
             chunks.append(separator)
             offsets.append(-1)
             length += 1
-        parsed = _element_name(match.group(0))
+        parsed = _element_name(xml[start:end])
         if parsed is not None:
             name, closing, self_closing = parsed
             if closing:
@@ -2049,7 +2135,7 @@ def _walk_parts(xml: str, separator: str):
             elif not self_closing:
                 opened += 1
                 stack.append((name, opened))
-        position = match.end()
+        position = end
     chunk = xml[position:]
     segments.append((length, position, tuple(stack)))
     chunks.append(chunk)

@@ -10,6 +10,15 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The XML tokenizer no longer moves a text boundary on legal XML.** A `>` inside a quoted
+  attribute value, in a comment, in a CDATA body or in a doctype's internal subset used to end the
+  markup span early, leaking the tail into the visible text and shifting every offset after it —
+  a value could hide in the disagreement between the file and its reading. `MARKUP_RE` (`<[^>]*>`)
+  is replaced by a scanner in `anon.py`; a CDATA body is now scanned as text, and the body of an XML
+  comment is declared as not scanned (it is never rendered).
+
 ### Added
 
 - **A PDF is delivered redacted**, not refused: `pdfout.py` (stdlib, text-only, base-14 Helvetica

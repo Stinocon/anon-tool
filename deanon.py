@@ -60,7 +60,6 @@ VERSION = anon.VERSION  # single source of truth: the product version lives in a
 # The container primitives live in the ENGINE (`anon.py`): one implementation for both directions
 # — writing a placeholder in, restoring a value out — because two copies of "what a text part is"
 # would drift silently. They are re-bound here so this module reads exactly as before.
-MARKUP_RE = anon.MARKUP_RE
 XML_SUFFIXES = anon.XML_SUFFIXES
 visible_text = anon.visible_text
 decode_part = anon.decode_part
