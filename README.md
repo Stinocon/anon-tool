@@ -158,6 +158,10 @@ placeholder, labelled with its type: what left the document is scannable at a gl
 value is ever written to the page (the view is built with `textContent`; the values stay behind
 *Che cosa è diventato cosa*).
 
+**Scarica il report** writes a Markdown attestation — tool version and build, the map id, the
+substitutions per type and the placeholder list — so a delivery can be checked against the map
+without the report ever carrying a real value.
+
 Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
 in place (`verbale.redacted.docx` — same type, same layout, headers, footers and properties
 rewritten where they live), and the Markdown the model reads, **derived from the already redacted

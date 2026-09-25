@@ -12,6 +12,9 @@ enforces that they agree.
 
 ### Added
 
+- **Scarica il report**: a Markdown attestation for a delivered document — tool version and build,
+  the map id, substitutions per type and the placeholder list. Generated from the anonymize response
+  only (never the reveal), so it cannot carry a real value; checked in the running container.
 - **Dove è intervenuto** in the result panel: the redacted text rendered with one coloured pill per
   placeholder, labelled with its type. Built with `textContent` only (the text is the operator's
   document), so no real value ever reaches the DOM and the map stays behind the warned reveal.

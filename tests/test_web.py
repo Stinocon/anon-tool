@@ -96,6 +96,16 @@ class StaticUiTest(unittest.TestCase):
         self.assertIn("pill.dataset.type = match[1]", self.JS)
         self.assertNotIn('$("highlight-view").innerHTML', self.JS)
 
+    def test_the_redaction_report_carries_no_real_value(self) -> None:
+        """The report is an attestation, not a reveal: it reads only the counts, the placeholder
+        list and the map id — never the mapping the reveal action populates."""
+        self.assertIn('id="download-report"', self.HTML)
+        self.assertIn("state.lastReport = redactionReport(", self.JS)
+        body = self.JS.split("function redactionReport", 1)[1].split("\nfunction ", 1)[0]
+        for field in ("result.counts", "result.entries", "result.map_id"):
+            self.assertIn(field, body, f"the report no longer states {field}")
+        self.assertNotIn("mapping", body, "the report must not touch the revealed mapping")
+
     def _element_html(self) -> dict:
         """id -> inner HTML for every element, via a parser (nested tags break a regex)."""
         from html.parser import HTMLParser

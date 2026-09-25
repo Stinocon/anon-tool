@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestions: [] };
+const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -184,6 +184,36 @@ function renderHighlight(text) {
   if (last < text.length) appendText(text.slice(last));
 }
 
+/* The report a consultant attaches to a delivered document: what was substituted, by type, under
+   which map — and NOT one real value. Every field here comes from the anonymize response (counts,
+   the placeholder list, the map id), never from the reveal, so leaking is not a matter of care. */
+function redactionReport(name, result) {
+  const counts = Object.entries(result.counts || {}).sort();
+  const build = String(state.build || "?").slice(0, 8);
+  const lines = [
+    `# ${i18n.t("report.title")}`,
+    "",
+    `- ${i18n.t("report.file")}: \`${name}\``,
+    `- ${i18n.t("report.tool")}: anon-tool ${state.version || "?"} · build ${build}`,
+    `- ${i18n.t("report.date")}: ${new Date().toISOString()}`,
+    `- ${i18n.t("report.map")}: \`${result.map_id || "—"}\``,
+    "",
+    `## ${i18n.t("report.counts")}`,
+    "",
+    `| ${i18n.t("report.type")} | ${i18n.t("report.count")} |`,
+    "|---|---|",
+    ...counts.map(([type, n]) => `| ${type} | ${n} |`),
+    "",
+    `## ${i18n.t("report.placeholders")}`,
+    "",
+    ...(result.entries || []).map((entry) => `- \`${entry.placeholder}\` — ${entry.type}`),
+    "",
+    `> ${i18n.t("report.note")}`,
+    "",
+  ];
+  return lines.join("\n");
+}
+
 function saveBlob(name, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -319,6 +349,8 @@ async function boot() {
   // and a container left behind after a fix then looks current. The full digest is in the tooltip.
   $("version").textContent = `v${info.version} · ${info.schema} · ${String(info.build || "?").slice(0, 8)}`;
   $("version").title = info.build ? `build ${info.build}` : "";
+  state.version = info.version;
+  state.build = info.build;
   const converter = $("converter-badge");
   converter.textContent = info.converter ? i18n.t("converter.badge.yes") : i18n.t("converter.badge.no");
   converter.className = info.converter ? "badge badge-ok" : "badge badge-warn";
@@ -478,6 +510,9 @@ $("run-anon").addEventListener("click", async () => {
     chips($("anon-counts"), result.counts);
     $("redacted").value = result.redacted;
     renderHighlight(result.redacted);
+    state.lastReport = redactionReport(pending.containerName || baseName, result);
+    state.lastReportName = `${stripExtension(baseName)}.report.md`;
+    $("download-report").hidden = false;
     // The document itself, when the upload was one we can rewrite. One redaction produced both
     // artifacts and one map, so they can never disagree; the button is absent when there is
     // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).
@@ -520,6 +555,9 @@ $("copy-redacted").addEventListener("click", async () => {
   setStatus($("anon-status"), i18n.t("status.copied"), "ok");
 });
 $("download-redacted").addEventListener("click", () => download(pending.name, pending.text));
+$("download-report").addEventListener("click", () => {
+  if (state.lastReport) download(state.lastReportName, state.lastReport);
+});
 $("download-document").addEventListener("click", async () => {
   if (!pending.containerUrl) return;
   setStatus($("anon-status"), i18n.t("progress.downloading"));
