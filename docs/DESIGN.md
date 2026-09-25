@@ -29,9 +29,9 @@ contradiction, so the engine is:
 - **local** — stdlib only, no `socket`/`urllib`/`http` imports, no telemetry;
 - **auditable** — a 700-line module with a 400-line test suite, not a model.
 
-An LLM may be *attached later* as a **candidate suggester** on a local endpoint (see §7): it would
-propose "this looks like a person's name", a human approves, and the deterministic engine applies
-the substitution. The engine stays the only thing that ever writes.
+An LLM may be attached — and one ships — as a **candidate suggester** on a local endpoint (see §7):
+it proposes "this looks like a person's name", a human approves, and the deterministic engine
+applies the substitution. The engine stays the only thing that ever writes.
 
 ## 3. Architecture
 
@@ -244,12 +244,21 @@ on the server; inert without them — the panel is always visible and says so). 
 edited — the write path that already exists — and the operator still presses Save and re-runs the
 redaction: the seam never writes.
 
-What remains open (`docs/OPEN-ISSUES.md` #17) is a model worth running. Measured with the local
-MTPLX Qwen3.5-9B: a one-sentence text gets a correct proposal in ~30 s, while a richer one (two
-names, a company, an email) spends 138 s and 4096 tokens and returns nothing (`finish_reason:
-length`) — a reasoning model that thinks until the budget ends. The seam reports that as an error
-(`--max-tokens` is configurable, the prompt asks for JSON only, `reasoning_content` is a fallback),
-so the deficit is the model's, not the plumbing's.
+A model now ships: Qwen2.5-3B-Instruct (Q4_K_M), started by `make model` as a sidecar that shares
+the UI container's network namespace, so its `127.0.0.1:8080` is the same loopback the seam already
+accepts and nothing new is published (loopback-only and fail-closed are unchanged, DEC-0018/0019).
+Measured end to end — UI to server to model, six CPU threads — a 570-character Italian report came
+back in 37.3 s with 5 proposals (Ancona, Milano, Prato, Bologna, one address), four of them not
+found by the deterministic engine: exactly the contextual reference the dictionary cannot know, at a
+latency that keeps the panel a step you choose rather than a step in the upload path.
+
+The negative measurement that chose the shape: a 9B **reasoning** model thinks until its budget ends.
+A local Qwen3.5-9B spent 138 s and 4096 tokens and returned nothing (`finish_reason: length`), which
+the seam reported as an error — correctly. The prompt asks for JSON only and `reasoning_content` is
+a fallback, so the deficit was the model's, not the plumbing's. A small instruct model with a
+bounded `--max-tokens` is what ships; `make bench-model URL=… MODEL=…` measures any loopback
+endpoint.
+
 ## 8. Known limits (deliberate)
 
 - contextual references ("the client from Ancona") — a human read is still required;

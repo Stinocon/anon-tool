@@ -34,11 +34,13 @@ therefore deterministic — regular expressions, a curated dictionary, and check
 Italian identifiers — and entirely local: standard library only, no network capability, no
 telemetry, no credentials.
 
-The AI re-enters only *after* redaction, when you or an agent analyze the redacted text.
+The AI re-enters only *after* redaction, when you or an agent analyze the redacted text. The one
+exception is the optional suggester below: it **does** read raw text, but only through a local model
+on your own machine, only when you ask for it, and it can do nothing but propose.
 
-**The suggestion model can live in the container, beside the UI.** `make model` downloads
+**The suggestion model runs in the container, beside the UI.** `make model` downloads
 Qwen2.5-3B-Instruct (Q4_K_M, ~2 GB; the size and sha256 come from the model repository's
-metadata and are confirmed only when a first download completes) and starts it as a sidecar that
+metadata and were confirmed against the first completed download) and starts it as a sidecar that
 **shares the UI container's network namespace** (`network_mode: service:anon-tool`). That detail is
 the whole point: the seam is loopback-only by decision (DEC-0018, DEC-0019), a second service on the
 compose network would have its own IP and be refused, while in a shared namespace `127.0.0.1:8080`
@@ -134,6 +136,7 @@ python3 anon.py --prune-maps 90                  # list the maps older than 90 d
 ```bash
 docker compose up -d                             # -> http://127.0.0.1:1407
 docker compose --profile slim up -d anon-tool-slim   # text formats only, no converter, port 1408
+make model                                       # + the local suggestion model (~2 GB, downloaded once)
 # or, without Docker:
 python3 web/server.py                            # --rate-limit N caps /api/* (default 120/min)
 ```
@@ -146,7 +149,8 @@ document, anonymize, read the result. Dark theme by default, with a light altern
 
 The capture is of a **synthetic** document (no real values): the placeholders are typed and carry
 the tag of the map that produced them (`[AZIENDA-1-af6c8c]`), and that map is what restores the
-real values — it stays in `~/.anon/maps/`, never in the browser.
+real values — it stays in `~/.anon/maps/`, never in the browser. The header carries the version,
+the short build fingerprint and the language selector.
 
 Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
 in place (`verbale.redacted.docx` — same type, same layout, headers, footers and properties
@@ -252,8 +256,13 @@ imports it — the arrow is one-way and tested.
 The same thing exists in the UI, in the **Dizionario** tab, because approving a proposal *is* a
 dictionary edit: paste the text, press *Suggerisci*, tick what is real, pick a type, and
 *Aggiungi al dizionario* appends those lines to the dictionary file you are editing. Then save and
-re-run the anonymization. The panel only exists if the server was started with the endpoint
-(`--suggest-url --suggest-model`): without a model there is nothing to show, so it is not shown.
+re-run the anonymization. The panel is always visible: without an endpoint it is inert, the fields
+are closed in the HTML before any script runs, and it says how to turn the seam on.
+
+![The local-model panel in the Dizionario tab, configured](docs/brand/ui-model.png)
+
+Configured, not running: the panel names the model it will call and the bounds it keeps — the model
+only ever *proposes*, and approving a proposal is an ordinary dictionary edit.
 
 Measured on this machine, and worth knowing before you expect magic: a **reasoning** model spends
 its whole budget thinking. A local Qwen3.5-9B spent 138 s and 4096 tokens on a one-sentence text and
@@ -285,10 +294,14 @@ python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
   dropped, and applying a proposal stays `anon.py`'s job.
 
 The panel is always in the Dizionario tab and tells you whether the seam is configured; with no
-model it is inert and says how to enable it. Note where it can work: **not in the container**. Inside it `127.0.0.1` is the container itself, and a
-`host.docker.internal` URL is refused because it is not loopback — the rule that keeps the document
-on this machine also keeps the container from reaching a model on the host. Stop the container and run
-the server natively when you want the panel:
+model it is inert and says how to enable it.
+
+**The shipped model works inside the container**, because the sidecar shares the UI's network
+namespace, so `127.0.0.1:8080` is the same loopback for both: `make model` (or `make up MODEL=1`)
+brings UI and model up together and the server is already pointed at it. What the loopback rule
+still refuses is a model **on the host**: `host.docker.internal` is not loopback, and the rule that
+keeps a document on this machine is the same rule that keeps the container from reaching a model
+outside it. To use such a model, run the UI natively and point it at it:
 
 ```bash
 python3 ~/.anon/web/server.py --port 1407 \
@@ -296,8 +309,8 @@ python3 ~/.anon/web/server.py --port 1407 \
     --suggest-model <nome-modello> --suggest-max-tokens 4096
 ```
 
-See `docs/DESIGN.md` §7 for the boundary and `docs/OPEN-ISSUES.md` #17 for what is still open
-(the model — the interface is bilingual as of this pass).
+See `docs/DESIGN.md` §7 for the boundary and `CHANGELOG.md` for the shipped model and what it was
+measured to do.
 
 ## Security posture
 

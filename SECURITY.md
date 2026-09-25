@@ -12,6 +12,11 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
 - The engine (`anon.py`, `deanon.py`) is deterministic and stdlib-only: **no network capability**,
   no LLM, no telemetry. Anonymization that required a model would first have to hand the model the
   data it is supposed to protect.
+- The optional suggestion model is a **separate process**, never the engine: it runs only on
+  loopback (the seam refuses any other endpoint before sending a byte), the container attaches it as
+  a sidecar sharing the UI's network namespace so nothing new is published, it receives the text you
+  paste but never the dictionary or the map, and it only *proposes* — the deterministic engine still
+  writes every placeholder.
 - The web UI has **no authentication**. That is acceptable *only* because it binds `127.0.0.1`;
   the container publishes `127.0.0.1:1407:1407`, never `1407:1407`. Exposing the port to a network
   exposes your documents and your entity dictionary — that is a configuration decision, not a bug,

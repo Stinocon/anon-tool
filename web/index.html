@@ -177,10 +177,11 @@
       <h2 id="suggest-title-h"><span id="suggest-title">Suggerimenti dal modello locale</span> <span class="badge" id="suggest-state">non configurato</span></h2>
       <p class="muted small" id="suggest-off">
         Un modello locale può <em>proporre</em> le stringhe da redigere che il dizionario non conosce.
-        Non è configurato: avvia il server con
-        <code>--suggest-url</code> e <code>--suggest-model</code> (vedi il README). Nel container
-        questo pannello non può funzionare — dentro, <code>127.0.0.1</code> è il container stesso e la
-        regola loopback rifiuta l'host — quindi va usato col server nativo.
+        Non è configurato: avvialo con <code>make model</code> (oppure <code>make up MODEL=1</code>),
+        che scarica Qwen2.5-3B-Instruct e lo avvia accanto alla UI; a mano, avvia il server con
+        <code>--suggest-url</code> e <code>--suggest-model</code> (vedi il README). Il modello gira in
+        un container che divide la rete con la UI, quindi <code>127.0.0.1</code> è lo stesso loopback
+        per entrambi; un modello <em>sull'host</em> resta invece irraggiungibile da qui.
       </p>
       <div id="suggest-fields" hidden>
       <p class="muted small" id="suggest-privacy">

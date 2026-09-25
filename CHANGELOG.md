@@ -10,6 +10,14 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Fixed
+
+- The docs and the in-app hint no longer say the local suggestion model cannot run inside the
+  container: it ships as a sidecar that shares the UI's network namespace, so `make model` (or
+  `make up MODEL=1`) turns it on there, and only a model *on the host* stays refused (not loopback).
+  `README.md`, `docs/DESIGN.md` §7 and `SECURITY.md` state the same, and the README screenshots are
+  recaptured from the current UI.
+
 ## [2.0.0] - 2026-09-24
 
 ### Added

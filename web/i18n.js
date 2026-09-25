@@ -85,7 +85,7 @@ const EN = {
   "#suggest-title": { inner: "Suggestions from the local model" },
   "#suggest-off": {
     inner:
-      'A local model can <em>propose</em> the strings worth redacting that the dictionary does not know. It is not configured: start the server with <code>--suggest-url</code> and <code>--suggest-model</code> (see the README). Inside the container this panel cannot work — there <code>127.0.0.1</code> is the container itself and the loopback rule refuses the host — so it is for the native server.',
+      'A local model can <em>propose</em> the strings worth redacting that the dictionary does not know. It is not configured: start it with <code>make model</code> (or <code>make up MODEL=1</code>), which downloads Qwen2.5-3B-Instruct and runs it beside the UI; by hand, start the server with <code>--suggest-url</code> and <code>--suggest-model</code> (see the README). The model runs in a container that shares the UI\'s network, so <code>127.0.0.1</code> is the same loopback for both; a model <em>on the host</em> stays unreachable from here.',
   },
   "#suggest-privacy": {
     inner:
