@@ -73,7 +73,9 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
   **backup** (`make backup`), and it comes with its own declared gaps: no scheduler, no remote
   destination, no key management — the passphrase is never stored, so losing it loses the archive —
   and no AEAD tag, so a modified or damaged payload is caught by the manifest inside the archive
-  while *authenticity* rests on the passphrase staying secret.
+  while *authenticity* rests on the passphrase staying secret. `ANON_BACKUP_PASSPHRASE` is read once
+  and removed before any child process is spawned, but a same-user process can still read it from the
+  environment while the script is starting: the prompt is the path with no such window.
 - **two runs cannot be confused**: the tag is part of every placeholder (`[EMAIL-1-a3f9d1]`), so a
   map from a different run leaves the tokens untouched and the restore fails loudly (exit 3)
   instead of substituting another client's values. The tag is 6 hex digits and is allocated

@@ -169,6 +169,20 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr.decode())
         return done.stdout
 
+    def raw_members(self, archive: Path) -> list[str]:
+        """The member names exactly as they were written (bsdtar keeps the `./` it was given)."""
+        return tarfile.open(fileobj=io.BytesIO(self.decrypt(archive)), mode="r:gz").getnames()
+
+    def members(self, archive: Path) -> list[str]:
+        return [name[2:] if name.startswith("./") else name for name in self.raw_members(archive)]
+
+    @staticmethod
+    def member(name: str, data: bytes) -> tuple[tarfile.TarInfo, bytes]:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        info.mode = 0o600
+        return (info, data)
+
     # ---- the round trip ------------------------------------------------------------------------
 
     def test_a_backup_restores_byte_for_byte(self) -> None:
@@ -196,7 +210,7 @@ class BackupTest(unittest.TestCase):
         home = self.make_home()
         archive = self.tmp / "store.enc"
         self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
-        names = tarfile.open(fileobj=io.BytesIO(self.decrypt(archive)), mode="r:gz").getnames()
+        names = self.members(archive)
         self.assertIn("maps/PLACEHOLDER_1.json", names)
         self.assertIn("MANIFEST.sha256", names)
         for absent in ("models/model.gguf", "__pycache__/anon.cpython-313.pyc", ".DS_Store"):
@@ -205,6 +219,28 @@ class BackupTest(unittest.TestCase):
         target = self.tmp / "t"
         self.assertEqual(self.run_script("restore", str(archive), str(target)).returncode, 0)
         self.assertFalse((target / "MANIFEST.sha256").exists())
+
+    def test_the_archive_holds_the_files_and_nothing_else(self) -> None:
+        """Exactly one member per archived file, plus the manifest.
+
+        bsdtar adds a `._name` member per file carrying the macOS `com.apple.*` xattrs. libarchive
+        hides those when listing, so only this count sees them — and GNU tar on Linux extracts them
+        as REAL files, which would restore junk and make the count check refuse a good archive. On
+        Linux the assertion is trivially true, where such members are never created.
+        """
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        raw = self.raw_members(archive)
+        self.assertFalse(
+            [n for n in raw if "/._" in n or n.startswith("._")], f"macOS metadata members: {raw}"
+        )
+        archived = [
+            p for p in home.rglob("*") if p.is_file()
+            and "models" not in p.parts and "__pycache__" not in p.parts
+            and not p.name.endswith(".pyc") and p.name != ".DS_Store"
+        ]
+        self.assertEqual(len(raw), len(archived) + 1, raw)   # +1 is the manifest
 
     def test_the_value_is_not_readable_in_the_archive(self) -> None:
         home = self.make_home()
@@ -348,6 +384,103 @@ class BackupTest(unittest.TestCase):
         self.assertTrue((kept[0] / "maps" / "old.json").exists())
         self.assertEqual((target / "maps" / "PLACEHOLDER_1.json").read_bytes(),
                          (home / "maps" / "PLACEHOLDER_1.json").read_bytes())
+
+    # ---- the store's own contents are inputs too --------------------------------------------------
+
+    def test_a_file_name_that_looks_like_a_tar_option_is_archived(self) -> None:
+        """A name starting with `-` at the ROOT of the store must not be read as a tar option.
+
+        bsdtar does not accept `--` after the first operand, so without the `./` prefix such an
+        operand is parsed as an option (`-C.redacted` became `-C .redacted`) and the backup fails:
+        no archive can be made at all until that file is removed. Reachability through the product
+        is nil by construction — a download lives at `downloads/<token>/<name>`, and the directory
+        prefix is enough to make its name an ordinary operand — so this is defence in depth for a
+        name an operator put at the top level by hand.
+        """
+        home = self.make_home()
+        tricky = home / "-C.redacted.pdf"
+        tricky.write_text("a name that starts with a dash\n", encoding="utf-8")
+        archive = self.tmp / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("-C.redacted.pdf", self.members(archive))
+        target = self.tmp / "restored"
+        self.assertEqual(self.run_script("restore", str(archive), str(target)).returncode, 0)
+        self.assertEqual((target / "-C.redacted.pdf").read_bytes(), tricky.read_bytes())
+
+    def test_a_download_name_that_starts_with_a_dash_is_archived(self) -> None:
+        home = self.make_home()
+        tricky = home / "downloads" / "-C.redacted.pdf"
+        tricky.write_text("a download keeps its upload name\n", encoding="utf-8")
+        archive = self.tmp / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("downloads/-C.redacted.pdf", self.members(archive))
+        target = self.tmp / "restored"
+        self.assertEqual(self.run_script("restore", str(archive), str(target)).returncode, 0)
+        self.assertEqual((target / "downloads" / "-C.redacted.pdf").read_bytes(), tricky.read_bytes())
+
+    def test_a_file_name_with_a_newline_is_refused_by_name(self) -> None:
+        home = self.make_home()
+        (home / "downloads" / "due\nrighe.txt").write_text("x\n", encoding="utf-8")
+        archive = self.tmp / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("newline", done.stderr)
+        self.assertFalse(archive.exists())
+
+    def test_the_modes_of_the_store_come_back_unchanged(self) -> None:
+        home = self.make_home()
+        readable = home / "downloads" / "pubblico.txt"
+        readable.write_text("not a secret\n", encoding="utf-8")
+        os.chmod(readable, 0o644)
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        target = self.tmp / "restored"
+        self.assertEqual(self.run_script("restore", str(archive), str(target)).returncode, 0)
+        self.assertEqual(stat.S_IMODE(os.stat(target / "downloads" / "pubblico.txt").st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(os.stat(target / "entities.txt").st_mode), 0o600)
+
+    def test_a_planted_manifest_in_a_subdirectory_is_refused(self) -> None:
+        """Excluding the manifest by NAME excludes a `<subdir>/MANIFEST.sha256` too.
+
+        Such a file is in no manifest and invisible to `shasum -c`, and the count that exists to
+        catch exactly that would skip it: the restore used to report "1 file(s)" and write two.
+        """
+        archive = self.tmp / "planted.enc"
+        self.make_archive_with_extras(
+            {"maps/a.json": b"real\n"},
+            [self.member("sub/MANIFEST.sha256", b"ATTACKER-PLANTED\n")],
+            archive,
+        )
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("manifest lists", done.stderr)
+        self.assertFalse(target.exists())
+
+    def test_the_passphrase_is_not_inherited_by_a_child(self) -> None:
+        """The env path is documented; it must not reach the children the script spawns."""
+        shim = self.tmp / "shim"
+        shim.mkdir()
+        seen = self.tmp / "child-env.txt"
+        fake = shim / "openssl"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'if [ -n "${{ANON_BACKUP_PASSPHRASE:-}}" ]; then echo LEAKED >> {seen}; '
+            f'else echo CLEAN >> {seen}; fi\n'
+            f'exec {OPENSSL} "$@"\n',
+            encoding="utf-8",
+        )
+        os.chmod(fake, 0o755)
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}",
+                               extra_env={"PATH": f"{shim}:{os.environ['PATH']}"})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        transcript = seen.read_text(encoding="utf-8")
+        self.assertIn("CLEAN", transcript)
+        self.assertNotIn("LEAKED", transcript)
 
     def test_the_destination_directory_is_created_when_it_does_not_exist(self) -> None:
         home = self.make_home()

@@ -528,6 +528,49 @@ sets and sha256 identical, nothing read in clear by the agent. What is NOT done:
 still never run the machine-wide private backup against a real destination — that is #40, and it
 covers the transcripts and the credentials this script deliberately does not.
 
+### The adversarial round on the backup (2026-09-25)
+
+One review round on `scripts/anon-home-backup.sh` — a guarded surface, and a security one: it holds
+the only copy of the maps. Five findings, all accepted and fixed, each with a test that fails when
+the fix is removed. The suite went from 18 to 25 tests and the mutation corpus to 15, every one of
+them biting.
+
+- **MEDIUM — a tar operand starting with `-` was read as an option.** bsdtar does not accept `--`
+  after the first operand (`tar czf out -C b M -C a -- "-C.redacted"` replies `tar: --: Cannot
+  stat` and `could not chdir to '.redacted'`), so such a file was silently dropped and the archive
+  then failed its own count check: no backup could be written at all until that file was removed.
+  Every operand is now `./`-prefixed. Reachability through the product was nil — a download lives at
+  `downloads/<token>/<name>`, and the directory prefix already makes its name an ordinary operand —
+  so this is defence in depth for a name put at the store's root by hand, and the test says so.
+- **MEDIUM — the file count excluded a NAME, not a POSITION.** `! -name MANIFEST.sha256` also
+  excluded a planted `sub/MANIFEST.sha256`, a file no manifest listed and `shasum -c` never read:
+  the reproducer printed `RESTORED: 1 file(s)` while writing two, one of them attacker-chosen. The
+  count is now every regular file minus the manifest at the archive's root.
+- **LOW — a name holding a newline broke the manifest.** The manifest is line-based, so such a name
+  split its own line and the backup refused with "the archive holds 2 file(s), the manifest lists
+  3". Fail-closed already, but the cause was unreadable: it is refused now by name, with the reason.
+- **LOW — the modes were masked by the script's own umask.** `umask 077` applies to the extraction,
+  so a 0644 file in the store came back 0600 while the promise is that the store returns as it was.
+  The final extraction is `tar xpzf`; verified on the real store, where a 0644 file now comes back
+  0644.
+- **LOW — `ANON_BACKUP_PASSPHRASE` was inherited by the children.** True of any exported variable.
+  The script reads it once and unsets it before spawning anything, and `SECURITY.md` states the
+  remaining window — a same-user process reading the environment while the script starts — and why
+  the prompt is the default.
+
+**Found by the fix rather than by the review**: the test that counts members exposed a macOS
+behaviour predating this step. bsdtar records the `com.apple.*` xattrs as `._name` members;
+libarchive hides them when listing, so only a COUNT sees them, and GNU tar extracts them as real
+files — measured in the container, the archive written before the fix planted `._entities.txt` on
+Linux and the restore then failed its own count check. `COPYFILE_DISABLE=1` keeps the archive to
+contents and paths; `test_the_archive_holds_the_files_and_nothing_else` is the gate, and it is a
+no-op where such members are never created.
+
+Frozen records are not rewritten. `DEC-0033` still says "18 test" (the reviewed suite is 25) and
+names a script that belongs to a private repository; `verify_decisions` passes, so the record is not
+stale in substance. Both drifts are recorded here, for the operator to decide, and neither was
+edited into a `validated` file.
+
 ### Hygiene note kept from this pass
 
 `docs/OPEN-ISSUES.md` itself used to be guard-blocked (it quoted an address and a name/literal pair),

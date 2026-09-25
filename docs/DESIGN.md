@@ -117,6 +117,21 @@ visible, because CBC without AEAD returns bytes rather than an error whenever th
 land right. The same verification runs before a restore writes anything, and a restore that finds a
 non-empty store MOVES it aside instead of deleting it.
 
+Three details are load-bearing and were each found by breaking them:
+
+- **The file count must exclude a POSITION, not a NAME.** `! -name MANIFEST.sha256` also excluded a
+  planted `sub/MANIFEST.sha256`, which no manifest listed and `shasum -c` never looked at: the
+  restore reported one file and wrote two. Counting every regular file and subtracting the one at the
+  archive's root is what makes the check mean what it says.
+- **A tar operand must not start with `-`.** bsdtar does not accept `--` after the first operand, so a
+  store file named `-C.redacted` was read as the option `-C .redacted` and silently DROPPED — no
+  archive could be written until it was removed. Every operand is `./`-prefixed, which is also what
+  lets the manifest and the tree share one archive across two `-C`s.
+- **macOS metadata is not the store.** bsdtar records the `com.apple.*` xattrs as `._name` members;
+  libarchive hides them when listing, so only a member COUNT sees them, and GNU tar extracts them as
+  real files — measured here, the same archive planted `._entities.txt` on Linux. `COPYFILE_DISABLE=1`
+  keeps the archive to contents and paths.
+
 ## 5. Dictionary matching (what "the same entity" means)
 
 The dictionary is split by kind, all optional and merged: `~/.anon/entities.txt` (the generic

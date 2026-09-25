@@ -37,8 +37,10 @@ enforces that they agree.
   archive (`make backup`) and verifies it in the same run by decrypting it again and comparing every
   file with a sha256 manifest carried inside the archive. `make restore FILE=…` runs the same
   verification before it writes, refuses a payload that contradicts its own manifest or names a file
-  outside the home, and moves a non-empty store aside instead of deleting it. The live store stays
-  in clear at mode 0600, by decision (`DEC-0033`).
+  outside the home, and moves a non-empty store aside instead of deleting it. The archive holds
+  contents and paths, not the filesystem's bookkeeping: macOS xattr metadata is left out, so it
+  restores cleanly with GNU tar too. The live store stays in clear at mode 0600, by decision
+  (`DEC-0033`).
 
 - **A PDF is delivered redacted**, not refused: `pdfout.py` (stdlib, text-only, base-14 Helvetica
   with WinAnsi so the accents survive) builds a NEW PDF from the already-redacted Markdown — the

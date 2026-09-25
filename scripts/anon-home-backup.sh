@@ -17,10 +17,17 @@
 # What goes in: every file under the home EXCEPT `models/` (2 GB, re-downloadable with `make model`),
 # `__pycache__/`, `*.pyc` and `.DS_Store`. Code and data both — this is the live tree, and the live
 # tree is what a restore has to return. An empty directory is not archived; the engine creates the
-# directories it writes into (`anon.py::_write_private`, mode 0700).
+# directories it writes into (`anon.py::_write_private`, mode 0700). File CONTENTS and PATHS travel,
+# the filesystem's own bookkeeping does not: macOS xattr metadata is left out, so an archive made on
+# a Mac restores cleanly on Linux.
 #
 # Exits 1 on a refusal (empty or mismatched passphrase, missing tool, existing destination, a restore
 # target that is not empty) and 2 when a verification fails. It writes nothing in either case.
+#
+# The passphrase is read once, from `$ANON_BACKUP_PASSPHRASE` when set and otherwise from a prompt,
+# and the variable is removed before any child is spawned. The prompt is still the default: a value
+# in the environment is readable by any same-user process while the script runs (on Linux by reading
+# the process's initial environment block, which no `unset` can reach).
 set -uo pipefail
 umask 077
 
@@ -48,7 +55,8 @@ usage: anon-home-backup.sh backup  [DEST]         encrypted copy of the private 
 
 The passphrase is read from $ANON_BACKUP_PASSPHRASE when set, otherwise from a prompt. It is never an
 argument (arguments are visible in `ps`) and it is not stored anywhere. Without it the archive cannot
-be opened, by design.
+be opened, by design. The variable is removed before the first child runs; the prompt is the safe
+path, because a same-user process can read the environment while the script is starting.
 EOF
 }
 
@@ -107,9 +115,17 @@ audit_members() {  # $1 = plaintext tar
 }
 
 # The manifest is what makes a wrong passphrase and a tampered payload visible: openssl exits 0 on
-# bytes it can decrypt into garbage, and CBC without AEAD has no tag to check. Comparing the file
-# COUNT is not redundant — `-c` verifies only what the manifest lists, so a file slipped into the
-# archive would otherwise pass unnoticed.
+# bytes it can decrypt into garbage, and CBC without AEAD has no tag to check.
+#
+# The file COUNT is not redundant, and it compares the wrong thing if it excludes a name rather than
+# a position: `-c` verifies only what the manifest lists, so a file slipped into the archive would
+# otherwise pass unnoticed — and `! -name MANIFEST.sha256` excludes that name ANYWHERE, so a planted
+# `sub/MANIFEST.sha256` passed both checks and was written into the restored store. Every regular
+# file is counted, the archive's own manifest subtracted, and nothing else.
+tree_files() {  # $1 = extracted tree; the files it holds, minus the manifest at its root
+  echo $(( $(find "$1" -type f | wc -l | tr -d ' ') - 1 ))
+}
+
 check_tree() {  # $1 = extracted tree, $2 = directory for the log
   local log="$2/check.log" listed actual
   ( cd "$1" && "${SHA[@]}" -c MANIFEST.sha256 ) >"$log" 2>&1 || {
@@ -118,7 +134,7 @@ check_tree() {  # $1 = extracted tree, $2 = directory for the log
     return 1
   }
   listed="$(grep -c '' "$1/MANIFEST.sha256")"
-  actual="$(find "$1" -type f ! -name MANIFEST.sha256 | wc -l | tr -d ' ')"
+  actual="$(tree_files "$1")"
   if [ "$listed" != "$actual" ]; then
     printf 'the archive holds %s file(s), the manifest lists %s\n' "$actual" "$listed" >&2
     return 1
@@ -130,7 +146,7 @@ check_tree() {  # $1 = extracted tree, $2 = directory for the log
 # ---- backup ------------------------------------------------------------------------------------
 
 cmd_backup() {  # $1 = destination (optional; --out=FILE wins)
-  local home="$HOME_DIR" out="$1" tar back ex pass f files=()
+  local home="$HOME_DIR" out="$1" tar back ex pass f files=() operands=()
   [ -n "$OUT" ] && out="$OUT"
   [ -d "$home" ] || die "$home does not exist"
   [ -n "$out" ] || out="$HOME/private-backups/anon-home-$(date +%Y%m%d-%H%M).tar.gz.enc"
@@ -139,9 +155,22 @@ cmd_backup() {  # $1 = destination (optional; --out=FILE wins)
   # the private partial is created 0600 by the umask, and the directory may be wider than that
   PARTIAL="$out.partial"
 
+  # read first, and drop the inherited copy: everything below runs without it, so no child of this
+  # script — openssl included — carries the passphrase in its environment
+  pass="$(passphrase confirm)"
+  unset ANON_BACKUP_PASSPHRASE
+
   # The list is built once and used for both the manifest and the tar: a list computed twice is two
   # descriptions of a tree that may have changed in between.
-  while IFS= read -r -d '' f; do files+=("${f#./}"); done < <(
+  while IFS= read -r -d '' f; do
+    case "$f" in
+      *$'\n'*|*$'\r'*)
+        # the manifest is line-based, so such a name splits its own line. Refused here, by name,
+        # rather than later as "the manifest lists more files than the archive holds".
+        die "a file name holds a newline or a carriage return, which the manifest cannot carry: $(printf '%q' "$f")" ;;
+    esac
+    files+=("${f#./}")
+  done < <(
     cd "$home" && find . -type f \
       ! -path './models/*' ! -path '*/__pycache__/*' ! -name '*.pyc' ! -name '.DS_Store' -print0
   )
@@ -158,11 +187,22 @@ cmd_backup() {  # $1 = destination (optional; --out=FILE wins)
     printf '%s  %s\n' "$(hash_of "$home/$f")" "$f" >> "$WORK/MANIFEST.sha256"
   done
 
-  # the manifest is the first member and comes from a directory of its own: writing it into the home
-  # to archive it with the tree would put a file in the store that no run of the tool put there
-  tar czf "$tar" -C "$WORK" MANIFEST.sha256 -C "$home" "${files[@]}" || die "tar failed"
+  # The manifest is the first member and comes from a directory of its own: writing it into the home
+  # to archive it with the tree would put a file in the store that no run of the tool put there.
+  #
+  # Every operand is `./`-prefixed, and that is load-bearing: bsdtar does not accept `--` after the
+  # first operand, so a file named `-C.redacted` (a download keeps the name it was uploaded with)
+  # would be read as an option and silently DROPPED. `-C` is positional and honoured after operands
+  # on both tar implementations, which is what lets the manifest and the tree share one archive.
+  #
+  # `COPYFILE_DISABLE=1`: bsdtar stores macOS metadata (`com.apple.*` xattrs) as `._name` members,
+  # which GNU tar would extract as literal files — the same archive would restore junk on Linux and
+  # the count check would refuse it. The archive carries paths and bytes, not the filesystem's
+  # bookkeeping; GNU tar ignores the variable.
+  for f in "${files[@]}"; do operands+=("./$f"); done
+  COPYFILE_DISABLE=1 tar czf "$tar" -C "$WORK" MANIFEST.sha256 -C "$home" "${operands[@]}" \
+    || die "tar failed"
 
-  pass="$(passphrase confirm)"
   printf '%s' "$pass" | encrypt "$tar" "$PARTIAL" || die "openssl failed"
   chmod 600 "$PARTIAL" || die "cannot restrict the permissions of $PARTIAL"
   [ -f "$PARTIAL" ] || die "openssl wrote no archive"
@@ -177,7 +217,6 @@ cmd_backup() {  # $1 = destination (optional; --out=FILE wins)
   tar xzf "$back" -C "$ex" || die "VERIFY FAILED: the payload is not a readable tar" 2
   check_tree "$ex" "$WORK" || die "VERIFY FAILED: see above" 2
   unset pass
-  rm -rf "$ex" "$back"
 
   mv "$PARTIAL" "$out" || die "cannot move the archive into place"
   chmod 600 "$out" || die "cannot restrict the permissions of $out"
@@ -201,6 +240,7 @@ cmd_restore() {  # $1 = archive, $2 = target directory (optional)
   ex="$WORK/extract"
 
   pass="$(passphrase)"
+  unset ANON_BACKUP_PASSPHRASE
   printf '%s' "$pass" | decrypt "$archive" "$back" \
     || die "the archive does not decrypt — wrong passphrase, or a damaged file" 2
   unset pass
@@ -212,21 +252,25 @@ cmd_restore() {  # $1 = archive, $2 = target directory (optional)
   mkdir -p "$ex"
   tar xzf "$back" -C "$ex" || die "the archive does not open: wrong passphrase, or a damaged file" 2
   check_tree "$ex" "$WORK" || die "REFUSING: the content does not match its own manifest (wrong passphrase, or a damaged file)" 2
-  count="$(find "$ex" -type f ! -name MANIFEST.sha256 | wc -l | tr -d ' ')"
+  count="$(tree_files "$ex")"
 
   if [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ]; then
     if [ "$FORCE" != 1 ]; then
       die "$target is not empty — refusing. Use --force (the current tree is MOVED aside first, nothing is deleted), or restore into a fresh directory: $PROG restore $archive /some/empty/dir"
     fi
     # Nothing is deleted: the tree about to be replaced is renamed out of the way, on the same
-    # filesystem, so restoring the wrong archive costs one `mv` back.
-    safe="$target.pre-restore-$(date +%Y%m%d-%H%M%S)"
+    # filesystem, so restoring the wrong archive costs one `mv` back. `$$` keeps two restores in the
+    # same second apart — with a colliding name `mv` would move the tree INTO the previous one.
+    safe="$target.pre-restore-$(date +%Y%m%d-%H%M%S)-$$"
     mv "$target" "$safe" || die "could not move $target aside"
     printf 'current tree kept in %s\n' "$safe"
   fi
   mkdir -p -m 700 "$target" || die "cannot create $target"
 
-  tar xzf "$back" -C "$target" || die "extraction failed"
+  # `-p`: tar applies each member's mode masked by the umask, and this script runs under 077 —
+  # without it a 0644 file in the store would come back 0600. The promise is that the store returns
+  # as it was, and the modes are part of that.
+  tar xpzf "$back" -C "$target" || die "extraction failed"
   # the manifest is the archive's own bookkeeping, not a file of the store
   rm -f "$target/MANIFEST.sha256"
   printf 'RESTORED: %s file(s) into %s\n' "$count" "$target"
