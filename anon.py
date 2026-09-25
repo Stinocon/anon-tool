@@ -75,6 +75,7 @@ CODE_FINGERPRINT_FILES = (
     "anon.py",
     "deanon.py",
     "suggest.py",
+    "pdfout.py",
     "docker-entrypoint.sh",
     "requirements-anydoc.txt",
 )

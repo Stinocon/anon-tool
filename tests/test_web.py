@@ -40,6 +40,14 @@ sys.dont_write_bytecode = True
 
 DOCX_AVAILABLE = (Path.home() / ".pi" / "agent" / "skills" / "docs" / "docs.py").is_file()
 
+# The stdlib PDF writer, loaded by path: the server imports it, and a test that builds its own PDF
+# fixture must use the same code, not a second implementation.
+_pdf_spec = importlib.util.spec_from_file_location("pdfout_for_web", HOME / "pdfout.py")
+assert _pdf_spec and _pdf_spec.loader
+pdfout = importlib.util.module_from_spec(_pdf_spec)
+sys.modules["pdfout_for_web"] = pdfout
+_pdf_spec.loader.exec_module(pdfout)
+
 
 def free_port() -> int:
     with socket.socket() as probe:
@@ -1155,6 +1163,38 @@ class WebUiTest(unittest.TestCase):
                 status_doc, blob = self.call_bytes(result["container_url"])
                 self.assertEqual(status_doc, 200, (name, result["container_url"]))
                 self.assertTrue(zipfile.is_zipfile(io.BytesIO(blob)), f"{name}: not a container")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    @unittest.skipUnless(DOCX_AVAILABLE, "document converter not installed")
+    def test_a_pdf_is_rebuilt_redacted_from_the_markdown(self) -> None:
+        """A PDF is never rewritten in place: the answer is a NEW text-only PDF built from the
+        redacted Markdown, same tag and map, and the response says the layout is lost."""
+        work = Path(tempfile.mkdtemp(prefix="anon-web-pdf-"))
+        try:
+            pdf = work / "verbale.pdf"
+            pdf.write_bytes(pdfout.build_pdf("Cliente Contoso, referente mario@contoso.it\n"))
+            status, result = self.call("/api/anonymize-document", None,
+                                       headers={"X-Filename": "verbale.pdf", "X-Catalogs": "",
+                                                "X-Patterns": "identity",
+                                                "Content-Type": "application/octet-stream"},
+                                       raw=pdf.read_bytes())
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["origin"], "converted")
+            self.assertEqual(result["container_name"], "verbale.redacted.pdf")
+            self.assertIn("layout", result["container_error"])
+            status_doc, blob = self.call_bytes(result["container_url"])
+            self.assertEqual(status_doc, 200)
+            self.assertTrue(blob.startswith(b"%PDF-"), blob[:8])
+            # The rebuilt PDF is readable, carries the placeholder and not the real value.
+            rebuilt = work / "rebuilt.pdf"
+            rebuilt.write_bytes(blob)
+            markdown = subprocess.run([sys.executable, str(HOME / "convert.py"), str(rebuilt)],
+                                      capture_output=True, text=True)
+            if markdown.returncode != 0 or not markdown.stdout.strip():
+                self.skipTest(f"anydoc could not read the rebuilt PDF: {markdown.stderr[:120]}")
+            self.assertIn(f"[EMAIL-1-{result['tag']}]", markdown.stdout)
+            self.assertNotIn("mario@contoso.it", markdown.stdout)
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

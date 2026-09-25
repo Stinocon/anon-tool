@@ -48,6 +48,7 @@ WEB_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(WEB_DIR.parent))
 import anon  # noqa: E402
 import deanon as deanon_engine  # noqa: E402
+import pdfout  # noqa: E402 - stdlib, text-only: a redacted PDF is built, never rewritten
 import suggest as suggest_engine  # noqa: E402
 
 
@@ -346,6 +347,16 @@ def _publish_download(redacted: Path, name: str) -> str:
     return f"{token}/{published.name}"
 
 
+def _is_pdf(source: Path) -> bool:
+    """A PDF starts with `%PDF-<version>` within the first 1024 bytes (the spec allows a prefix).
+    `anon.sniff` answers `container` for a PDF, so it cannot tell it apart from a `.docx`."""
+    try:
+        head = source.open("rb").read(1032)
+    except OSError:
+        return False
+    return anon.PDF_HEADER_RE.search(head) is not None
+
+
 def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) -> dict:
     """Redact a DOCUMENT: one redaction, two artifacts.
 
@@ -379,6 +390,23 @@ def _anonymize_document_file(source: Path, filename: str, catalogs, patterns) ->
         result = _anonymize_text(_convert_to_markdown(source), catalogs, patterns, True)
         result["origin"] = "converted"
         result["container_error"] = str(unreadable)
+        if _is_pdf(source):
+            # A PDF cannot be rewritten in place (a bug in a content-stream rewrite produces a
+            # document that LOOKS redacted). Rebuild it from the already-redacted Markdown instead:
+            # the layout is lost, the substance and the map are the same, and the response says so.
+            try:
+                name = f"{Path(filename).stem}.redacted.pdf"
+                rebuilt = source.with_name(name)
+                rebuilt.write_bytes(pdfout.build_pdf(result["redacted"]))
+                published = _publish_download(rebuilt, name)
+                result["container_name"] = name
+                result["container_url"] = f"/api/download/{quote(published, safe='/')}"
+                result["container_error"] = (
+                    "PDF ricostruito dal testo redatto: il layout originale non e' preservato."
+                )
+            except OSError:
+                # The Markdown alone is still a valid, honest answer.
+                pass
         return result
 
     try:

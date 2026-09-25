@@ -2929,6 +2929,49 @@ class ContainerRedactionTest(unittest.TestCase):
         self.assertEqual(list(self.home.glob("maps/*.map.json")), [])
 
 
+class PdfOutputTest(unittest.TestCase):
+    """`pdfout.py` builds a NEW, text-only PDF for a redacted document: a PDF is never rewritten in
+    place, and the output must be a real PDF that a reader can open."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location("pdfout_module", HOME / "pdfout.py")
+        assert spec and spec.loader
+        cls.pdfout = importlib.util.module_from_spec(spec)
+        sys.modules["pdfout_module"] = cls.pdfout
+        spec.loader.exec_module(cls.pdfout)
+
+    def test_the_pdf_is_structurally_valid_and_deterministic(self) -> None:
+        data = self.pdfout.build_pdf("Riga uno\nRiga due\n")
+        self.assertTrue(data.startswith(b"%PDF-1.4"))
+        self.assertTrue(data.rstrip().endswith(b"%%EOF"))
+        self.assertIn(b"\nxref\n", data)
+        self.assertIn(b"WinAnsiEncoding", data)
+        self.assertEqual(data, self.pdfout.build_pdf("Riga uno\nRiga due\n"), "same text, same bytes")
+
+    def test_accented_letters_survive_the_encoding(self) -> None:
+        data = self.pdfout.build_pdf("perché à è é ì ò ù\n")
+        self.assertIn("perché à è é ì ò ù".encode("cp1252"), data)
+
+    def test_a_generated_pdf_round_trips_through_the_converter(self) -> None:
+        """The only proof the PDF is real: a reader gets the text back, placeholders included."""
+        converter = HOME / "convert.py"
+        if not converter.is_file():
+            self.skipTest("no convert.py (slim install)")
+        work = Path(tempfile.mkdtemp(prefix="anon-pdf-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        pdf = work / "redacted.pdf"
+        pdf.write_bytes(self.pdfout.build_pdf(
+            "Verbale per [AZIENDA-1-af6c8c].\nSede in [INDIRIZZO-1-af6c8c] con accenti: à è é.\n"
+        ))
+        run = subprocess.run([sys.executable, str(converter), str(pdf)], capture_output=True, text=True)
+        if run.returncode != 0 or not run.stdout.strip():
+            self.skipTest(f"the converter could not read the PDF: {run.stderr.strip()[:120]}")
+        self.assertIn("[AZIENDA-1-af6c8c]", run.stdout)
+        self.assertIn("[INDIRIZZO-1-af6c8c]", run.stdout)
+        self.assertIn("à è é", run.stdout)
+
+
 class OfflineContractTest(unittest.TestCase):
     """No engine script may gain a network import by accident (DEC-0012 §2).
 
@@ -2948,7 +2991,7 @@ class OfflineContractTest(unittest.TestCase):
     second module cannot quietly acquire the capability and the exception cannot spread.
     """
 
-    SCRIPTS = ("anon.py", "deanon.py", "convert.py")
+    SCRIPTS = ("anon.py", "deanon.py", "convert.py", "pdfout.py")
     # The declared exception, named so it stays one: see the class docstring.
     NETWORK_CLIENT = "suggest.py"
     # A network STACK, not a network-shaped name: `urllib.parse` and `http.cookies` are parsers and

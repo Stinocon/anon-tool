@@ -168,8 +168,10 @@ without the report ever carrying a real value.
 Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
 in place (`verbale.redacted.docx` — same type, same layout, headers, footers and properties
 rewritten where they live), and the Markdown the model reads, **derived from the already redacted
-file**. They share one tag and one map, so they can never disagree; a PDF, or a package the engine
-cannot open, falls back to the Markdown alone and says so. The reason not to redact the two
+file**. They share one tag and one map, so they can never disagree. A PDF is never rewritten in
+place: it is rebuilt as a **new text-only PDF** (layout not preserved, and the panel says so) plus
+the Markdown, both from the same map. A package the engine cannot open falls back to the Markdown
+alone and says so. The reason not to redact the two
 independently: the same placeholder would end up meaning two different values.
 
 `make up | down | logs | native | test | smoke` wraps the same operations.
@@ -207,6 +209,7 @@ The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard a
 | `anon.py` | engine: detection, redaction, map, `--check`, `--audit` |
 | `deanon.py` | inverse: restores the real values, in plain text and inside `.docx/.xlsx/.pptx/.odt` |
 | `convert.py` | document → Markdown, using a pinned [anydoc](https://github.com/firecrawl/anydoc) |
+| `pdfout.py` | text → a plain text-only PDF: a redacted PDF is rebuilt, never rewritten |
 | `web/` | local UI: stdlib HTTP server plus a vanilla front-end (no framework, no CDN, no build) |
 | `catalogs/` | opt-in lists: Italian municipalities and consumer mail domains, plus the IT vendor and product lists |
 | `~/.anon/maps/` | reversible maps — the only place the real values live, mode 0600, never in a repo |

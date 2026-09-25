@@ -12,6 +12,12 @@ enforces that they agree.
 
 ### Added
 
+- **A PDF is delivered redacted**, not refused: `pdfout.py` (stdlib, text-only, base-14 Helvetica
+  with WinAnsi so the accents survive) builds a NEW PDF from the already-redacted Markdown — the
+  layout is not preserved and the response says so — while rewriting the content stream stays out of
+  scope, where a bug produces a document that looks redacted and is not. Same tag, same map; the
+  output is verified by reading it back with the converter. Shipped in the image and in the code
+  fingerprint.
 - `scripts/bench-suggest.py --corpus`: proposal precision/recall against the labelled corpus, plus
   the number that matters — how many of the declared `known_miss` holes the model closed. Measured
   with the shipped 3B: precision 11/11, recall 10/28, 0 proposals the engine had not already made,

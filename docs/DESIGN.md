@@ -295,7 +295,10 @@ the panel is a step to try on a document the engine under-reads — not a guaran
 - **what the in-place path refuses**: legacy `.doc/.xls/.ppt`, PDF and images (formats we cannot
   rewrite while verifying the result) and any file that claims to be a container but is not a
   readable ZIP — refused with exit 2 and nothing written, rather than a corrupted file *named*
-  "redacted";
+  "redacted". For a **PDF the deliverable is rebuilt**: the server converts it to Markdown with the
+  pinned converter, redacts that (the map is the one artifact), and writes a NEW text-only PDF with
+  `pdfout.py`. The layout is not preserved and the response says so; rewriting the content stream is
+  deliberately NOT done, because a bug there produces a document that looks redacted and is not;
 - **the redaction of a container is verified on the OUTPUT, not on the intention.** The written file
   is re-read and every text part re-scanned with the same detectors; if a detected value survives,
   the output is deleted and the command fails. The verification must use the SAME view as the
