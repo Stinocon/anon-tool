@@ -522,7 +522,12 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "IBAN",
-        re.compile(r"(?<![\w])IT\s?\d{2}\s?[A-Z]\s?(?:[A-Z0-9]\s?){10,30}(?![\w])", re.IGNORECASE),
+        # Groups of four, NOT "any alnum with an optional space after it": the loose form ran into
+        # the word that FOLLOWS the code — `IT60 … 456 entro` matched, the checksum then rejected
+        # the over-long value, and the real IBAN was left in clear (found by the recall corpus).
+        # An Italian IBAN is `IT` + 2 check digits + groups of four (the last may be 1-4), optionally
+        # spaced. `[A-Z0-9]{4}` on purpose: a group boundary is what stops the match at `456`.
+        re.compile(r"(?<![\w])IT\s?\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,4})?(?![\w])", re.IGNORECASE),
         validator=_valid_iban,
         family="legal",
     ),
@@ -814,6 +819,15 @@ def load_entities(path: Path) -> list[Entity]:
             continue
 
         fields = [field.strip() for field in line.split("|")]
+        # A type is ONE token. Under an `@type`, `Mario Rossi|m.rossi@x.it` is what an operator
+        # writes when they mean `value|alias`; read silently it becomes TYPE=`Mario Rossi`,
+        # value=`m.rossi@x.it`, and the person's NAME is never redacted. A space in the first field
+        # is that mistake, so it fails loudly instead of leaking (the README once showed it).
+        if len(fields) >= 2 and fields[0] and any(ch.isspace() for ch in fields[0]):
+            raise ValueError(
+                f"{path}:{lineno}: the type {fields[0]!r} contains a space — a line is `TYPE|value`, "
+                f"and the alias form is `TYPE|value|alias` (under an `@type`: `value` or `|value|alias`)"
+            )
         if len(fields) >= 2:
             line_type = (fields[0] or ptype).upper()
             forms = [form for form in fields[1:] if form]

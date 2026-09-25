@@ -210,7 +210,9 @@ enters a repository:
 
 - `entities.txt` — the generic fallback: anything that is not a person or a company (`TIPO|valore`).
 - `people.txt` — people. Open it with `@type PERSONA` and then one value per line (`Mario Rossi`);
-  an entry can carry an email as an alias (`Mario Rossi|m.rossi@x.it`).
+  an entry can carry an email as an alias, written `PERSONA|Mario Rossi|m.rossi@x.it` (or
+  `|Mario Rossi|m.rossi@x.it` under the `@type`). The FIRST field is the type: `Mario Rossi|m.rossi@x.it`
+  would make the type `Mario Rossi` and leave the name in clear, so the engine rejects it loudly.
 - `clients.txt` — companies and their sites. Open it with `@type AZIENDA` and list the company name
   (and, if you want, an address, which is redacted like any other entry).
 
@@ -352,6 +354,9 @@ make up-slim   # the text-only container variant (port 1408)
 # How fast can the engine check a file? The Pi guard's size cap is derived from this measurement,
 # and the number depends on the dictionary size — run it with the dictionary you actually use.
 python3 scripts/bench-check.py --mb 8 --entities 200
+# What does the engine MISS? The labelled corpus (tests/corpus.py) declares its own dictionary and
+# the values that must be redacted; `make recall` is the number `fp-sweep.py` does not give.
+make recall
 # What does indexing a container's visible text cost? Both implementations, measured.
 python3 scripts/bench-index.py --mb 16
 # Is 6 hex digits enough for the per-map tag? Measured, not argued.

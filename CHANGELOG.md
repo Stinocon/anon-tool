@@ -10,8 +10,21 @@ enforces that they agree.
 
 ## [Unreleased]
 
+### Added
+
+- A labelled, synthetic recall corpus (`tests/corpus.py`) and `scripts/recall-sweep.py` (`make
+  recall`): the false-negative direction `fp-sweep.py` never measured. `RecallCorpusTest` runs it in
+  `make test`, so a value a document declares sensitive that the engine starts missing fails the
+  gate. Baseline: 28 declared values, recall 100%, 0 false positives on the `must_not` strings.
+
 ### Fixed
 
+- A valid IBAN followed by a word was left in clear: the body matched `IT60 … 456 entro` (the
+  `[A-Z0-9]` class is case-insensitive) and the checksum then rejected the over-long value, so the
+  real IBAN was never redacted. The body is now groups of four and stops at the last real group.
+- The README's alias example (`Mario Rossi|m.rossi@x.it` under `@type PERSONA`) made the FIRST field
+  the type, so the person's name was never redacted. The loader now rejects a type containing a
+  space with a message naming the correct form, and the README gives it.
 - The docs and the in-app hint no longer say the local suggestion model cannot run inside the
   container: it ships as a sidecar that shares the UI's network namespace, so `make model` (or
   `make up MODEL=1`) turns it on there, and only a model *on the host* stays refused (not loopback).

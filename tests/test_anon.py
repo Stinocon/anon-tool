@@ -1108,6 +1108,46 @@ class AddressCorpusTest(unittest.TestCase):
         self.assertEqual(text[start:end], "Via G. Verdi 3/A")
 
 
+class RecallCorpusTest(unittest.TestCase):
+    """The engine's RECALL, measured on the labelled corpus (`tests/corpus.py`).
+
+    `fp-sweep.py` measures the other direction (a clean corpus redacted by mistake). This is the
+    one that decides whether an anonymizer is safe: a value a document DECLARES sensitive with no
+    covered occurrence is a LEAK, and the gate fails here. The corpus is synthetic and declares its
+    own dictionary, so the number is the same on any machine and no private data is involved.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location("anon_recall_sweep", HOME / "scripts" / "recall-sweep.py")
+        assert spec and spec.loader
+        cls.sweep = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = cls.sweep
+        spec.loader.exec_module(cls.sweep)
+        cspec = importlib.util.spec_from_file_location("anon_corpus", HERE / "corpus.py")
+        assert cspec and cspec.loader
+        cls.corpus = importlib.util.module_from_spec(cspec)
+        sys.modules[cspec.name] = cls.corpus
+        cspec.loader.exec_module(cls.corpus)
+
+    def test_no_declared_value_is_left_uncovered(self) -> None:
+        report = self.sweep.evaluate(self.corpus.DOCUMENTS)
+        self.assertEqual(report["leaks"], [],
+                         f"the engine left these DECLARED values in clear: {report['leaks']}")
+
+    def test_no_must_not_string_is_redacted(self) -> None:
+        report = self.sweep.evaluate(self.corpus.DOCUMENTS)
+        self.assertEqual(report["violations"], [],
+                         f"false positives on the labelled corpus: {report['violations']}")
+
+    def test_every_pattern_family_is_exercised(self) -> None:
+        """A corpus that stopped covering a family would silently stop measuring it."""
+        declared = {ptype for doc in self.corpus.DOCUMENTS for _v, ptype in doc.get("must_find", [])}
+        for expected in ("EMAIL", "IP", "HOST", "INDIRIZZO", "IBAN", "PARTITAIVA",
+                         "CODICEFISCALE", "TARGA", "TEL", "URL", "KEY"):
+            self.assertIn(expected, declared, f"the corpus no longer declares any {expected}")
+
+
 class ValidatorTest(unittest.TestCase):
     """Checksum-validated identifiers: high precision is the whole point of having them."""
 
@@ -1128,6 +1168,15 @@ class ValidatorTest(unittest.TestCase):
         self.assertTrue(anon._valid_iban("IT60X0542811101000000123456"))
         self.assertTrue(anon._valid_iban("IT60 X054 2811 1010 0000 0123 456"))  # spaces allowed
         self.assertFalse(anon._valid_iban("IT60X0542811101000000123457"))
+
+    def test_an_iban_followed_by_a_word_is_still_redacted(self) -> None:
+        """The recall corpus found this: the loose body matched `… 456 entro`, the checksum then
+        rejected the over-long value, and the real IBAN was left in clear."""
+        text = "Pagamento sul conto IT60 X054 2811 1010 0000 0123 456 entro trenta giorni."
+        found = anon.detect(text, [])
+        ibans = [text[s:e] for s, e, ptype in found if ptype == "IBAN"]
+        self.assertEqual(ibans, ["IT60 X054 2811 1010 0000 0123 456"])
+        self.assertFalse(any("entro" in text[s:e] for s, e, _ptype in found))
 
     def test_targa(self) -> None:
         self.assertTrue(anon._valid_targa("AB123CD"))
@@ -1178,6 +1227,20 @@ class DirectivesTest(unittest.TestCase):
         entities = self.entities("@type HOST\nPincopallino\n")
         self.assertTrue(anon.detect("Pincopallino", entities))
         self.assertFalse(anon.detect("Pincopallino1", entities), "without @stem the suffix is not matched")
+
+    def test_the_alias_form_carries_both_surfaces(self) -> None:
+        entities = self.entities("PERSONA|Mario Rossi|m.rossi@x.it\n")
+        text = "Referente Mario Rossi (m.rossi@x.it)"
+        found = [text[s:e] for s, e, _t in anon.detect(text, entities)]
+        self.assertIn("Mario Rossi", found)
+        self.assertIn("m.rossi@x.it", found)
+
+    def test_a_type_with_a_space_is_rejected_loudly(self) -> None:
+        """`Mario Rossi|m.rossi@x.it` under an `@type` reads as TYPE=`Mario Rossi`, value=email, and
+        the NAME is then never redacted. The mistake must fail, not leak."""
+        with self.assertRaises(ValueError) as ctx:
+            self.entities("@type PERSONA\nMario Rossi|m.rossi@x.it\n")
+        self.assertIn("TYPE|value|alias", str(ctx.exception))
 
     def test_case_sensitive_keeps_lowercase_words_intact(self) -> None:
         entities = self.entities("@type CITTÀ\n@match case-sensitive\nPrato\n")

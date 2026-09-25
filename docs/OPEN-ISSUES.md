@@ -11,6 +11,38 @@ listen backlog under a burst — all fixed in the same pass** (the campaign tabl
 The rule I applied to myself: a fix counts as closed only with a number, a test name, or a command
 that produces the claim — not with "looks right".
 
+## The recall measurement (2026-09-25)
+
+`fp-sweep.py` measured how much a known-clean corpus gets redacted by mistake; nothing measured the
+opposite — a value a document DECLARES sensitive that the engine leaves in clear. That is the number
+that decides whether an anonymizer is safe, and it was missing.
+
+`tests/corpus.py` is now a labelled synthetic corpus (each document declares its own dictionary and
+the values that must be covered), and `scripts/recall-sweep.py` / `make recall` produce the number:
+5 documents, 28 declared values, **recall 100%**, 0 false positives on the `must_not` strings. The
+gate is `tests/test_anon.py::RecallCorpusTest`, so the corpus runs in `make test` and a regression
+fails there.
+
+Writing a naturally-worded corpus and checking it against the oracle found **two real defects, both
+fixed**:
+
+- **A valid IBAN followed by a word was left in clear.** The body was `(?:[A-Z0-9]\s?){10,30}` with
+  `re.IGNORECASE`, so `IT60 … 456 entro` matched (lowercase letters are `[A-Z0-9]` under IGNORECASE);
+  the checksum then rejected the over-long value and the real IBAN was never redacted. The body is
+  now groups of four (`IT` + 2 digits + `(?:\s?[A-Z0-9]{4}){2,7}` + a final 1-4), which stops at the
+  last real group. `ValidatorTest::test_an_iban_followed_by_a_word_is_still_redacted`.
+- **The README's alias example was a leak.** It showed `Mario Rossi|m.rossi@x.it` under
+  `@type PERSONA`, but the parser reads the FIRST field as the type: the line became TYPE=`Mario
+  Rossi`, value=`m.rossi@x.it`, so the person's NAME was never redacted and the email wore a
+  nonsense placeholder type. The README now gives `PERSONA|Mario Rossi|m.rossi@x.it` (or
+  `|value|alias` under the `@type`), and the loader **rejects** a type containing a space with a
+  message naming the correct form — a silent leak turned into a loud error.
+  `DirectivesTest::test_a_type_with_a_space_is_rejected_loudly`.
+
+What the corpus does NOT yet measure, declared: the recall of the dictionary itself on a REAL
+human-written document (the corpus is synthetic and its dictionary is authored to be found), the
+container path (`.docx`/`.xlsx`), and images. It measures detection on text.
+
 ## Closed in this pass (11/11)
 
 | # | What it was | How it is closed | Evidence |
@@ -412,6 +444,7 @@ old reference can never point at a different item.
 | 21 | 38 | **The web UI in English as well as Italian.** CLOSED 2026-09-23: the header carries a language selector, Italian is the default and the source (the text stays in `web/index.html`), English lives in `web/i18n.js` keyed by a CSS selector per element — a paragraph that mixes text with `<strong>`/`<em>`/`<code>` is replaced whole, because word order differs between languages and translating a text node would produce English that does not compose. The choice persists in `localStorage` (`anon-lang`), `applyLanguage` restores Italian from a snapshot taken at load, `app.js` keeps an Italian fallback so a missing `i18n.js` cannot break the page, and a test fails when a dictionary key no longer matches an element. 50 keys, 41 web tests. **Declared limits, corrected after the completion pass**: the placeholders and the tooltips of a translated element ARE translated now, the labels `app.js` composes (the option summary, the catalog counts, the empty states, the verdicts) are in the table too — a test fails if those words reappear as literals — and the server's own messages were already English (the engine raises English exceptions because the code is English). What stays Italian is deliberate: paths, format lists and the language names written in their own language. | The README stated it plainly, so an English-speaking reader met an Italian interface at the first click. | closed |
 | 22 | 39 | **CI: bump the action majors GitHub now annotates** — **CLOSED 2026-09-23**: `actions/checkout@v4 → v7`, `actions/setup-python@v5 → v7`, `actions/setup-node@v4 → v7`; the run after the push is green and the annotations are gone. No other repository of the fleet has a workflow (checked). |  | closed |
 | 23 | 41 | **The running container could drift from the code, silently.** CLOSED 2026-09-24: `/api/state` reports a content fingerprint of the code the image ships (the file set is `anon.code_fingerprint`'s), the header shows its short form, and `scripts/check-container-fresh.py` compares it with the repository — the `container-fresh` gate in `.pi/verify.json`, the `verify_command` of `DEC-0024`, `make check-container`, and the last step of `make up`. Found by a live report: the English translation was committed and pushed, the browser still showed Italian, and the unchanged version number made the stale container look current. The fingerprint is of CONTENT, not of the commit, so it answers "does this container serve the code I have?" whatever the commit order. | A green suite on a stale container is not a green result. | closed |
+| 24 | 42 | **The false NEGATIVE direction was never measured** — `fp-sweep.py` counted false positives only, so a value the engine stopped covering left no trace. CLOSED 2026-09-25: `tests/corpus.py` (labelled synthetic corpus, each document declares its own dictionary), `scripts/recall-sweep.py` / `make recall`, and `RecallCorpusTest` in `make test`. Baseline 28 declared values, recall 100%, 0 false positives. The pass found and fixed two real defects: a valid IBAN followed by a word was left in clear (the case-insensitive body swallowed ` entro`), and the README's alias example built an entity whose TYPE was the person's name, so the name was never redacted. | The one number that decides whether an anonymizer is safe. | closed |
 
 ### Hygiene note kept from this pass
 

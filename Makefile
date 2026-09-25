@@ -13,7 +13,7 @@ SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container
+.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -68,6 +68,9 @@ smoke: ## build the container and exercise every endpoint
 
 check-container: ## fail if a running container does not serve the current code
 	python3 scripts/check-container-fresh.py
+
+recall: ## measure the engine's recall on the labelled corpus (fp-sweep measures the other direction)
+	python3 scripts/recall-sweep.py
 
 clean: ## remove the image (the data in $(ANON_HOME) is untouched)
 	docker rmi $(IMAGE) 2>/dev/null || true
