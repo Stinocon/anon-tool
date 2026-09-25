@@ -48,18 +48,123 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--repeat", type=int, default=3, help="timed runs (default: 3)")
     parser.add_argument("--text", help="file to use instead of the built-in Italian sample")
+    parser.add_argument(
+        "--corpus", action="store_true",
+        help="measure PROPOSAL QUALITY against the labelled corpus (tests/corpus.py): precision, "
+        "recall and latency per document, instead of one sample repeated",
+    )
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
+
+
+def _load_module(name: str, path: pathlib.Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _doc_entities(doc: dict, tmp: pathlib.Path):
+    """The document's OWN dictionary + repo catalogs, so the measurement is hermetic (never
+    `~/.anon`), the same way `recall-sweep.py` does it."""
+    path = tmp / "entities.txt"
+    path.write_text(doc.get("entities", ""), encoding="utf-8")
+    entities = anon.load_entities(path)
+    for name in doc.get("catalogs", []):
+        entities += anon.load_entities_many([pathlib.Path(__file__).resolve().parent.parent / "catalogs" / f"{name}.txt"])
+    return entities
+
+
+def _covers(proposal: str, value: str) -> bool:
+    return proposal == value or value in proposal or proposal in value
+
+
+def run_corpus(backend, documents, tmp: pathlib.Path) -> dict:
+    """Proposal precision/recall against the declared truth. A proposal counts as correct when it
+    matches a `must_find` value on either side of the containment; a must_find value counts as
+    found when some proposal covers it. Proposals on a document with no truth are all false
+    positives — which is exactly what `prose-traps` is there to catch."""
+    per_doc: list[dict[str, object]] = []
+    declared = covered = proposed = correct = redundant = 0
+    known_declared = known_closed = 0
+    for doc in documents:
+        text = doc["text"]
+        must = [value for value, _type in doc.get("must_find", [])]
+        known = [value for value, _why in doc.get("known_miss", [])]
+        started = time.monotonic()
+        try:
+            report = suggest.suggest(text, backend, entities=_doc_entities(doc, tmp))
+        except suggest.BackendError as error:
+            per_doc.append({"name": doc["name"], "chars": len(text),
+                            "seconds": round(time.monotonic() - started, 2), "error": str(error)[:200]})
+            declared += len(must)
+            known_declared += len(known)
+            continue
+        elapsed = time.monotonic() - started
+        proposals = report["candidates"]
+        proposed += len(proposals)
+        correct += sum(1 for p in proposals if any(_covers(p["value"], value) for value in must))
+        redundant += sum(1 for p in proposals if p.get("overlaps_detected"))
+        doc_covered = sum(1 for value in must if any(_covers(p["value"], value) for p in proposals))
+        doc_closed = sum(1 for value in known if any(_covers(p["value"], value) for p in proposals))
+        covered += doc_covered
+        declared += len(must)
+        known_closed += doc_closed
+        known_declared += len(known)
+        per_doc.append({
+            "name": doc["name"], "chars": len(text), "seconds": round(elapsed, 2),
+            "proposals": len(proposals), "must_find": len(must), "proposed": doc_covered,
+            "known_miss": len(known), "closed": doc_closed,
+        })
+    return {
+        "backend": backend.name,
+        "documents": len(per_doc),
+        "proposals": proposed,
+        "correct": correct,
+        "precision": round(correct / proposed, 3) if proposed else None,
+        "must_find": declared,
+        "covered": covered,
+        "recall": round(covered / declared, 3) if declared else None,
+        "already_found_by_engine": redundant,
+        # The number that decides whether the model EARNS ITS PLACE: values the engine cannot find
+        # (contextual references, names absent from the dictionary) that the model proposed anyway.
+        "known_miss": known_declared,
+        "known_miss_closed": known_closed,
+        "per_document": per_doc,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     endpoint = suggest.check_loopback(args.url)  # refuses anything but loopback
-    text = pathlib.Path(args.text).read_text(encoding="utf-8") if args.text else SAMPLE
     backend = suggest.LoopbackBackend(
         endpoint, args.model, api_key=args.key or None, headers=suggest.parse_headers(args.header),
         max_tokens=args.max_tokens, timeout=args.timeout,
     )
+    if args.corpus:
+        import tempfile
+        corpus = _load_module("anon_corpus", pathlib.Path(__file__).resolve().parent.parent / "tests" / "corpus.py")
+        with tempfile.TemporaryDirectory(prefix="anon-quality-") as tmpdir:
+            summary = run_corpus(backend, corpus.DOCUMENTS, pathlib.Path(tmpdir))
+        if args.json:
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+        else:
+            print(f"backend   : {summary['backend']}")
+            print(f"precision : {summary['correct']}/{summary['proposals']} = {summary['precision']}")
+            print(f"recall    : {summary['covered']}/{summary['must_find']} = {summary['recall']}")
+            print(f"redundant : {summary['already_found_by_engine']} proposal(s) the engine already found")
+            print(f"known miss: {summary['known_miss_closed']}/{summary['known_miss']} closed by the model")
+            for row in summary["per_document"]:
+                if "error" in row:
+                    print(f"  {row['name']:<20} ERROR {row['error']}")
+                else:
+                    print(f"  {row['name']:<20} {row['chars']:>6} chars  {row['seconds']:>6.2f}s  "
+                          f"{row['proposed']}/{row['must_find']} found  "
+                          f"{row['closed']}/{row['known_miss']} holes closed  {row['proposals']} proposals")
+        return 0 if summary["recall"] is not None else 2
+    text = pathlib.Path(args.text).read_text(encoding="utf-8") if args.text else SAMPLE
     entities = anon.load_entities_many([
         pathlib.Path.home() / ".anon" / name
         for name in ("entities.txt", "people.txt", "clients.txt")

@@ -12,6 +12,10 @@ enforces that they agree.
 
 ### Added
 
+- `scripts/bench-suggest.py --corpus`: proposal precision/recall against the labelled corpus, plus
+  the number that matters — how many of the declared `known_miss` holes the model closed. Measured
+  with the shipped 3B: precision 11/11, recall 12/28, 0 proposals the engine had not already made,
+  0/4 holes closed. Documented in `docs/DESIGN.md` §7 without dressing it up.
 - **Scarica il report**: a Markdown attestation for a delivered document — tool version and build,
   the map id, substitutions per type and the placeholder list. Generated from the anonymize response
   only (never the reveal), so it cannot carry a real value; checked in the running container.

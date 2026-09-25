@@ -268,6 +268,14 @@ an error — correctly. The prompt asks for JSON only and `reasoning_content` is
 deficit was the model's, not the plumbing's. A small instruct model with a bounded `--max-tokens` is
 what ships; `make bench-model URL=… MODEL=…` measures any loopback endpoint.
 
+**On a labelled corpus the same 3B is precise but adds nothing.** `scripts/bench-suggest.py
+--corpus` measures the proposals against the `tests/corpus.py` truth with the shipped model
+(512 tokens, six CPU threads): **precision 11/11, recall 12/28 — and every one of the 11 proposals
+was a value the deterministic engine had already found, while 0 of the 4 declared holes were
+closed**. On short, structured documents the model repeats the engine; the 570-character report
+above (4 proposals the engine missed) is the case where it helps. The yield is text-dependent, so
+the panel is a step to try on a document the engine under-reads — not a guaranteed net.
+
 ## 8. Known limits (deliberate)
 
 - contextual references ("the client from Ancona") — a human read is still required;
