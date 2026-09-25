@@ -14,7 +14,7 @@ enforces that they agree.
 
 - `scripts/bench-suggest.py --corpus`: proposal precision/recall against the labelled corpus, plus
   the number that matters — how many of the declared `known_miss` holes the model closed. Measured
-  with the shipped 3B: precision 11/11, recall 12/28, 0 proposals the engine had not already made,
+  with the shipped 3B: precision 11/11, recall 10/28, 0 proposals the engine had not already made,
   0/4 holes closed. Documented in `docs/DESIGN.md` §7 without dressing it up.
 - **Scarica il report**: a Markdown attestation for a delivered document — tool version and build,
   the map id, substitutions per type and the placeholder list. Generated from the anonymize response
@@ -34,6 +34,12 @@ enforces that they agree.
 
 ### Fixed
 
+- The elision fix traded a false positive for a false negative: `Dell's` (English genitive) stopped
+  being redacted. The entity lookahead now excepts the `'s` genitive, and `d'`/`c'` join the article
+  list (not `po`, which is a real truncated street name).
+- The `--corpus` quality metric counted a FRAGMENT as covering a value (`Mario` "covered" `Mario
+  Rossi`), inflating recall and the holes-closed count. Coverage now requires the whole value;
+  precision and the holes use a word-bounded fragment.
 - An elided Italian article no longer turns a proper name into a false positive: `Dell'azienda` is
   "of the company", not the vendor Dell. The entity regex now rejects an entry followed by an
   apostrophe and a letter, so it holds for EVERY entry, not just the vendor list; and the mirror

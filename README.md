@@ -56,7 +56,7 @@ deterministic engine (it found the email and the phone). That is exactly the fea
 reference the dictionary cannot know. The cost is the latency (21.6 tokens/s on the prompt, 6.7
 generating), so the panel is a step you run when you want it, not a step in the upload path. The
 same 3B is precise but adds nothing on short, structured texts: against the labelled corpus
-(`scripts/bench-suggest.py --corpus`) it scored precision 11/11 and recall 12/28, with every
+(`scripts/bench-suggest.py --corpus`) it scored precision 11/11 and recall 10/28, with every
 proposal a value the engine already found and 0 of 4 declared holes closed — the yield is
 text-dependent, and the report above is where it helps. The
 tests that need a model are gated behind `ANON_MODEL_URL`; to run them against the containerized

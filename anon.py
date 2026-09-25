@@ -421,6 +421,9 @@ ELIDED_ARTICLES = frozenset({
     "nel", "nello", "nella", "nei", "negli", "nelle",
     "sul", "sullo", "sulla", "sui", "sugli", "sulle",
     "col", "coi", "coll", "quest", "quell", "bell", "grand", "sant", "tutt", "mezz",
+    # `d'`/`c'` are elisions too (`d'accordo`, `c'è`). `po` is deliberately NOT here: `Via Po` is a
+    # real street, and `Po'` is a truncated name, not an article — the two are indistinguishable.
+    "d", "c",
 })
 
 
@@ -722,7 +725,12 @@ def _entity_regexes(
         normalized_inner = unicodedata.normalize(form, inner)
         normalized_context = unicodedata.normalize(form, context) if context else None
         normalized_prefix = f"(?:{normalized_context})(?<!\\w)" if context else prefix
-        full = f"{normalized_prefix}(?P<{ENTITY_GROUP}>{normalized_inner})(?!\\w)(?!['\u2019]\\w)"
+        # An entry followed by an apostrophe and a LETTER is an elided Italian article
+        # (`Dell'azienda` = "of the company", not the vendor Dell). The exception is the English
+        # genitive `'s`, which is not an elision: without it, `Dell's CTO` would leave `Dell` in
+        # clear — a false negative traded for a false positive. `(?![sS](?!\w))` = "not an s that
+        # ends the word", so `'azienda` is rejected while `'s` (and `'s.`) is matched.
+        full = f"{normalized_prefix}(?P<{ENTITY_GROUP}>{normalized_inner})(?!\\w)(?!['\u2019](?![sS](?!\\w))\\w)"
         if full in seen:  # pure-ASCII entries normalize to the same pattern twice
             continue
         seen.add(full)

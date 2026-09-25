@@ -270,7 +270,7 @@ what ships; `make bench-model URL=… MODEL=…` measures any loopback endpoint.
 
 **On a labelled corpus the same 3B is precise but adds nothing.** `scripts/bench-suggest.py
 --corpus` measures the proposals against the `tests/corpus.py` truth with the shipped model
-(512 tokens, six CPU threads): **precision 11/11, recall 12/28 — and every one of the 11 proposals
+(512 tokens, six CPU threads): **precision 11/11, recall 10/28 — and every one of the 11 proposals
 was a value the deterministic engine had already found, while 0 of the 4 declared holes were
 closed**. On short, structured documents the model repeats the engine; the 570-character report
 above (4 proposals the engine missed) is the case where it helps. The yield is text-dependent, so

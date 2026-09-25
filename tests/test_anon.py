@@ -1083,6 +1083,7 @@ class AddressCorpusTest(unittest.TestCase):
         # nome troncato (prima era un residuo dichiarato; ora `ELIDED_ARTICLES` lo chiude).
         "via Un' 3",
         "via dell' 3",
+        "via D' 3",
         "via roma 12 in minuscolo (trade-off dichiarato: non redatto)",
         "il corso d'acqua 2 metri",
     )
@@ -1269,6 +1270,10 @@ class DirectivesTest(unittest.TestCase):
         entities = self.entities("AZIENDA|Dell\n")
         self.assertEqual(anon.detect("Dell'azienda cresce", entities), [])
         self.assertTrue(anon.detect("un server Dell", entities))
+        # The English genitive is NOT an elision: `Dell's` must still redact Dell (a fix that traded
+        # a false positive for a false NEGATIVE would be worse than the one it removed).
+        self.assertTrue(anon.detect("Dell's CTO si e' dimesso", entities))
+        self.assertTrue(anon.detect("Dell\u2019s sede chiude", entities))
 
     def test_case_sensitive_keeps_lowercase_words_intact(self) -> None:
         entities = self.entities("@type CITTÀ\n@match case-sensitive\nPrato\n")

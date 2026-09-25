@@ -468,5 +468,29 @@ class LocalModelTest(unittest.TestCase):
         self.assertIn("candidates", report)
 
 
+class BenchMetricTest(unittest.TestCase):
+    """The `--corpus` quality metric must not be gameable: a FRAGMENT does not cover a value, or
+    the headline "the model earns its place" number could be maxed by proposing one token each."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        path = Path(__file__).resolve().parent.parent / "scripts" / "bench-suggest.py"
+        spec = importlib.util.spec_from_file_location("bench_suggest_metric", path)
+        assert spec and spec.loader
+        cls.bench = importlib.util.module_from_spec(spec)
+        sys.modules["bench_suggest_metric"] = cls.bench
+        spec.loader.exec_module(cls.bench)
+
+    def test_a_fragment_does_not_cover_a_value(self) -> None:
+        self.assertFalse(self.bench._covers("Mario", "Mario Rossi"))
+        self.assertFalse(self.bench._covers("ario", "Mario Rossi"))
+        self.assertTrue(self.bench._covers("Mario Rossi", "Mario Rossi"))
+        self.assertTrue(self.bench._covers("Cliente Mario Rossi", "Mario Rossi"))
+
+    def test_a_bounded_fragment_names_the_value(self) -> None:
+        self.assertTrue(self.bench._named("Rossi", "Mario Rossi"))
+        self.assertFalse(self.bench._named("ario", "Mario Rossi"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

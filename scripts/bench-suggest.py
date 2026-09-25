@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import statistics
 import sys
 import time
@@ -78,7 +79,19 @@ def _doc_entities(doc: dict, tmp: pathlib.Path):
 
 
 def _covers(proposal: str, value: str) -> bool:
-    return proposal == value or value in proposal or proposal in value
+    """The declared value is COVERED when a proposal contains it WHOLE (equal or superset):
+    redacting that proposal is what removes it. A proposal that is a mere FRAGMENT of the value does
+    NOT cover it — `Mario` does not remove `Mario Rossi`."""
+    return proposal == value or value in proposal
+
+
+def _named(proposal: str, value: str) -> bool:
+    """A proposal NAMES part of a declared value on a word boundary: `Rossi` for `Mario Rossi` is a
+    real fragment, not a hallucination, while `ario` is not. Used for precision and for the declared
+    holes, where naming the sensitive token IS the useful signal."""
+    if _covers(proposal, value):
+        return True
+    return re.search(rf"(?<!\w){re.escape(proposal)}(?!\w)", value) is not None
 
 
 def run_corpus(backend, documents, tmp: pathlib.Path) -> dict:
@@ -95,7 +108,8 @@ def run_corpus(backend, documents, tmp: pathlib.Path) -> dict:
         known = [value for value, _why in doc.get("known_miss", [])]
         started = time.monotonic()
         try:
-            report = suggest.suggest(text, backend, entities=_doc_entities(doc, tmp))
+            report = suggest.suggest(text, backend, entities=_doc_entities(doc, tmp),
+                                     families=None if doc.get("patterns") is None else set(doc["patterns"]))
         except suggest.BackendError as error:
             per_doc.append({"name": doc["name"], "chars": len(text),
                             "seconds": round(time.monotonic() - started, 2), "error": str(error)[:200]})
@@ -105,10 +119,10 @@ def run_corpus(backend, documents, tmp: pathlib.Path) -> dict:
         elapsed = time.monotonic() - started
         proposals = report["candidates"]
         proposed += len(proposals)
-        correct += sum(1 for p in proposals if any(_covers(p["value"], value) for value in must))
+        correct += sum(1 for p in proposals if any(_named(p["value"], value) for value in must))
         redundant += sum(1 for p in proposals if p.get("overlaps_detected"))
         doc_covered = sum(1 for value in must if any(_covers(p["value"], value) for p in proposals))
-        doc_closed = sum(1 for value in known if any(_covers(p["value"], value) for p in proposals))
+        doc_closed = sum(1 for value in known if any(_named(p["value"], value) for p in proposals))
         covered += doc_covered
         declared += len(must)
         known_closed += doc_closed
