@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Tests for `scripts/anon-home-backup.sh`: the encrypted copy of the private store.
+
+The store holds the REAL values (`maps/`), so the properties under test are about the boundary, not
+about convenience: the archive must not be readable without the passphrase, a restore must write
+nothing until the payload has been verified, and a payload that does not match its own manifest —
+tampered, truncated, or decrypted with the wrong passphrase — must be refused rather than extracted.
+
+The negative cases build their archive directly with `tarfile`, because that is the only way to
+produce precisely the inputs a hostile or damaged archive would have: a member that is not in the
+manifest, a name that walks up out of the home, a symlink.
+
+  python3 tests/test_backup.py
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+HERE = Path(__file__).resolve().parent
+HOME = HERE.parent
+SCRIPT = HOME / "scripts" / "anon-home-backup.sh"
+
+PASSPHRASE = "correct horse battery staple"
+MARKER = "ACME-Contoso-Srl"   # a value that must never appear in the archive in clear
+
+TAR = shutil.which("tar")
+OPENSSL = shutil.which("openssl")
+SHA = shutil.which("sha256sum") or shutil.which("shasum")
+READY = bool(TAR and OPENSSL and SHA)
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def manifest_line(name: str, data: bytes) -> str:
+    return f"{hashlib.sha256(data).hexdigest()}  {name}\n"
+
+
+class BackupTest(unittest.TestCase):
+    """One round trip, then one refusal per way an archive can lie about itself."""
+
+    def setUp(self) -> None:
+        if not READY:
+            self.skipTest("tar, openssl and a sha256 tool are all needed")
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-backup-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    # ---- helpers -------------------------------------------------------------------------------
+
+    def run_script(self, *args: str, passphrase: str | None = PASSPHRASE, extra_env: dict | None = None):
+        env = dict(os.environ)
+        env.pop("ANON_BACKUP_PASSPHRASE", None)
+        if passphrase is not None:
+            env["ANON_BACKUP_PASSPHRASE"] = passphrase
+        env.update(extra_env or {})
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args],
+            cwd=str(HOME), env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    def make_home(self, name: str = "home") -> Path:
+        """A home with the shapes that matter: a map, the dictionary, and what must NOT be copied."""
+        home = self.tmp / name
+        (home / "maps").mkdir(parents=True)
+        (home / "downloads").mkdir()
+        (home / "models").mkdir()
+        (home / "__pycache__").mkdir()
+
+        (home / "maps" / "PLACEHOLDER_1.json").write_text(
+            f'{{"placeholder": "PLACEHOLDER_1", "value": "{MARKER}"}}\n', encoding="utf-8"
+        )
+        (home / "entities.txt").write_text(f"{MARKER}|AZIENDA\n", encoding="utf-8")
+        (home / "downloads" / "documento redatto.pdf").write_text("redacted output\n", encoding="utf-8")
+        (home / "entities con spazio.txt").write_text("a name with spaces\n", encoding="utf-8")
+        (home / "relazione città è così.txt").write_text("a name with accents\n", encoding="utf-8")
+
+        os.chmod(home / "maps" / "PLACEHOLDER_1.json", 0o600)
+        os.chmod(home / "entities.txt", 0o600)
+
+        (home / "models" / "model.gguf").write_bytes(b"\0" * 300_000)   # 2 GB in real life
+        (home / "__pycache__" / "anon.cpython-313.pyc").write_bytes(b"\0pyc")
+        (home / ".DS_Store").write_bytes(b"\0finder")
+        return home
+
+    def make_archive(self, members: dict[str, bytes], manifest: str | None, dest: Path) -> None:
+        """A tar built from exactly the given members (a manifest of None means 'no manifest')."""
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            if manifest is not None:
+                blob = manifest.encode("utf-8")
+                info = tarfile.TarInfo("MANIFEST.sha256")
+                info.size = len(blob)
+                info.mode = 0o600
+                tar.addfile(info, io.BytesIO(blob))
+            for name, data in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o600
+                tar.addfile(info, io.BytesIO(data))
+        self.encrypt(raw.getvalue(), dest)
+
+    def make_symlink_archive(self, dest: Path) -> None:
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            info = tarfile.TarInfo("maps")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/etc"
+            tar.addfile(info)
+        self.encrypt(raw.getvalue(), dest)
+
+    def make_archive_with_extras(self, listed: dict[str, bytes], extras: list, dest: Path) -> None:
+        """An archive whose LISTED files match their manifest, plus members added on top.
+
+        The extras are not in the manifest and are not regular files, so the manifest check and the
+        file count both pass: only the member audit can refuse this archive. An archive that some
+        other protection already rejects cannot show whether the audit works at all.
+        """
+        raw = io.BytesIO()
+        with tarfile.open(fileobj=raw, mode="w:gz") as tar:
+            blob = "".join(manifest_line(name, data) for name, data in listed.items()).encode("utf-8")
+            info = tarfile.TarInfo("MANIFEST.sha256")
+            info.size = len(blob)
+            info.mode = 0o600
+            tar.addfile(info, io.BytesIO(blob))
+            for name, data in listed.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o600
+                tar.addfile(info, io.BytesIO(data))
+            for info, payload in extras:
+                tar.addfile(info, io.BytesIO(payload) if payload is not None else None)
+        self.encrypt(raw.getvalue(), dest)
+
+    def encrypt(self, payload: bytes, dest: Path) -> None:
+        # `-pass stdin` takes the passphrase from stdin, so the payload cannot also come from stdin:
+        # `-in -` with `-pass stdin` silently encrypts the tar UNDER ITS OWN BYTES as passphrase.
+        plain = self.tmp / f"payload-{dest.name}.tar.gz"
+        plain.write_bytes(payload)
+        encrypted = subprocess.run(
+            [OPENSSL, "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "600000", "-salt",
+             "-pass", "stdin", "-in", str(plain), "-out", str(dest)],
+            input=PASSPHRASE.encode(), capture_output=True,
+        )
+        plain.unlink()
+        self.assertEqual(encrypted.returncode, 0, encrypted.stderr.decode())
+
+    def decrypt(self, archive: Path, passphrase: str = PASSPHRASE) -> bytes:
+        done = subprocess.run(
+            [OPENSSL, "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "600000", "-pass", "stdin",
+             "-in", str(archive)],
+            input=passphrase.encode(), capture_output=True,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr.decode())
+        return done.stdout
+
+    # ---- the round trip ------------------------------------------------------------------------
+
+    def test_a_backup_restores_byte_for_byte(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        backup = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertEqual(backup.returncode, 0, backup.stderr)
+        self.assertIn("VERIFIED", backup.stdout)
+
+        target = self.tmp / "restored"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("RESTORED", done.stdout)
+
+        for relative in ("maps/PLACEHOLDER_1.json", "entities.txt", "downloads/documento redatto.pdf",
+                         "entities con spazio.txt", "relazione città è così.txt"):
+            self.assertEqual(
+                (target / relative).read_bytes(), (home / relative).read_bytes(), relative
+            )
+        # the modes travel with the bytes: the store is private on the other side too
+        self.assertEqual(stat.S_IMODE(os.stat(target / "entities.txt").st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(target / "maps" / "PLACEHOLDER_1.json").st_mode), 0o600)
+
+    def test_the_model_and_the_caches_are_not_archived(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        names = tarfile.open(fileobj=io.BytesIO(self.decrypt(archive)), mode="r:gz").getnames()
+        self.assertIn("maps/PLACEHOLDER_1.json", names)
+        self.assertIn("MANIFEST.sha256", names)
+        for absent in ("models/model.gguf", "__pycache__/anon.cpython-313.pyc", ".DS_Store"):
+            self.assertNotIn(absent, names)
+        # the manifest is the archive's bookkeeping, not a file of the store
+        target = self.tmp / "t"
+        self.assertEqual(self.run_script("restore", str(archive), str(target)).returncode, 0)
+        self.assertFalse((target / "MANIFEST.sha256").exists())
+
+    def test_the_value_is_not_readable_in_the_archive(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        self.assertNotIn(MARKER.encode(), archive.read_bytes())
+
+    def test_the_archive_is_private_and_leaves_no_plaintext_behind(self) -> None:
+        home = self.make_home()
+        out = self.tmp / "outdir"
+        archive = out / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        self.assertEqual(stat.S_IMODE(os.stat(archive).st_mode), 0o600)
+        # the directory holds the archive and nothing else: a decrypted copy left beside it would be
+        # the whole store in clear, which is what the old version of this script did
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["store.enc"])
+
+    # ---- refusals ------------------------------------------------------------------------------
+
+    def test_a_wrong_passphrase_is_refused_before_anything_is_written(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target), passphrase="not the passphrase")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(target.exists(), "a refused restore must not create the target")
+        self.assertFalse(self.tmp.joinpath("never.pre-restore-0").exists())
+
+    def test_a_payload_that_contradicts_its_manifest_is_refused(self) -> None:
+        real = b"the real value\n"
+        manifest = manifest_line("maps/a.json", real)
+        archive = self.tmp / "tampered.enc"
+        self.make_archive({"maps/a.json": b"something else\n"}, manifest, archive)
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("manifest", done.stderr)
+        self.assertFalse(target.exists())
+
+    def test_a_payload_with_a_file_the_manifest_does_not_list_is_refused(self) -> None:
+        listed = b"listed\n"
+        archive = self.tmp / "extra.enc"
+        self.make_archive(
+            {"maps/a.json": listed, "maps/smuggled.json": b"not in the manifest\n"},
+            manifest_line("maps/a.json", listed),
+            archive,
+        )
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("manifest", done.stderr)
+        self.assertFalse(target.exists())
+
+    def test_a_payload_that_walks_out_of_the_home_is_refused(self) -> None:
+        escape = tarfile.TarInfo("../evil.txt")
+        escape.size = 8
+        escape.mode = 0o600
+        archive = self.tmp / "escape.enc"
+        self.make_archive_with_extras({"maps/a.json": b"real\n"}, [(escape, b"escaped\n")], archive)
+        target = self.tmp / "home" / "store"
+        target.parent.mkdir(parents=True)
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        # The exit code alone does not identify the layer: tar refuses `..` by itself on both
+        # platforms, so a refusal here would happen with or without the audit. Naming the audit's own
+        # finding is what pins it — the point of the check is that the member list is inspected
+        # BEFORE anything is handed to tar.
+        self.assertIn("parent-relative", done.stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse((self.tmp / "home" / "evil.txt").exists(), "a member escaped the target")
+        self.assertFalse((self.tmp / "evil.txt").exists())
+
+    def test_a_payload_with_an_absolute_name_is_refused(self) -> None:
+        absolute = tarfile.TarInfo("/etc/anon-absolute")
+        absolute.size = 6
+        absolute.mode = 0o600
+        archive = self.tmp / "absolute.enc"
+        self.make_archive_with_extras({"maps/a.json": b"real\n"}, [(absolute, b"write\n")], archive)
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("parent-relative", done.stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse(Path("/etc/anon-absolute").exists())
+
+    def test_a_payload_with_a_symlink_member_is_refused(self) -> None:
+        link = tarfile.TarInfo("maps/escape")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/etc/passwd"
+        archive = self.tmp / "symlink.enc"
+        self.make_archive_with_extras({"maps/a.json": b"real\n"}, [(link, None)], archive)
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(target.exists())
+
+    def test_a_payload_without_a_manifest_is_refused(self) -> None:
+        archive = self.tmp / "nomanifest.enc"
+        self.make_archive({"maps/a.json": b"data\n"}, None, archive)
+        target = self.tmp / "never"
+        done = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(target.exists())
+
+    def test_an_empty_passphrase_is_refused_and_writes_no_archive(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}", passphrase="",
+                               extra_env={"ANON_BACKUP_PASSPHRASE": ""})
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(archive.exists())
+        self.assertFalse((self.tmp / "store.enc.partial").exists())
+
+    def test_an_existing_archive_is_refused_without_force(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+        before = archive.read_bytes()
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(archive.read_bytes(), before)
+
+    def test_a_non_empty_target_is_refused_and_force_moves_it_aside(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        self.assertEqual(self.run_script("backup", f"--home={home}", f"--out={archive}").returncode, 0)
+
+        target = self.tmp / "inplace"
+        (target / "maps").mkdir(parents=True)
+        (target / "maps" / "old.json").write_text("the state being replaced\n", encoding="utf-8")
+
+        refused = self.run_script("restore", str(archive), str(target))
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertTrue((target / "maps" / "old.json").exists(), "the refused restore must change nothing")
+
+        forced = self.run_script("restore", str(archive), str(target), "--force")
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        kept = [p for p in self.tmp.iterdir() if p.name.startswith("inplace.pre-restore-")]
+        self.assertEqual(len(kept), 1, "the previous tree must be kept, not deleted")
+        self.assertTrue((kept[0] / "maps" / "old.json").exists())
+        self.assertEqual((target / "maps" / "PLACEHOLDER_1.json").read_bytes(),
+                         (home / "maps" / "PLACEHOLDER_1.json").read_bytes())
+
+    def test_the_destination_directory_is_created_when_it_does_not_exist(self) -> None:
+        home = self.make_home()
+        archive = self.tmp / "deep" / "deeper" / "store.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={archive}")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(archive.exists())
+
+    def test_a_missing_home_is_refused(self) -> None:
+        out = self.tmp / "x.enc"
+        done = self.run_script("backup", f"--home={self.tmp / 'absent'}", f"--out={out}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(out.exists())
+
+    def test_an_empty_home_is_refused(self) -> None:
+        home = self.tmp / "empty"
+        home.mkdir()
+        out = self.tmp / "x.enc"
+        done = self.run_script("backup", f"--home={home}", f"--out={out}")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(out.exists())
+
+    def test_usage_and_an_unknown_command(self) -> None:
+        self.assertIn("usage:", self.run_script("help").stdout)
+        self.assertIn("usage:", self.run_script("--help").stdout)
+        unknown = self.run_script("nonsense")
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn("usage:", unknown.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

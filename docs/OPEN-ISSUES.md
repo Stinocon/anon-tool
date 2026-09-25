@@ -2,7 +2,8 @@
 
 State at 2026-09-23 (last reviewed): everything closed so far carries its evidence next to it. **One
 engineering item is open**: #40, which is the operator's step rather than the code's — run the
-encrypted backup and test a restore. #13 is withdrawn and #19 needs no action, both on purpose.
+encrypted backup and test a restore; the store's own half of it closed on 2026-09-25 (#43), so what
+remains there is the transcripts and the credentials. #13 is withdrawn and #19 needs no action, both on purpose.
 #26, the scan locator, closed on 2026-09-23 (7× on the dictionary that made it visible, no
 regression on the guard's path). A hunt over the areas the tests do not assert found **three real
 defects — an IPv4 at the end of a sentence, an address written with a truncation apostrophe, and the
@@ -469,7 +470,7 @@ old reference can never point at a different item.
 | 17 | 26 | **Guard throughput vs dictionary size** — **CLOSED 2026-09-23.** The first half built the index once per run and resolved a position through a sub-index on the SECOND token; the second half replaced the locator. The first-token alternation was 8.8 s of 9.1 s on a real 5 MB document with the catalogs (0.45 MB/s): its sources are common words and `re` retries every branch at every offset. Sources made of word characters are now located by walking the word runs of the text with dict lookups; only a source holding a non-word character (`D-Link`, `Hyper-V`) still needs an alternation, and so does a dictionary small enough that the word walk's per-token floor costs more than it saves (measured crossover between 64 and 80 sources, threshold 72 — `scripts/bench-scan.py --crossover`). **Measured**: locator 0.46 → 3.85 MB/s, whole scan 0.46 → 3.21 on 5 MB with the catalogs, same hit count; the guard's own path (6 sources) is unchanged at 0.090 s for 2 MB of real code (22.3 MB/s), so its 12 MB / 20 s margin stands. The adversarial review of this change found two HIGH defects of one pre-existing class, both fixed: the alternation used non-overlapping `finditer`, so `B-C` inside `a-b-c` (declared next to `A-B-C`) and `Link` inside `D-Link` were never probed — 1987 of 2000 random `X-Y-Z`/`Y-Z` pairs — and below the threshold the word sources inherited that miss, which is the guard's path; `_alternation_hits` now probes the positions inside each match (a zero-width lookahead would have been simpler and cost 17% on the guard's path). The review also corrected the bench (it compared different scopes), the corpus claim (synthetic prose, not source code) and the test oracle (its sort key omitted the priority). Proved equivalent to the reference by `test_the_word_run_locator_matches_the_reference_on_every_difficult_shape` over both regimes, with four mutations shown to bite. The test also found a PRE-EXISTING false negative: `re` folds `İ`/`I`/`ı` together while `casefold` does not, so an entry `İpek` was missed in a document spelling it `ipek` — fixed by keying on a fold proved (exhaustively, over every cased character) to be at least as coarse as `re.IGNORECASE` (`test_the_locator_fold_covers_everything_ignorecase_matches`). | The catalogs are 8 000 municipalities plus vendor and product names: a real document hits this on every page. | closed |
 | 18 | 36 | **A symlinked FILE inside a `--batch` tree is followed even when the target is outside the tree or inside the private store** — **CLOSED**: the walk resolves each candidate and skips it, saying which reason, when the target leaves the tree or touches the private store; `test_a_symlink_out_of_the_tree_is_skipped_not_followed` and `test_batch_check_also_skips_a_symlink_out_of_the_tree` cover both paths. |  | closed |
 | 19 | 19 | **Phone-prefix catalog** — **no action, declared**: it would compete with the phone rule and fragment numbers, which is worse than not having it. Revisit only with a real use case. |  | no action |
-| 20 | 40 | **Run the private-data backup and TEST a restore** (`scripts/backup-private-data.sh`). It exists, it is verified in the same run it writes, and it has never been run by the operator: the transcripts and the anonymizer's dictionary and maps are in no repository, so this is the only copy. Owner: the operator, not the code. |  | **OPEN** |
+| 20 | 40 | **Run the private-data backup and TEST a restore** (`scripts/backup-private-data.sh`). It exists, it is verified in the same run it writes, and it has never been run by the operator: the transcripts and the anonymizer's dictionary and maps are in no repository, so this is the only copy. **The `~/.anon` half now has its own product-owned script** — `make backup` / `make restore`, `DEC-0033`, verified on the real store (517 files, identical sets and hashes) — so what this item still owns is the transcripts and the credentials, which that script deliberately does not touch. Owner: the operator, not the code. |  | **OPEN** |
 | 20 | 37 | **The two-block rule of `catalogs/vendors.txt` is a prose convention, not an enforced invariant** — CLOSED in the sixth pass (see above): `VendorsCatalogTest` fails a name in the wrong block, in both directions, and sweeps block 2 against the OS dictionary. Two adversarial reviews of the first version moved FIFTEEN names — six ordinary words in the case-insensitive block (`gigabyte`, `red hat`, `avast`, `veritas`, `trend micro`, `western digital`), three needlessly case-sensitive (`aruba`, `kingston`, `eaton`), `cisco` put in the wrong block BY the fix itself, `okta` (a cloud-cover unit), and `ibm`/`amd`/`hpe`/`apc` kept case-sensitive on a rationale that was false, which made `un server ibm` a MISS. |  | closed |
 | 21 | 38 | **The web UI in English as well as Italian.** CLOSED 2026-09-23: the header carries a language selector, Italian is the default and the source (the text stays in `web/index.html`), English lives in `web/i18n.js` keyed by a CSS selector per element — a paragraph that mixes text with `<strong>`/`<em>`/`<code>` is replaced whole, because word order differs between languages and translating a text node would produce English that does not compose. The choice persists in `localStorage` (`anon-lang`), `applyLanguage` restores Italian from a snapshot taken at load, `app.js` keeps an Italian fallback so a missing `i18n.js` cannot break the page, and a test fails when a dictionary key no longer matches an element. 50 keys, 41 web tests. **Declared limits, corrected after the completion pass**: the placeholders and the tooltips of a translated element ARE translated now, the labels `app.js` composes (the option summary, the catalog counts, the empty states, the verdicts) are in the table too — a test fails if those words reappear as literals — and the server's own messages were already English (the engine raises English exceptions because the code is English). What stays Italian is deliberate: paths, format lists and the language names written in their own language. | The README stated it plainly, so an English-speaking reader met an Italian interface at the first click. | closed |
 | 22 | 39 | **CI: bump the action majors GitHub now annotates** — **CLOSED 2026-09-23**: `actions/checkout@v4 → v7`, `actions/setup-python@v5 → v7`, `actions/setup-node@v4 → v7`; the run after the push is green and the annotations are gone. No other repository of the fleet has a workflow (checked). |  | closed |
@@ -485,6 +486,47 @@ old reference can never point at a different item.
   streaming change: declaring the variable alters the look of four existing elements, which is a
   design decision rather than a side effect of adding a panel — the new `.suggest-live` carries an
   explicit monospace stack instead, so the new element is not affected.
+
+| 25 | 43 | **A backup of the private store** — CLOSED 2026-09-25: `scripts/anon-home-backup.sh` (`make backup` / `make restore FILE=…`), AES-256-CBC/PBKDF2 600 000 iterations, verified in the run that writes it (decrypt + a sha256 manifest carried inside the archive + the file count against the manifest's lines), and the same verification before a restore writes a byte; a non-empty store is MOVED aside, never deleted. The live store stays in clear 0600 (`DEC-0033`, supersede to change). `tests/test_backup.py`, 18 tests in `make test`, nine mutations each shown to bite; verified on the real store (517 files, identical file sets and hashes). | `~/.anon` is the only artefact that makes a redacted document reversible, and it was in no repository and in no product-owned backup. | closed |
+
+## The private store: a backup of its own (2026-09-25)
+
+`~/.anon` holds the maps — the real value behind every placeholder — and the private dictionary. It
+is in no repository, so the only copy that survives a lost disk is an encrypted archive, and until
+now the only script that made one was the operator's machine-wide private backup — which lives
+outside this repository, is not shipped here, and also carries transcripts and credentials: a user of
+this tool had nothing of its own.
+
+`scripts/anon-home-backup.sh` (`make backup`) writes `~/private-backups/anon-home-<date>.tar.gz.enc`
+— AES-256-CBC over PBKDF2 with 600 000 iterations — and **verifies it in the same run**: it decrypts
+the archive again and compares every file with a sha256 manifest carried inside it. `make restore
+FILE=…` runs the same verification before writing, refuses a payload that contradicts its own
+manifest, a member named `../`, an absolute name, a symlink member or a wrong passphrase, and MOVES
+a non-empty store to `~/.anon.pre-restore-<date>` instead of deleting it. The design reason and the
+declared limits are `DEC-0033`; the suite is `tests/test_backup.py` (18 tests, inside `make test`).
+
+Two things from this pass are worth writing down:
+
+- **Two protections were untestable until the tests were rebuilt.** In the first version of the
+  suite, the member audit (no `../`, no absolute name, no symlink) and the file-count check were
+  each covered by the manifest check instead: those payloads were refused anyway, so removing the
+  audit changed no verdict — `tar` refuses `..` by itself, and a `../` member lands outside the
+  extraction root, where the file count no longer matches the manifest. Those two archives are now
+  built so that the manifest AND the count both pass (a listed file that verifies, plus one member
+  on top that the manifest does not list), which leaves the audit as the only layer that can refuse
+  them. Including the mutation that removes one arm of the name check at a time: nine mutations, one
+  per protection, all of them bite.
+- **The verification found the real defect before the script was ever run on real data.** The first
+  version wrote its decrypted copy next to the archive, so the whole store sat in clear in the
+  output directory for as long as the check ran. The partial archive and the scratch tree are now
+  `mktemp` files removed by a trap, and
+  `test_the_archive_is_private_and_leaves_no_plaintext_behind` asserts that the output directory
+  holds the archive and nothing else.
+
+Verified on the real store, 2026-09-25: 517 files, backup then restore in a working directory, file
+sets and sha256 identical, nothing read in clear by the agent. What is NOT done: the operator has
+still never run the machine-wide private backup against a real destination — that is #40, and it
+covers the transcripts and the credentials this script deliberately does not.
 
 ### Hygiene note kept from this pass
 

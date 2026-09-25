@@ -13,7 +13,7 @@ SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall
+.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall backup restore
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -46,10 +46,11 @@ build: ## build the image only
 native: ## run the server directly, without Docker
 	python3 web/server.py --port $(PORT)
 
-test: ## engine + web + local-model seam + UI load check + doc numbers (no Docker needed)
+test: ## engine + web + local-model seam + private-store backup + UI load check + doc numbers (no Docker)
 	python3 tests/test_anon.py
 	python3 tests/test_web.py
 	python3 tests/test_suggest.py
+	python3 tests/test_backup.py
 	node tests/ui_load_check.mjs
 	python3 scripts/check-doc-numbers.py
 
@@ -71,6 +72,12 @@ check-container: ## fail if a running container does not serve the current code
 
 recall: ## measure the engine's recall on the labelled corpus (fp-sweep measures the other direction)
 	python3 scripts/recall-sweep.py
+
+backup: ## encrypt the private store (maps + dictionary) into an archive: BACKUP=path to choose it
+	bash scripts/anon-home-backup.sh backup $(if $(BACKUP),--out=$(BACKUP),)
+
+restore: ## write a backup back: make restore FILE=<archive> [FORCE=1]
+	bash scripts/anon-home-backup.sh restore "$${FILE:?usage: make restore FILE=<archive>}" $(if $(FORCE),--force,)
 
 clean: ## remove the image (the data in $(ANON_HOME) is untouched)
 	docker rmi $(IMAGE) 2>/dev/null || true

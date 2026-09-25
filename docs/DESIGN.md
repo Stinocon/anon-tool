@@ -93,6 +93,30 @@ in the token itself:
 Cost: the model must copy `[EMAIL-1-a3f9d1]` verbatim. That is why the skill states it as a hard
 rule, and why the failure is loud: a mangled token cannot be restored, and the run says so.
 
+### 4c. The store at rest, and the copy that leaves
+
+The map is the whole secret: it is the only artefact that turns a redacted document back into the
+real one, and it lives outside every repository. Two choices follow, and both are recorded
+(`DEC-0033`) instead of being re-derived.
+
+**At rest: in clear, mode 0600.** The engine has no session and no key (DEC-0012) — `anon.py` writes
+a map and rereads it, and so do `deanon.py`, the Pi guard and the container. Encrypting the live
+store means either asking for a passphrase at every operation (which would break `deanon.py` run on
+its own, and the guard's automatic path) or keeping the key where the process that reads the maps
+can read it — which is where the maps are. At rest the encryption removes nothing against the only
+adversary it addresses, someone who already reads that filesystem, while breaking the composition
+the tool is built on. The threat it *does* address — the store copied to another disk, lost with a
+laptop, sent to a NAS — is the backup's job.
+
+**On the way out: verified.** `scripts/anon-home-backup.sh` writes an AES-256-CBC/PBKDF2 archive and
+then reads it back: decryption, a member audit (every entry a plain relative file), a sha256 per file
+against a manifest carried *inside* the archive, and the file count against the manifest's line
+count. The last check is not decorative — `shasum -c` verifies only what the manifest lists, so an
+archive holding one extra file passes it — and the manifest is what makes a wrong passphrase
+visible, because CBC without AEAD returns bytes rather than an error whenever the padding happens to
+land right. The same verification runs before a restore writes anything, and a restore that finds a
+non-empty store MOVES it aside instead of deleting it.
+
 ## 5. Dictionary matching (what "the same entity" means)
 
 The dictionary is split by kind, all optional and merged: `~/.anon/entities.txt` (the generic
@@ -389,4 +413,11 @@ that looks complete.
   than guesses (12 MB / 20 s, sized from `scripts/bench-check.py`);
 - if the engine cannot run at all, the Pi guard fails open **with a visible indicator** — a
   broken checker must not brick the editor. That is the ONLY fail-open path left, and it is
-  reserved for a genuinely missing engine (python absent, crash), never for a slow file.
+  reserved for a genuinely missing engine (python absent, crash), never for a slow file;
+- **the private store is not encrypted at rest, and the backup carries no key management.** `~/.anon`
+  is `0700` with `0600` files, readable by any process that can read it (`DEC-0033`), and the
+  encryption lives on the archive taken out of the machine: `make backup` writes one, `make restore`
+  reads it back, and neither stores the passphrase — lose it and the archive is gone. `openssl enc`
+  in CBC has no AEAD tag, so the manifest inside the archive detects a modified or damaged payload
+  while *authenticity* rests on the passphrase staying secret. No scheduler, no remote destination,
+  no incremental or deduplicated archive, and the shipped model (2 GB) is deliberately not in it.

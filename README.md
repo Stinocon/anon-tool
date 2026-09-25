@@ -115,6 +115,9 @@ These are declared limits, not oversights:
   extends it to shell output.
 - **It is not a legal opinion** on using a cloud provider. It reduces technical risk; it does not
   replace a DPA or an internal assessment.
+- **The private store is not encrypted at rest.** `~/.anon` is `0600` and readable by anything that
+  can read it; the encryption belongs to the **backup** you take out of the machine (`make backup`),
+  which has no scheduler, no remote destination and no key management of its own.
 
 ## Quick start
 
@@ -346,6 +349,41 @@ python3 ~/.anon/web/server.py --port 1407 \
 
 See `docs/DESIGN.md` §7 for the boundary and `CHANGELOG.md` for the shipped model and what it was
 measured to do.
+
+## The private store, and its backup
+
+Everything that must never be committed lives in one directory, `~/.anon`: the **maps** (the real
+value behind every placeholder — the only thing that makes a redacted document reversible), the
+private dictionary (`entities.txt`, `clients.txt`, …) and the files the UI hands back. The engine
+creates the directory `0700` and writes every file `0600` (`anon.py::_write_private`).
+
+**It stays in clear.** The store is not encrypted at rest, and that is a decision rather than an
+oversight ([`DEC-0033`](.pi/decisions/DEC-0033.md)): `anon.py` writes and rereads a map with no key,
+so a passphrase has nowhere to live that does not end up beside the maps it is protecting. The
+encryption belongs on the copy that leaves the machine:
+
+```bash
+make backup                             # -> ~/private-backups/anon-home-<date>.tar.gz.enc
+make restore FILE=~/private-backups/anon-home-20260925-1941.tar.gz.enc
+```
+
+The archive is AES-256-CBC over PBKDF2 (600 000 iterations) and is **verified in the same run that
+writes it**: the script decrypts it again and compares every file with a sha256 manifest kept
+inside the archive. `restore` runs the same verification *before* it writes anything — a payload
+that contradicts its own manifest, a member named `../`, a symlink member or a wrong passphrase is
+refused with the destination untouched — and it never deletes: a non-empty `~/.anon` is **moved** to
+`~/.anon.pre-restore-<date>` first, and only `--force` asks for that.
+
+What goes in: everything under `~/.anon` except `models/` (2 GB, re-downloadable with `make model`),
+`__pycache__/` and `*.pyc`. The passphrase is asked for and never stored anywhere; scripted use can
+set `ANON_BACKUP_PASSPHRASE`, which is also why it is not the default — an environment variable lives
+exactly where the archive should not.
+
+Limits, stated rather than implied: no scheduler, no remote destination, no key management, and no
+AEAD — CBC alone cannot prove *who* wrote an archive, so the manifest inside detects a modified or
+damaged payload while the passphrase's secrecy is what keeps an archive authentic. Lose the
+passphrase and the archive is lost, by design. `scripts/anon-home-backup.sh` and
+`tests/test_backup.py` are the whole mechanism.
 
 ## Security posture
 

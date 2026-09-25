@@ -52,6 +52,8 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
   in a dangerous position;
 - any case where the tool reports success while leaving sensitive content in place, or restores
   values that do not belong to that document;
+- any way the private store's backup or restore path writes outside its destination, accepts a
+  payload that does not match its own manifest, or puts the real values into the archive in clear;
 - any way the engine silently fails open without a visible indicator.
 
 ## Out of scope (declared limits, see `docs/DESIGN.md` §8)
@@ -66,6 +68,12 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
   docs). The remedy is `~/.anon/allow.txt`, a session-only `--anon-guard-allow '/a/*,/b/*'` (or
   `/anon-allow <path>`), or `anon.py --allow-glob GLOB` for one run — never a workaround;
 - **a check slower than the timeout or bigger than the cap** is refused, not read (fail-closed).
+- **the private store is not encrypted at rest** (`DEC-0033`): `~/.anon` is `0700` and its files are
+  `0600`, but a process that can read the maps reads the real values. The encrypted copy is the
+  **backup** (`make backup`), and it comes with its own declared gaps: no scheduler, no remote
+  destination, no key management — the passphrase is never stored, so losing it loses the archive —
+  and no AEAD tag, so a modified or damaged payload is caught by the manifest inside the archive
+  while *authenticity* rests on the passphrase staying secret.
 - **two runs cannot be confused**: the tag is part of every placeholder (`[EMAIL-1-a3f9d1]`), so a
   map from a different run leaves the tokens untouched and the restore fails loudly (exit 3)
   instead of substituting another client's values. The tag is 6 hex digits and is allocated

@@ -32,6 +32,14 @@ enforces that they agree.
   status that is already 200, so it becomes an `error` event rather than a short answer that looks
   complete.
 
+- **The private store has a backup, and the way back.** `~/.anon` (the maps, the dictionary) is the
+  one thing that is in no repository, so `scripts/anon-home-backup.sh` writes an AES-256-CBC/PBKDF2
+  archive (`make backup`) and verifies it in the same run by decrypting it again and comparing every
+  file with a sha256 manifest carried inside the archive. `make restore FILE=…` runs the same
+  verification before it writes, refuses a payload that contradicts its own manifest or names a file
+  outside the home, and moves a non-empty store aside instead of deleting it. The live store stays
+  in clear at mode 0600, by decision (`DEC-0033`).
+
 - **A PDF is delivered redacted**, not refused: `pdfout.py` (stdlib, text-only, base-14 Helvetica
   with WinAnsi so the accents survive) builds a NEW PDF from the already-redacted Markdown — the
   layout is not preserved and the response says so — while rewriting the content stream stays out of
