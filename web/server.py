@@ -630,6 +630,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reveal_map()
             elif path == "/api/suggest":
                 self._suggest()
+            elif path == "/api/suggest-stream":
+                self._suggest_stream()
             else:
                 self._error(404, "not found")
         except suggest_engine.BackendError as exc:
@@ -670,8 +672,13 @@ class Handler(BaseHTTPRequestHandler):
             "max_upload_bytes": MAX_BODY_BYTES,
         }
 
-    def _suggest(self) -> None:
-        """Proposals from the local model. Writes NOTHING: the operator approves them one by one."""
+    def _suggest_input(self):
+        """The guards and the body of the model seam, shared by the blocking and the streamed call.
+
+        Raising here happens BEFORE a single response byte, so the caller's error handler still turns
+        it into a normal JSON error with a status code: a stream that failed to start must not look
+        like a stream that started and said nothing.
+        """
         if SUGGEST_BACKEND is None:
             raise ValueError(
                 "the local model is not configured: start the server with --suggest-url and "
@@ -682,8 +689,52 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(text, str) or not text.strip():
             raise ValueError('"text" is required')
         entities, families = _resolve(payload.get("catalogs"), payload.get("patterns"))
+        return text, entities, families
+
+    def _suggest(self) -> None:
+        """Proposals from the local model. Writes NOTHING: the operator approves them one by one."""
+        text, entities, families = self._suggest_input()
         report = suggest_engine.suggest(text, SUGGEST_BACKEND, entities=entities, families=families)
         self._json({"schema": anon.SCHEMA, "mode": "suggest", **report})
+
+    def _sse(self, event: dict) -> None:
+        self.wfile.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8"))
+        self.wfile.flush()
+
+    def _sse_error(self, message: str) -> None:
+        """Tell the client, unless the client is already gone: a broken pipe is not news."""
+        try:
+            self._sse({"event": "error", "message": message})
+        except OSError:
+            pass
+
+    def _suggest_stream(self) -> None:
+        """The same call as `_suggest`, streamed as server-sent events: `start`, `delta`*, `done`.
+
+        The deltas are PROGRESS, never a verdict: the `done` report comes from the same code as the
+        blocking call, after the whole answer has been parsed and every value located in the
+        document. A failure AFTER the stream has begun is an `error` EVENT rather than a status code
+        — the status is already 200 — so the client is told instead of being handed a short answer
+        that looks complete.
+        """
+        text, entities, families = self._suggest_input()  # before any byte: a normal error response
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # No Content-Length under HTTP/1.1: the body is delimited by closing the connection.
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for event in suggest_engine.suggest_events(
+                text, SUGGEST_BACKEND, entities=entities, families=families
+            ):
+                self._sse(event)
+        except suggest_engine.BackendError as exc:
+            self._sse_error(f"the local model did not answer: {exc}")
+        except Exception as exc:  # noqa: BLE001 - never leak a traceback into the stream
+            self._sse_error(f"{type(exc).__name__}: {str(exc)[:200]}")
 
     def _map_files(self) -> list[Path]:
         if not anon.DEFAULT_MAPS.is_dir():

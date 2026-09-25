@@ -24,6 +24,14 @@ enforces that they agree.
 
 ### Added
 
+- **The local model's answer is streamed.** The panel reads it as server-sent events
+  (`/api/suggest-stream`) and shows the text while it arrives, and `suggest.py --stream` does the
+  same on a terminal; the deltas are progress, not a verdict, because `suggest()` and
+  `suggest_events()` build their report through one function — the proposals appear only after the
+  whole answer has been parsed and located. A failure once the stream has started cannot change a
+  status that is already 200, so it becomes an `error` event rather than a short answer that looks
+  complete.
+
 - **A PDF is delivered redacted**, not refused: `pdfout.py` (stdlib, text-only, base-14 Helvetica
   with WinAnsi so the accents survive) builds a NEW PDF from the already-redacted Markdown — the
   layout is not preserved and the response says so — while rewriting the content stream stays out of

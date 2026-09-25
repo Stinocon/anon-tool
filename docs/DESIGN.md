@@ -261,6 +261,7 @@ found by the deterministic engine: exactly the contextual reference the dictiona
 latency that keeps the panel a step you choose rather than a step in the upload path.
 
 The negative measurement that chose the shape: a 9B **reasoning** model thinks until its budget ends.
+
 The local MTPLX Qwen3.5-9B answers a one-sentence text in about 30 s with a correct proposal, but a
 richer text spends 138 s and 4096 tokens and returns nothing (`finish_reason: length`), and one run
 answered after 43.4 s with a "Thinking Process" narrative instead of JSON. The seam reported each as
@@ -275,6 +276,16 @@ was a value the deterministic engine had already found, while 0 of the 4 declare
 closed**. On short, structured documents the model repeats the engine; the 570-character report
 above (4 proposals the engine missed) is the case where it helps. The yield is text-dependent, so
 the panel is a step to try on a document the engine under-reads — not a guaranteed net.
+
+**The answer is streamed, and the stream is only a view.** A twenty-second wait is tolerable only
+if it is evidently a wait, so the seam reads the model's reply as server-sent events and the panel
+renders the text while it arrives (`suggest.py --stream` on a terminal; `/api/suggest-stream` from
+the UI). The pieces are PROGRESS, never a verdict: `suggest()` and `suggest_events()` build their
+report through one `_report()`, and the proposals appear only once the whole answer has been parsed
+and every value located in the document — so the streaming path cannot relax the location check or
+propose half a value. A failure after the stream has begun cannot change a status code that is
+already 200, so it becomes an `error` event: the client is told, rather than handed a short answer
+that looks complete.
 
 ## 8. Known limits (deliberate)
 

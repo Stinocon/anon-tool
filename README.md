@@ -302,6 +302,14 @@ UI server) — a long text does not hang, it answers with an error. The panel sh
 while it waits, so the call reads as working rather than frozen. To read more at once, split the
 document, raise the timeout, or point the seam at a faster model.
 
+**The answer arrives while it is being written.** The panel reads the model's reply as server-sent
+events (`/api/suggest-stream`) and shows the text as it comes, instead of a bar that sits still for
+twenty seconds; `suggest.py --stream` does the same on a terminal, printing the deltas on stderr and
+the report on stdout. The deltas are **progress, not a verdict**: the proposals are built only when
+the whole answer has arrived, been parsed and located in the document, exactly as in the blocking
+call, so a half-written value cannot become a proposal. A stream that breaks is an error — an
+`error` event in the UI, exit 2 on the CLI — never a short answer that looks complete.
+
 ```bash
 python3 suggest.py verbale.txt --entities ~/.anon/clients.txt \
     --url http://127.0.0.1:11434/v1/chat/completions --model <nome-modello> --json

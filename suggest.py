@@ -43,7 +43,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Callable, Iterable, Iterator, Protocol
 
 import anon
 
@@ -212,6 +212,31 @@ Transport = Callable[[dict[str, object], str, float, dict[str, str]], str]
 """A transport takes (payload, url, timeout, headers) and returns the RAW HTTP BODY as text."""
 
 
+def _http_post_lines(
+    payload: dict[str, object], url: str, timeout: float, headers: dict[str, str]
+):
+    """The streaming twin of `_http_post`: same opener, same two closed escapes, line by line.
+
+    Reading the response as a stream IS the point: `response.read()` would wait for the model to
+    finish and turn this back into the blocking call it exists to avoid. The two escapes matter twice
+    over here — once the body has started there is no status code left to check.
+    """
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
+        yield from response
+
+
+StreamTransport = Callable[[dict[str, object], str, float, dict[str, str]], Iterator[bytes]]
+"""A stream transport takes (payload, url, timeout, headers) and yields the RAW RESPONSE LINES."""
+
+
 class Backend(Protocol):
     """What a detector backend must provide.
 
@@ -249,11 +274,13 @@ class LoopbackBackend:
         headers: dict[str, str] | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         constrained: bool = False,
+        stream_transport: "StreamTransport | None" = None,
     ) -> None:
         self.url = check_loopback(url)
         self.model = model
         self.timeout = timeout
         self.transport = transport or _http_post
+        self.stream_transport = stream_transport or _http_post_lines
         self.max_tokens = max_tokens
         self.constrained = constrained
         self.headers = dict(headers or {})
@@ -265,7 +292,9 @@ class LoopbackBackend:
         parts = urllib.parse.urlsplit(self.url)
         self.name = f"{parts.hostname}:{parts.port or ''}/{model}"
 
-    def complete(self, prompt: str) -> str:
+    def _payload(self, prompt: str, stream: bool) -> dict[str, object]:
+        """One payload builder for both transports: the streamed request must ask for exactly what
+        the blocking one asks for, and two copies would drift apart one flag at a time."""
         payload: dict[str, object] = {
             "model": self.model,
             "messages": [
@@ -276,7 +305,7 @@ class LoopbackBackend:
             # A REASONING model spends this budget thinking and may return an empty `content`: too
             # small a value turns a good answer into "no JSON". See `_content_of` for the fallback.
             "max_tokens": self.max_tokens,
-            "stream": False,
+            "stream": stream,
         }
         if self.constrained:
             # Supported by llama.cpp, vLLM and the OpenAI-compatible servers that implement the
@@ -286,11 +315,34 @@ class LoopbackBackend:
                 "type": "json_schema",
                 "json_schema": {"name": "candidates", "schema": CANDIDATES_SCHEMA},
             }
+        return payload
+
+    def complete(self, prompt: str) -> str:
         try:
-            raw = self.transport(payload, self.url, self.timeout, self.headers)
+            raw = self.transport(self._payload(prompt, False), self.url, self.timeout, self.headers)
         except Exception as exc:  # noqa: BLE001 - every transport failure is the same failure here
             raise BackendError(f"the backend did not answer: {type(exc).__name__}: {exc}") from exc
         return _content_of(raw)
+
+    def complete_stream(self, prompt: str) -> Iterator[str]:
+        """The same answer, in pieces: server-sent events from an OpenAI-compatible endpoint.
+
+        The pieces are a PROGRESS view, never the verdict — the caller joins them and runs the same
+        `parse_candidates` and location check on the result. A stream that fails is a `BackendError`
+        like any other failure: a partial answer quietly treated as the whole answer would look
+        exactly like "the model found nothing".
+        """
+        try:
+            for line in self.stream_transport(
+                self._payload(prompt, True), self.url, self.timeout, self.headers
+            ):
+                piece = _delta_of(line)
+                if piece:
+                    yield piece
+        except BackendError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - every transport failure is the same failure here
+            raise BackendError(f"the backend did not answer: {type(exc).__name__}: {exc}") from exc
 
 
 def _content_of(raw: str) -> str:
@@ -322,6 +374,44 @@ def _content_of(raw: str) -> str:
         if isinstance(reasoning, str) and reasoning.strip():
             content = reasoning
     return content
+
+
+def _delta_of(line: bytes) -> str:
+    """The assistant text carried by one SSE line, or "" for a line that carries none.
+
+    OpenAI-compatible streams send `data: {"choices":[{"delta":{"content":"…"}}]}` and end with
+    `data: [DONE]`; a reasoning model puts its thinking in `delta.reasoning_content`, the streamed
+    twin of the fallback `_content_of` applies. Blank lines, `event:` lines and `:` comments are
+    ignored. A `data:` line that is not JSON is an ERROR, not an empty piece: swallowing it would
+    drop part of the answer and the truncation would only surface later as "the answer holds no
+    JSON", which is a lie about what went wrong.
+    """
+    text = line.decode("utf-8", "replace").strip()
+    if not text.startswith("data:"):
+        return ""
+    data = text[5:].strip()
+    if not data or data == "[DONE]":
+        return ""
+    try:
+        body = json.loads(data)
+    except ValueError as exc:
+        raise BackendError(f"the stream carried a non-JSON chunk: {data[:120]!r}") from exc
+    if not isinstance(body, dict):
+        return ""
+    error = body.get("error")
+    if error:
+        raise BackendError(f"the backend reported an error: {str(error)[:200]}")
+    try:
+        delta = body["choices"][0]["delta"]
+    except (KeyError, IndexError, TypeError):
+        return ""
+    if not isinstance(delta, dict):
+        return ""
+    for key in ("content", "reasoning_content"):
+        value = delta.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _extract_json(content: str) -> object:
@@ -401,6 +491,37 @@ def parse_candidates(content: str, text: str, detected: Iterable[tuple[int, int,
     return sorted(proposals.values(), key=lambda proposal: proposal.spans[0][0])
 
 
+def _frame(
+    text: str, analyzed: str, detected: list[tuple[int, int, str]], backend
+) -> dict[str, object]:
+    """What the model was given and what the engine already found — the report's own header.
+
+    One function so the blocking and the streamed run cannot describe the same call differently.
+    """
+    return {
+        "backend": backend.name,
+        "chars": len(text),
+        "analyzed_chars": len(analyzed),
+        "truncated": len(analyzed) < len(text),
+        "detected": [
+            {"start": start, "end": end, "type": ptype} for start, end, ptype in detected
+        ],
+    }
+
+
+def _report(
+    *, text: str, answer: str, detected: list[tuple[int, int, str]], analyzed: str, backend, limit: int
+) -> dict[str, object]:
+    """The one place the report is built: the streamed run must produce exactly the report the
+    blocking run produces, or the two faces of one feature would disagree about the same document.
+    """
+    proposals = parse_candidates(answer, text, detected)[:limit]
+    return {
+        **_frame(text, analyzed, detected, backend),
+        "candidates": [proposal.to_json() for proposal in proposals],
+    }
+
+
 def suggest(
     text: str,
     backend: NullBackend | LoopbackBackend,
@@ -422,17 +543,47 @@ def suggest(
     detected = anon.detect(text, entities, families=families)
     analyzed = text[:max_chars]
     answer = backend.complete(analyzed)
-    proposals = parse_candidates(answer, text, detected)[:limit]
-    return {
-        "backend": backend.name,
-        "chars": len(text),
-        "analyzed_chars": len(analyzed),
-        "truncated": len(analyzed) < len(text),
-        "detected": [
-            {"start": start, "end": end, "type": ptype}
-            for start, end, ptype in detected
-        ],
-        "candidates": [proposal.to_json() for proposal in proposals],
+    return _report(
+        text=text, answer=answer, detected=detected, analyzed=analyzed, backend=backend, limit=limit
+    )
+
+
+def suggest_events(
+    text: str,
+    backend: NullBackend | LoopbackBackend,
+    *,
+    entities: list[anon.Entity] | None = None,
+    families: set[str] | None = None,
+    max_chars: int = DEFAULT_MAX_CHARS,
+    limit: int = 100,
+) -> Iterator[dict[str, object]]:
+    """The same work as `suggest()`, reported while it happens: `start`, then `delta`*, then `done`.
+
+    The deltas are PROGRESS, not a verdict: nothing is proposed until the joined answer has been
+    parsed and every value located in the document, so a stream cannot turn half a value into a
+    redaction. The `done` event carries the same report `suggest()` returns, and a backend without a
+    streaming transport still emits one delta — the client reads one event sequence either way.
+    """
+    entities = entities or []
+    detected = anon.detect(text, entities, families=families)
+    analyzed = text[:max_chars]
+    yield {"event": "start", **_frame(text, analyzed, detected, backend)}
+    stream = getattr(backend, "complete_stream", None)
+    if stream is None:
+        answer = backend.complete(analyzed)
+        if answer:
+            yield {"event": "delta", "text": answer}
+    else:
+        pieces: list[str] = []
+        for piece in stream(analyzed):
+            pieces.append(piece)
+            yield {"event": "delta", "text": piece}
+        answer = "".join(pieces)
+    yield {
+        "event": "done",
+        "report": _report(
+            text=text, answer=answer, detected=detected, analyzed=analyzed, backend=backend, limit=limit
+        ),
     }
 
 
@@ -497,6 +648,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="pin the answer to the JSON schema (llama.cpp/vLLM): a backend that would narrate instead "
         "of answering cannot produce a non-schema reply. Off by default, for endpoints that reject it.",
     )
+    parser.add_argument(
+        "--stream", action="store_true",
+        help="read the answer as server-sent events and show it on stderr while it arrives; the report "
+        "is the same one, and nothing is proposed until the whole answer has been parsed and located",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable JSON on stdout")
     return parser
 
@@ -529,13 +685,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        report = suggest(
-            text, backend, entities=entities, families=families,
-            max_chars=args.max_chars, limit=args.limit,
-        )
+        report: dict[str, object] | None = None
+        if args.stream:
+            # The delta text goes to STDERR: stdout stays the report, so `--json` keeps its shape and
+            # a pipeline can read it while a human watches the model answer.
+            for event in suggest_events(
+                text, backend, entities=entities, families=families,
+                max_chars=args.max_chars, limit=args.limit,
+            ):
+                if event["event"] == "delta":
+                    print(event["text"], end="", file=sys.stderr, flush=True)
+                elif event["event"] == "done":
+                    report = event["report"]  # type: ignore[assignment]
+            if not args.json:
+                print(file=sys.stderr)
+        else:
+            report = suggest(
+                text, backend, entities=entities, families=families,
+                max_chars=args.max_chars, limit=args.limit,
+            )
     except BackendError as exc:
         print(f"suggest: {exc}", file=sys.stderr)
         return 2  # a failed backend is an ERROR, never "nothing found"
+    assert report is not None, "the done event is always emitted"
 
     if args.json:
         print(json.dumps({"schema": "anon/1", "mode": "suggest", "file": str(source), **report}, indent=2))

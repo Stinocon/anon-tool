@@ -318,19 +318,39 @@ class SuggestTest(unittest.TestCase):
     ]})
 
     @staticmethod
-    def _model_server(answer: str):
+    def _model_server(answer: str, broken_stream: bool = False):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
                 length = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(length)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                if payload.get("stream"):
+                    self._stream(answer, broken_stream)
+                    return
                 body = json.dumps({"choices": [{"message": {"content": answer}}]}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _stream(self, content: str, broken: bool) -> None:
+                """Three deltas and a terminator; no Content-Length, so the body ends at the close."""
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for chunk in (content[:7], content[7:21], content[21:]):
+                    if not chunk:
+                        continue
+                    frame = {"choices": [{"delta": {"content": chunk}}]}
+                    self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode())
+                    self.wfile.flush()
+                if broken:
+                    self.wfile.write(b"data: {oops not json\n\n")
+                else:
+                    self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
 
             def log_message(self, *args) -> None:
                 return
@@ -425,6 +445,86 @@ class SuggestTest(unittest.TestCase):
         finally:
             process.terminate()
             process.wait(timeout=5)
+
+    def call_text(self, path: str, payload: dict, server: tuple | None = None) -> tuple[int, str]:
+        """A raw body, for a response that is not JSON (the event stream)."""
+        process, port, token = server or (self.process, self.port, self.token)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", data=json.dumps(payload).encode(),
+            headers={TOKEN_HEADER: token, "Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, response.read().decode()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode()
+
+    @staticmethod
+    def events(raw: str) -> list[dict]:
+        """The events in an SSE body, in order."""
+        found = []
+        for frame in raw.split("\n\n"):
+            line = frame.strip()
+            if line.startswith("data:"):
+                found.append(json.loads(line[5:].strip()))
+        return found
+
+    def test_the_streamed_endpoint_reports_the_same_proposals(self) -> None:
+        """The streamed call must produce the report the blocking one produces, from one code path,
+        and a value that is not in the text must stay dropped when it arrives in pieces."""
+        text = "Il cliente Contoso ha rinnovato."
+        status, raw = self.call_text("/api/suggest-stream", {"text": text})
+        self.assertEqual(status, 200, raw)
+        found = self.events(raw)
+        self.assertGreaterEqual(len(found), 3, raw)
+        self.assertEqual(found[0]["event"], "start")
+        self.assertEqual(found[-1]["event"], "done")
+        self.assertTrue(all(event["event"] == "delta" for event in found[1:-1]), raw)
+        deltas = "".join(event["text"] for event in found if event["event"] == "delta")
+        self.assertIn("Contoso", deltas, "the model's own answer is what is streamed")
+        _status, blocking = self.call("/api/suggest", {"text": text})
+        self.assertEqual(found[-1]["report"]["candidates"], blocking["candidates"])
+        self.assertEqual([item["value"] for item in found[-1]["report"]["candidates"]], ["Contoso"],
+                         "ACME Holdings is not in the text: the stream must not relax the location check")
+
+    def test_the_streamed_call_writes_nothing_either(self) -> None:
+        self.call_text("/api/suggest-stream", {"text": "Il cliente Contoso ha rinnovato."})
+        self.assertEqual(list((self.tmp / "maps").glob("*.map.json")), [], "the seam writes no map")
+
+    def test_a_stream_that_breaks_is_an_error_event_not_a_short_answer(self) -> None:
+        """A failure after the stream began cannot change the status: it must be an EVENT, so the
+        client is told instead of being handed a partial answer that looks complete."""
+        broken = self._model_server(self.ANSWER, broken_stream=True)
+        process, port, token = self._spawn(
+            self.tmp,
+            "--suggest-url", f"http://127.0.0.1:{broken.server_address[1]}/v1/chat/completions",
+            "--suggest-model", "fake",
+        )
+        try:
+            status, raw = self.call_text("/api/suggest-stream", {"text": "Cliente Contoso."},
+                                         server=(process, port, token))
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            broken.shutdown()
+            broken.server_close()
+        self.assertEqual(status, 200, raw)
+        found = self.events(raw)
+        self.assertEqual(found[-1]["event"], "error", raw)
+        self.assertIn("did not answer", found[-1]["message"])
+
+    def test_without_a_model_the_stream_is_refused_before_it_opens(self) -> None:
+        """No model configured: a normal JSON 400, not an empty event stream (which would read as
+        "the model found nothing")."""
+        process, port, token = self._spawn(self.tmp)
+        try:
+            status, raw = self.call_text("/api/suggest-stream", {"text": "Contoso"},
+                                         server=(process, port, token))
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+        self.assertEqual(status, 400, raw)
+        self.assertIn("not configured", json.loads(raw)["error"])
 
     def test_proposals_are_located_and_a_hallucination_is_dropped(self) -> None:
         status, body = self.call("/api/suggest", {"text": "Il cliente Contoso ha rinnovato."})

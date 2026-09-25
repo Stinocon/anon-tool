@@ -44,6 +44,11 @@ def completion(content: str) -> str:
     return json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]})
 
 
+def sse(content: str) -> bytes:
+    """One server-sent-event line carrying `content` as a delta."""
+    return ("data: " + json.dumps({"choices": [{"delta": {"content": content}}]}) + "\n").encode()
+
+
 class SilentBackend:
     """The unit-test backend: no transport at all, a fixed answer."""
 
@@ -164,6 +169,93 @@ class BackendTest(unittest.TestCase):
                 backend.complete("testo")
 
 
+class StreamTest(unittest.TestCase):
+    """`complete_stream` reads server-sent events; `suggest_events` reports the same work in pieces.
+
+    The deltas are PROGRESS, never a verdict. The tests pin that the joined pieces go through the
+    SAME parse-and-locate pass as the blocking call, that the two faces produce one report, and that
+    a broken stream is an ERROR rather than a short answer.
+    """
+
+    URL = "http://127.0.0.1:11434/v1/chat/completions"
+
+    def _streaming(self, lines: list[bytes], **kwargs):
+        seen: list[dict] = []
+
+        def stream_transport(payload, url, timeout, headers):  # noqa: ANN001, ARG001
+            seen.append(payload)
+            yield from lines
+
+        return suggest.LoopbackBackend(self.URL, "qwen", stream_transport=stream_transport, **kwargs), seen
+
+    def test_the_streamed_request_asks_for_a_stream_and_the_pieces_join(self) -> None:
+        backend, seen = self._streaming([sse('{"cand'), sse('idates": []}'), b"data: [DONE]\n"])
+        self.assertEqual("".join(backend.complete_stream("testo")), '{"candidates": []}')
+        self.assertTrue(seen[0]["stream"], "the blocking payload must not be sent")
+        self.assertEqual(seen[0]["messages"][1]["content"], "testo")
+
+    def test_noise_lines_are_ignored_and_a_reasoning_delta_is_used(self) -> None:
+        lines = [
+            b"\n",
+            b": keep-alive\n",
+            b"event: message\n",
+            b'data: {"choices": [{"delta": {"reasoning_content": "pen"}}]}\n',
+            b'data: {"choices": [{"delta": {}}]}\n',
+            b"data: [DONE]\n",
+        ]
+        backend, _ = self._streaming(lines)
+        self.assertEqual("".join(backend.complete_stream("x")), "pen")
+
+    def test_a_non_json_chunk_is_an_error_not_an_empty_piece(self) -> None:
+        """Swallowing it would drop part of the answer and report "the answer holds no JSON"."""
+        backend, _ = self._streaming([b"data: not json\n"])
+        with self.assertRaises(suggest.BackendError):
+            list(backend.complete_stream("x"))
+
+    def test_a_stream_that_breaks_mid_answer_is_an_error(self) -> None:
+        def stream_transport(payload, url, timeout, headers):  # noqa: ANN001, ARG001
+            yield sse('{"cand')
+            raise TimeoutError("the model stopped answering")
+
+        backend = suggest.LoopbackBackend(self.URL, "qwen", stream_transport=stream_transport)
+        with self.assertRaises(suggest.BackendError) as caught:
+            list(backend.complete_stream("x"))
+        self.assertIn("did not answer", str(caught.exception))
+
+    def test_an_error_object_inside_the_stream_is_an_error(self) -> None:
+        backend, _ = self._streaming([b'data: {"error": {"message": "no model loaded"}}\n'])
+        with self.assertRaises(suggest.BackendError) as caught:
+            list(backend.complete_stream("x"))
+        self.assertIn("no model loaded", str(caught.exception))
+
+    def test_a_backend_without_a_stream_still_emits_one_delta(self) -> None:
+        events = list(suggest.suggest_events("testo", SilentBackend('{"candidates": []}')))
+        self.assertEqual([event["event"] for event in events], ["start", "delta", "done"])
+        self.assertEqual(events[2]["report"]["candidates"], [])
+
+    def test_the_streamed_report_equals_the_blocking_report(self) -> None:
+        """One source of truth: the two faces of the feature must agree on the same document."""
+        text = "Il cliente Contoso, referente mario.rossi@contoso.it\n"
+        answer = '{"candidates": [{"value": "Contoso", "type": "AZIENDA", "reason": "cliente"}]}'
+        backend, _ = self._streaming([sse(answer[:20]), sse(answer[20:]), b"data: [DONE]\n"])
+        blocking = suggest.suggest(
+            text, suggest.LoopbackBackend(self.URL, "qwen", transport=lambda *a: completion(answer))
+        )
+        events = list(suggest.suggest_events(text, backend))
+        self.assertEqual(events[-1]["report"], blocking)
+        self.assertEqual(events[0]["detected"], blocking["detected"])
+        deltas = [event["text"] for event in events if event["event"] == "delta"]
+        self.assertEqual("".join(deltas), answer, "the deltas are the whole answer, in pieces")
+        self.assertEqual(len(deltas), 2, "in TWO pieces: a one-piece stream would pass by accident")
+
+    def test_a_hallucinated_value_is_still_dropped_when_it_arrives_in_pieces(self) -> None:
+        """A value the model invents is not in the document: the stream must not relax that."""
+        answer = '{"candidates": [{"value": "Nome Inventato", "type": "PERSONA"}]}'
+        backend, _ = self._streaming([sse(answer[:30]), sse(answer[30:])])
+        events = list(suggest.suggest_events("Il cliente Contoso.\n", backend))
+        self.assertEqual(events[-1]["report"]["candidates"], [])
+
+
 class HeadersTest(unittest.TestCase):
     """`--header` and `--api-key`: what a local server may require, refused when malformed."""
 
@@ -256,10 +348,11 @@ class ParsingTest(unittest.TestCase):
 class CliTest(unittest.TestCase):
     """End to end, against a real HTTP server on 127.0.0.1 — the path that would actually run."""
 
-    ANSWERS = [completion(json.dumps({"candidates": [
+    ANSWER_CONTENT = json.dumps({"candidates": [
         {"value": "Contoso", "type": "AZIENDA", "reason": "cliente"},
         {"value": "Mario Rossi", "type": "PERSONA", "reason": "referente"},
-    ]}))]
+    ]})
+    ANSWERS = [completion(ANSWER_CONTENT)]
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="anon-suggest-"))
@@ -275,13 +368,29 @@ class CliTest(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802 - the name http.server calls
                 length = int(self.headers.get("Content-Length", 0))
-                requests.append(json.loads(self.rfile.read(length) or b"{}"))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                requests.append(payload)
+                if payload.get("stream"):
+                    self._stream(CliTest.ANSWER_CONTENT)
+                    return
                 body = CliTest.ANSWERS[0].encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _stream(self, content: str) -> None:
+                """Three deltas and a terminator. No Content-Length: the body ends at the close."""
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for chunk in (content[:15], content[15:40], content[40:]):
+                    if chunk:
+                        self.wfile.write(sse(chunk))
+                        self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n")
+                self.wfile.flush()
 
             def log_message(self, *args) -> None:  # keep the test output clean
                 return
@@ -334,6 +443,16 @@ class CliTest(unittest.TestCase):
                                   "--max-chars", "5")
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
         self.assertIn("TRUNCATED", result.stdout, "the operator must see that the tail was not sent")
+
+    def test_streaming_shows_the_answer_while_it_arrives_and_the_report_is_unchanged(self) -> None:
+        """`--stream` moves the PROGRESS to stderr; stdout stays the report, and it is the same one."""
+        result = self.run_suggest(str(self.source), "--url", self.url, "--model", "fake",
+                                  "--stream", "--json")
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertEqual([item["value"] for item in report["candidates"]], ["Contoso", "Mario Rossi"])
+        self.assertIn("Contoso", result.stderr, "the model's text is shown while it arrives")
+        self.assertTrue(self.requests[0]["stream"], "the request asked for server-sent events")
 
     def test_an_empty_flag_is_an_error_not_a_silent_null_backend(self) -> None:
         for args in (("--url", "", "--model", "fake"), ("--url", self.url, "--model", "")):

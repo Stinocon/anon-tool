@@ -476,6 +476,16 @@ old reference can never point at a different item.
 | 23 | 41 | **The running container could drift from the code, silently.** CLOSED 2026-09-24: `/api/state` reports a content fingerprint of the code the image ships (the file set is `anon.code_fingerprint`'s), the header shows its short form, and `scripts/check-container-fresh.py` compares it with the repository — the `container-fresh` gate in `.pi/verify.json`, the `verify_command` of `DEC-0024`, `make check-container`, and the last step of `make up`. Found by a live report: the English translation was committed and pushed, the browser still showed Italian, and the unchanged version number made the stale container look current. The fingerprint is of CONTENT, not of the commit, so it answers "does this container serve the code I have?" whatever the commit order. | A green suite on a stale container is not a green result. | closed |
 | 24 | 42 | **The false NEGATIVE direction was never measured** — `fp-sweep.py` counted false positives only, so a value the engine stopped covering left no trace. CLOSED 2026-09-25: `tests/corpus.py` (labelled synthetic corpus, each document declares its own dictionary), `scripts/recall-sweep.py` / `make recall`, and `RecallCorpusTest` in `make test`. Baseline 28 declared values, recall 100%, 0 false positives. The pass found and fixed two real defects: a valid IBAN followed by a word was left in clear (the case-insensitive body swallowed ` entro`), and the README's alias example built an entity whose TYPE was the person's name, so the name was never redacted. | The one number that decides whether an anonymizer is safe. | closed |
 
+### Found while streaming the model's answer (2026-09-25)
+
+- `web/app.css` sets `font-family: var(--mono)` on `code`, `textarea`, `.highlight-view` and
+  `.highlight-view .ph-ev`, but `--mono` is **never declared** in `:root`. An undefined custom
+  property makes the declaration invalid at computed-value time, so those four elements quietly fall
+  back to the inherited UI font and the monospace intent never applied. Deliberately NOT fixed in the
+  streaming change: declaring the variable alters the look of four existing elements, which is a
+  design decision rather than a side effect of adding a panel — the new `.suggest-live` carries an
+  explicit monospace stack instead, so the new element is not affected.
+
 ### Hygiene note kept from this pass
 
 `docs/OPEN-ISSUES.md` itself used to be guard-blocked (it quoted an address and a name/literal pair),

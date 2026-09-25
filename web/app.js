@@ -21,6 +21,65 @@ async function request(path, options) {
   return payload;
 }
 
+/* Il modello risponde a pezzi e il server li manda come server-sent events: `start`, tanti
+   `delta`, poi `done`. I delta sono AVANZAMENTO, non un verdetto — il report arriva solo alla
+   fine, quando il server ha analizzato e localizzato l'intera risposta — quindi non possono
+   anticipare un valore che poi non verra' proposto. */
+function parseEventFrame(frame) {
+  const line = frame.split("\n").find((row) => row.startsWith("data:"));
+  if (!line) return null;
+  try {
+    return JSON.parse(line.slice(5).trim());
+  } catch {
+    return null;
+  }
+}
+
+async function readEventStream(body, onDelta) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let report = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split = buffer.indexOf("\n\n"); // un frame SSE finisce con una riga vuota
+    while (split !== -1) {
+      const event = parseEventFrame(buffer.slice(0, split));
+      buffer = buffer.slice(split + 2);
+      if (event && event.event === "delta" && typeof event.text === "string") onDelta(event.text);
+      else if (event && event.event === "done") report = event.report || null;
+      else if (event && event.event === "error") throw new Error(event.message || i18n.t("suggest.streamBroken"));
+      split = buffer.indexOf("\n\n");
+    }
+  }
+  return report;
+}
+
+/** Lo stesso report di `/api/suggest`, con i pezzi mostrati mentre arrivano. */
+async function suggestReport(payload, onDelta) {
+  const response = await api("/api/suggest-stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body || !response.body.getReader) {
+    // Un rifiuto PRIMA dello stream (nessun modello configurato, testo mancante) e' un errore
+    // normale con il suo JSON; un browser senza stream ricade sulla chiamata bloccante.
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || i18n.t("error.request", { status: response.status }));
+    return request("/api/suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+  const report = await readEventStream(response.body, onDelta);
+  if (!report) throw new Error(i18n.t("suggest.streamBroken"));
+  return report;
+}
+
 /* ---------------------------------------------------------------- helpers */
 function setStatus(element, message, kind = "") {
   element.textContent = message || "";
@@ -831,15 +890,14 @@ $("suggest-run").addEventListener("click", async () => {
   progressStart(i18n.t("suggest.reading"), PROGRESS_SUGGEST);
   progressWait(i18n.t("suggest.reading"), PROGRESS_SUGGEST);
   try {
-    const report = await request("/api/suggest", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        catalogs: selected(".catalog"),
-        patterns: selected(".pattern"),
-      }),
-    });
+    const live = $("suggest-live");
+    live.textContent = "";
+    live.hidden = false;
+    const report = await suggestReport(
+      { text, catalogs: selected(".catalog"), patterns: selected(".pattern") },
+      (piece) => { live.textContent += piece; },
+    );
+    live.hidden = true; // il risultato sono le proposte; la bozza grezza era avanzamento
     renderSuggestions(report.candidates || []);
     const truncated = report.truncated
       ? i18n.t("suggest.truncated", { sent: report.analyzed_chars, total: report.chars })
@@ -847,7 +905,8 @@ $("suggest-run").addEventListener("click", async () => {
     setStatus($("suggest-status"), i18n.t("suggest.found", { n: (report.candidates || []).length }) + truncated, "ok");
   } catch (error) {
     // Un backend che non risponde e' un ERRORE, mai una lista vuota: la lista vuota si legge come
-    // "niente da segnalare", che e' un'altra cosa.
+    // "niente da segnalare", che e' un'altra cosa. La bozza resta visibile: e' la prova di cosa
+    // il modello ha detto davvero.
     renderSuggestions([]);
     setStatus($("suggest-status"), String(error.message || error), "error");
   } finally {
