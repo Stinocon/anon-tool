@@ -244,6 +244,19 @@ button[disabled] { opacity: 0.45; cursor: not-allowed; }
 .mapping .row { display: flex; gap: var(--space-3); padding: 2px 0; align-items: baseline; }
 .mapping .ph { color: var(--accent); min-width: 150px; flex: none; }
 
+.highlight-view {
+  margin-top: var(--space-3); max-height: 320px; overflow: auto;
+  padding: var(--space-3);
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: var(--fs-sm); line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word;
+}
+.highlight-view .ph-ev {
+  display: inline-block; padding: 0 var(--space-2); margin: 0 1px;
+  border-radius: 999px; border: 1px solid var(--accent-bg); background: var(--accent-bg);
+  color: var(--accent); font-family: var(--mono); font-size: var(--fs-xs); font-weight: 600;
+}
+
 .foot { padding: var(--space-5); text-align: center; max-width: var(--measure); margin: 0 auto; }
 
 /* Su schermi molto stretti: niente scroll orizzontale, i chip vanno a capo. */

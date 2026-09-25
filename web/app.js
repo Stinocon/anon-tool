@@ -153,6 +153,37 @@ function chips(container, counts) {
   }
 }
 
+// A placeholder exactly as the engine writes it. Kept identical to anon.py's PLACEHOLDER_RE in
+// SHAPE (the tag may widen to 8 hex when 6 is taken), never to a number in one place.
+const PLACEHOLDER_RE = /\[([A-Z][A-Z0-9_]*)-(\d+)-([0-9a-f]{6,8})\]/g;
+
+/* Where the redaction actually landed, without a single real value: every placeholder becomes a
+   pill labelled with its TYPE, the rest is plain text. Built with DOM nodes and `textContent`
+   ONLY — the redacted text comes from the operator's document, and the file's rule is that text we
+   did not write never goes through `innerHTML`. */
+function renderHighlight(text) {
+  const box = $("highlight-view");
+  if (!box) return;
+  box.innerHTML = "";
+  let last = 0;
+  const appendText = (chunk) => {
+    const span = document.createElement("span");
+    span.textContent = chunk;
+    box.append(span);
+  };
+  for (const match of String(text).matchAll(PLACEHOLDER_RE)) {
+    if (match.index > last) appendText(text.slice(last, match.index));
+    const pill = document.createElement("span");
+    pill.className = "ph-ev";
+    pill.dataset.type = match[1];
+    pill.textContent = match[1];
+    pill.title = match[0];
+    box.append(pill);
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) appendText(text.slice(last));
+}
+
 function saveBlob(name, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -446,6 +477,7 @@ $("run-anon").addEventListener("click", async () => {
     $("anon-result-title").textContent = i18n.t("result.title", { name: pending.containerName || baseName });
     chips($("anon-counts"), result.counts);
     $("redacted").value = result.redacted;
+    renderHighlight(result.redacted);
     // The document itself, when the upload was one we can rewrite. One redaction produced both
     // artifacts and one map, so they can never disagree; the button is absent when there is
     // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).

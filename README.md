@@ -153,6 +153,11 @@ the tag of the map that produced them (`[AZIENDA-1-af6c8c]`), and that map is wh
 real values — it stays in `~/.anon/maps/`, never in the browser. The header carries the version,
 the short build fingerprint and the language selector.
 
+Under the result, **Dove è intervenuto** renders the redacted text with one coloured pill per
+placeholder, labelled with its type: what left the document is scannable at a glance, and no real
+value is ever written to the page (the view is built with `textContent`; the values stay behind
+*Che cosa è diventato cosa*).
+
 Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
 in place (`verbale.redacted.docx` — same type, same layout, headers, footers and properties
 rewritten where they live), and the Markdown the model reads, **derived from the already redacted

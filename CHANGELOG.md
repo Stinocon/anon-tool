@@ -12,6 +12,9 @@ enforces that they agree.
 
 ### Added
 
+- **Dove è intervenuto** in the result panel: the redacted text rendered with one coloured pill per
+  placeholder, labelled with its type. Built with `textContent` only (the text is the operator's
+  document), so no real value ever reaches the DOM and the map stays behind the warned reveal.
 - Constrained decoding for the suggestion seam: `--suggest-constrained` (server), `--constrained`
   (`suggest.py`) put a JSON Schema in the request so a llama.cpp/vLLM backend constrains the answer
   to `{"candidates": [...]}`. Off by default; the shipped sidecar turns it on. The failure class

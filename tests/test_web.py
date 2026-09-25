@@ -85,6 +85,17 @@ class StaticUiTest(unittest.TestCase):
         self.assertIn("REVEAL_TTL_MS", self.JS)
         self.assertIn('$("hide-map").addEventListener', self.JS)
 
+    def test_the_highlight_view_never_writes_document_text_as_html(self) -> None:
+        """The redacted text comes from the operator's document, so the view is built with
+        `textContent` only — the rule this file already states for anything we did not write — and a
+        pill carries the TYPE, never a real value (which the redacted text does not contain)."""
+        self.assertIn('id="highlight-view"', self.HTML)
+        self.assertIn("renderHighlight(result.redacted)", self.JS)
+        self.assertIn("span.textContent = chunk", self.JS)
+        self.assertIn("pill.textContent = match[1]", self.JS)
+        self.assertIn("pill.dataset.type = match[1]", self.JS)
+        self.assertNotIn('$("highlight-view").innerHTML', self.JS)
+
     def _element_html(self) -> dict:
         """id -> inner HTML for every element, via a parser (nested tags break a regex)."""
         from html.parser import HTMLParser

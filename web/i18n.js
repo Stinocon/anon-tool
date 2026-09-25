@@ -51,6 +51,10 @@ const EN = {
   "#download-document": { inner: "Download the redacted document" },
   "#download-redacted": { inner: "Download the text (.md)" },
   "#mapping-summary": { inner: "What became what" },
+  "#highlight-summary": { inner: "Where it changed" },
+  "#highlight-hint": {
+    inner: "Every replaced value is a pill labelled with its type; no real value is shown here.",
+  },
   "#mapping-warning": {
     inner:
       'This is the <strong>map</strong>: it shows the real values. Do not paste it into a chat with a model.',
