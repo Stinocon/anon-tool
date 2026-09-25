@@ -22,9 +22,10 @@ services:
     environment:
       ANON_HOME: /data
       ANON_CONVERTER: /app/convert.py
-      # No local-model flags here on purpose: inside the container 127.0.0.1 is the container, and a
-      # non-loopback endpoint for a model on the host is refused (the seam accepts loopback only).
-      # For the suggestion panel, run the server natively — see the README.
+      # No local-model flags here on purpose: this file starts the UI alone. The suggestion model is
+      # attached by docker-compose.model.yml (`make model` / `make up MODEL=1`), which shares this
+      # container's network namespace so 127.0.0.1:8080 is loopback for both. A model on the HOST is
+      # refused — not loopback — so point the native server at it if that is what you want.
       # Upload cap for the UI: 160 MB by default, raised here on purpose for a genuinely huge
       # document. The conversion stays bounded by ANON_CONVERT_TIMEOUT / ANON_CONVERT_MAX_BYTES.
       ANON_MAX_UPLOAD_BYTES: ${ANON_MAX_UPLOAD_BYTES:-167772160}
