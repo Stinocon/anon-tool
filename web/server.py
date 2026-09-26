@@ -145,6 +145,10 @@ def _resolve(catalogs: str | None, patterns: str | None):
 # configuration. `suggest.py` refuses anything that is not loopback at construction time, so the
 # address cannot leave this machine even if a remote URL is passed to the flag.
 SUGGEST_BACKEND: suggest_engine.Backend | None = None
+# The chunking configuration the seam was started with. Kept next to the backend so `/api/state`
+# states the same numbers the requests use, instead of the page keeping a second copy.
+SUGGEST_CHUNK_CHARS = 0
+SUGGEST_CHUNK_OVERLAP = suggest_engine.DEFAULT_CHUNK_OVERLAP
 
 
 def build_suggest_backend(args: argparse.Namespace) -> suggest_engine.Backend | None:
@@ -153,6 +157,11 @@ def build_suggest_backend(args: argparse.Namespace) -> suggest_engine.Backend | 
     Built once at STARTUP, not per request: a bad endpoint (a remote host, a typo in the scheme)
     must fail at launch with a message, not at the first click.
     """
+    # A chunk pair that cannot advance is a launch error too: it would otherwise loop on a request.
+    suggest_engine.validate_chunking(
+        getattr(args, "suggest_chunk_chars", 0),
+        getattr(args, "suggest_chunk_overlap", suggest_engine.DEFAULT_CHUNK_OVERLAP),
+    )
     if not args.suggest_url and not args.suggest_model:
         return None
     if not args.suggest_url or not args.suggest_model:
@@ -662,6 +671,8 @@ class Handler(BaseHTTPRequestHandler):
             # The model's own bounds, stated by the server rather than copied into the page: the
             # window is the module constant, the timeout belongs to the configured backend.
             "suggest_max_chars": suggest_engine.DEFAULT_MAX_CHARS,
+            "suggest_chunk_chars": SUGGEST_CHUNK_CHARS,
+            "suggest_chunk_overlap": SUGGEST_CHUNK_OVERLAP,
             "suggest_timeout": getattr(SUGGEST_BACKEND, "timeout", suggest_engine.DEFAULT_TIMEOUT),
             "suggest_constrained": bool(getattr(SUGGEST_BACKEND, "constrained", False)),
             "maps_dir": str(anon.DEFAULT_MAPS),
@@ -694,7 +705,10 @@ class Handler(BaseHTTPRequestHandler):
     def _suggest(self) -> None:
         """Proposals from the local model. Writes NOTHING: the operator approves them one by one."""
         text, entities, families = self._suggest_input()
-        report = suggest_engine.suggest(text, SUGGEST_BACKEND, entities=entities, families=families)
+        report = suggest_engine.suggest(
+            text, SUGGEST_BACKEND, entities=entities, families=families,
+            chunk_chars=SUGGEST_CHUNK_CHARS, chunk_overlap=SUGGEST_CHUNK_OVERLAP,
+        )
         self._json({"schema": anon.SCHEMA, "mode": "suggest", **report})
 
     def _sse(self, event: dict) -> None:
@@ -728,7 +742,8 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         try:
             for event in suggest_engine.suggest_events(
-                text, SUGGEST_BACKEND, entities=entities, families=families
+                text, SUGGEST_BACKEND, entities=entities, families=families,
+                chunk_chars=SUGGEST_CHUNK_CHARS, chunk_overlap=SUGGEST_CHUNK_OVERLAP,
             ):
                 self._sse(event)
         except suggest_engine.BackendError as exc:
@@ -991,6 +1006,20 @@ def build_parser() -> argparse.ArgumentParser:
         "endpoint that rejects the field is not turned into a 400 on every call",
     )
     parser.add_argument(
+        "--suggest-chunk-chars",
+        type=int,
+        default=0,
+        help="cover a document longer than the window with overlapping chunks of this size instead "
+        "of truncating it (0 = off); one model call per chunk, merged and deduplicated by value",
+    )
+    parser.add_argument(
+        "--suggest-chunk-overlap",
+        type=int,
+        default=suggest_engine.DEFAULT_CHUNK_OVERLAP,
+        help=f"characters of overlap between chunks (default {suggest_engine.DEFAULT_CHUNK_OVERLAP}); "
+        "must be smaller than --suggest-chunk-chars",
+    )
+    parser.add_argument(
         "--allow-lan",
         action="store_true",
         help="permit a non-loopback bind — the UI has NO authentication, so this exposes your "
@@ -1000,13 +1029,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global SUGGEST_BACKEND
+    global SUGGEST_BACKEND, SUGGEST_CHUNK_CHARS, SUGGEST_CHUNK_OVERLAP
     args = build_parser().parse_args(argv)
     try:
         SUGGEST_BACKEND = build_suggest_backend(args)
     except ValueError as exc:
         print(f"server: {exc}", file=sys.stderr)
         return 2
+    SUGGEST_CHUNK_CHARS = getattr(args, "suggest_chunk_chars", 0)
+    SUGGEST_CHUNK_OVERLAP = getattr(args, "suggest_chunk_overlap", suggest_engine.DEFAULT_CHUNK_OVERLAP)
     loopback = args.host in ("127.0.0.1", "localhost", "::1")
     if not loopback and not args.allow_lan:
         print(

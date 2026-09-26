@@ -30,6 +30,13 @@ enforces that they agree.
 
 ### Added
 
+- **A long document can be covered instead of truncated, opt-in.** `suggest.py --chunk-chars`
+  (and the UI server's `--suggest-chunk-chars`) splits the text into overlapping windows, asks the
+  model once per window and merges the proposals by value, so a value seen by two windows is one
+  candidate and a value across a cut is still whole in one of them. The report and the panel state
+  the window count, and a chunk pair that cannot advance is refused at startup. Off by default: it
+  costs one model call per window.
+
 - **Several dropped files run as a queue.** More than one file opens a card per file, each with its
   own status and its own artifacts — the redacted document, the Markdown and the report — processed
   one after another by the page. The server still answers one request at a time, and no file can

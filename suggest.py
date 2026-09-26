@@ -55,6 +55,11 @@ DEFAULT_MAX_CHARS = 20_000
 # A reasoning model needs room to think before it answers; too small a value spends the budget on
 # `reasoning_content` and returns an empty `content`.
 DEFAULT_MAX_TOKENS = 1024
+# Chunking (opt-in): a document longer than the window can be covered by OVERLAPPING windows
+# instead of being cut, so its tail is not silently lost. The overlap has to exceed the longest
+# value that may straddle a cut: anything shorter appears WHOLE in one of the two neighbouring
+# windows, and a half token — a prefix of a real value — is never shown to the model.
+DEFAULT_CHUNK_OVERLAP = 500
 MIN_VALUE_LENGTH = 3
 MAX_OCCURRENCES = 20
 
@@ -492,32 +497,110 @@ def parse_candidates(content: str, text: str, detected: Iterable[tuple[int, int,
 
 
 def _frame(
-    text: str, analyzed: str, detected: list[tuple[int, int, str]], backend
+    text: str, windows: list[tuple[int, int]], detected: list[tuple[int, int, str]], backend,
+    chunk_overlap: int,
 ) -> dict[str, object]:
     """What the model was given and what the engine already found — the report's own header.
 
-    One function so the blocking and the streamed run cannot describe the same call differently.
+    One function so the blocking, streamed and chunked run cannot describe the same call
+    differently. `analyzed_chars` is COVERAGE — how far into the document the model was taken — not
+    the sum of the windows: with overlap the same characters are sent more than once, and summing
+    them would report a document longer than the one that exists.
     """
+    covered = windows[-1][1] if windows else 0
     return {
         "backend": backend.name,
         "chars": len(text),
-        "analyzed_chars": len(analyzed),
-        "truncated": len(analyzed) < len(text),
+        "analyzed_chars": covered,
+        "truncated": covered < len(text),
+        "chunks": len(windows),
+        "chunk_overlap": chunk_overlap,
         "detected": [
             {"start": start, "end": end, "type": ptype} for start, end, ptype in detected
         ],
     }
 
 
-def _report(
-    *, text: str, answer: str, detected: list[tuple[int, int, str]], analyzed: str, backend, limit: int
-) -> dict[str, object]:
-    """The one place the report is built: the streamed run must produce exactly the report the
-    blocking run produces, or the two faces of one feature would disagree about the same document.
+def _merge(proposal_lists: list[list[Proposal]], limit: int) -> list[Proposal]:
+    """One proposal per VALUE, across the windows.
+
+    The same value seen in two overlapping windows is one candidate, not two: the spans are unioned
+    so its `count` is the real number of occurrences, and `overlaps_detected` is the OR. Without
+    this, the overlap that keeps a value whole at a cut would also duplicate every value near it.
     """
-    proposals = parse_candidates(answer, text, detected)[:limit]
+    merged: dict[str, Proposal] = {}
+    for proposals in proposal_lists:
+        for proposal in proposals:
+            current = merged.get(proposal.value)
+            if current is None:
+                merged[proposal.value] = proposal
+                continue
+            current.spans = sorted({*current.spans, *proposal.spans})
+            current.overlaps_detected = current.overlaps_detected or proposal.overlaps_detected
+    return sorted(merged.values(), key=lambda proposal: proposal.spans[0][0])[:limit]
+
+
+def validate_chunking(chunk_chars: int, chunk_overlap: int) -> None:
+    """A window that does not ADVANCE is not a window: a bad pair is refused, never looped on."""
+    if chunk_chars <= 0:
+        return
+    if chunk_overlap < 0:
+        raise ValueError("--chunk-overlap cannot be negative")
+    if chunk_overlap >= chunk_chars:
+        raise ValueError(
+            f"--chunk-overlap ({chunk_overlap}) must be smaller than --chunk-chars ({chunk_chars})"
+        )
+
+
+def _windows(
+    text: str, *, max_chars: int, chunk_chars: int, chunk_overlap: int
+) -> list[tuple[int, int]]:
+    """The character ranges the model is asked about, in order.
+
+    With `chunk_chars <= 0` there is ONE window — the first `max_chars` characters — and the tail is
+    DECLARED truncated (the historical behaviour). With chunking on, consecutive windows OVERLAP by
+    at least `chunk_overlap`: every position sits in at least one window, and any value no longer
+    than the overlap is contained WHOLE in one of them, so a value across a cut is still seen and
+    located. That guarantee is what the arithmetic has to protect: a window never STARTS after
+    `previous_end - overlap` (that would eat the overlap and lose a straddling value), and moving the
+    start BACK to a word boundary only adds overlap. The end is nudged forward to the next
+    whitespace (within the overlap's reach) so a token is not cut in half — half a token is a
+    prefix of a real value, and the engine would propose it as if it were the value.
+    """
+    length = len(text)
+    if chunk_chars <= 0:
+        return [(0, min(max_chars, length))]
+    validate_chunking(chunk_chars, chunk_overlap)
+    if length <= chunk_chars:
+        return [(0, length)]
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < length:
+        end = min(start + chunk_chars, length)
+        reach = min(end + chunk_overlap, length)
+        while end < reach and not text[end].isspace():
+            end += 1
+        spans.append((start, end))
+        if end >= length:
+            break
+        nxt = end - chunk_overlap  # the EXACT overlap: never take more than this back off
+        while nxt > start and not text[nxt - 1].isspace():
+            nxt -= 1  # a word boundary, reached by moving BACK: it only ADDS overlap
+        # The whole window was one unbroken token, so no boundary was reachable: keep the exact
+        # overlap, which still advances (`chunk_overlap < chunk_chars`) and still covers.
+        start = nxt if nxt > start else end - chunk_overlap
+    return spans
+
+
+def _report(
+    *, text: str, detected: list[tuple[int, int, str]], windows: list[tuple[int, int]],
+    proposals: list[Proposal], backend, chunk_overlap: int,
+) -> dict[str, object]:
+    """The one place the report is built: the blocking, streamed and chunked faces of one feature
+    must produce exactly the same report for the same document.
+    """
     return {
-        **_frame(text, analyzed, detected, backend),
+        **_frame(text, windows, detected, backend, chunk_overlap),
         "candidates": [proposal.to_json() for proposal in proposals],
     }
 
@@ -529,22 +612,30 @@ def suggest(
     entities: list[anon.Entity] | None = None,
     families: set[str] | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
+    chunk_chars: int = 0,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     limit: int = 100,
 ) -> dict[str, object]:
     """What the model proposes for this text, plus what the ENGINE already found for comparison.
 
     The deterministic pass is included on purpose: a proposal that overlaps it is noise, and showing
     both is what makes the division of labour visible — the engine detects, the model suggests, the
-    human approves.
+    human approves. With `chunk_chars` the document is covered by overlapping windows and the
+    answers are merged by value; without it only the first `max_chars` are sent, and the tail is
+    declared in the report as `truncated`.
     """
     entities = entities or []
     # The same pattern families the operator selected: a deselected rule must not keep marking a
     # proposal as "already detected", or the report would describe a run that did not happen.
     detected = anon.detect(text, entities, families=families)
-    analyzed = text[:max_chars]
-    answer = backend.complete(analyzed)
+    windows = _windows(text, max_chars=max_chars, chunk_chars=chunk_chars, chunk_overlap=chunk_overlap)
+    proposal_lists = [
+        parse_candidates(backend.complete(text[start:end]), text, detected) for start, end in windows
+    ]
     return _report(
-        text=text, answer=answer, detected=detected, analyzed=analyzed, backend=backend, limit=limit
+        text=text, detected=detected, windows=windows,
+        proposals=_merge(proposal_lists, limit), backend=backend,
+        chunk_overlap=chunk_overlap if len(windows) > 1 else 0,
     )
 
 
@@ -555,34 +646,44 @@ def suggest_events(
     entities: list[anon.Entity] | None = None,
     families: set[str] | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
+    chunk_chars: int = 0,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     limit: int = 100,
 ) -> Iterator[dict[str, object]]:
     """The same work as `suggest()`, reported while it happens: `start`, then `delta`*, then `done`.
 
     The deltas are PROGRESS, not a verdict: nothing is proposed until the joined answer has been
     parsed and every value located in the document, so a stream cannot turn half a value into a
-    redaction. The `done` event carries the same report `suggest()` returns, and a backend without a
-    streaming transport still emits one delta — the client reads one event sequence either way.
+    redaction. With chunking there is one answer per window and the deltas keep arriving across the
+    whole document; the `done` report is the merged one, exactly what `suggest()` returns. A backend
+    without a streaming transport still emits one delta per window — the client reads one event
+    sequence either way.
     """
     entities = entities or []
     detected = anon.detect(text, entities, families=families)
-    analyzed = text[:max_chars]
-    yield {"event": "start", **_frame(text, analyzed, detected, backend)}
+    windows = _windows(text, max_chars=max_chars, chunk_chars=chunk_chars, chunk_overlap=chunk_overlap)
+    overlap = chunk_overlap if len(windows) > 1 else 0
+    yield {"event": "start", **_frame(text, windows, detected, backend, overlap)}
     stream = getattr(backend, "complete_stream", None)
-    if stream is None:
-        answer = backend.complete(analyzed)
-        if answer:
-            yield {"event": "delta", "text": answer}
-    else:
-        pieces: list[str] = []
-        for piece in stream(analyzed):
-            pieces.append(piece)
-            yield {"event": "delta", "text": piece}
-        answer = "".join(pieces)
+    proposal_lists: list[list[Proposal]] = []
+    for start, end in windows:
+        window_text = text[start:end]
+        if stream is None:
+            answer = backend.complete(window_text)
+            if answer:
+                yield {"event": "delta", "text": answer}
+        else:
+            pieces: list[str] = []
+            for piece in stream(window_text):
+                pieces.append(piece)
+                yield {"event": "delta", "text": piece}
+            answer = "".join(pieces)
+        proposal_lists.append(parse_candidates(answer, text, detected))
     yield {
         "event": "done",
         "report": _report(
-            text=text, answer=answer, detected=detected, analyzed=analyzed, backend=backend, limit=limit
+            text=text, detected=detected, windows=windows,
+            proposals=_merge(proposal_lists, limit), backend=backend, chunk_overlap=overlap,
         ),
     }
 
@@ -642,6 +743,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help=f"seconds (default {DEFAULT_TIMEOUT:g})")
     parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                         help=f"how much of the document to send (default {DEFAULT_MAX_CHARS}); always declared")
+    parser.add_argument(
+        "--chunk-chars", type=int, default=0,
+        help="cover a document longer than --max-chars with OVERLAPPING windows of this size instead "
+             "of truncating it (0 = off: the historical single window); one model call per window, "
+             "merged and deduplicated by value",
+    )
+    parser.add_argument(
+        "--chunk-overlap", type=int, default=DEFAULT_CHUNK_OVERLAP,
+        help=f"characters of overlap between windows (default {DEFAULT_CHUNK_OVERLAP}); must be "
+             "smaller than --chunk-chars, and longer than any value that may straddle a cut",
+    )
     parser.add_argument("--limit", type=int, default=100, help="how many candidates to report (default 100)")
     parser.add_argument(
         "--constrained", action="store_true",
@@ -680,6 +792,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         entities = anon.resolve_entities(args)
         families = anon.resolve_families(args)
+        validate_chunking(args.chunk_chars, args.chunk_overlap)
     except (ValueError, OSError) as exc:
         print(f"suggest: {exc}", file=sys.stderr)
         return 2
@@ -691,7 +804,8 @@ def main(argv: list[str] | None = None) -> int:
             # a pipeline can read it while a human watches the model answer.
             for event in suggest_events(
                 text, backend, entities=entities, families=families,
-                max_chars=args.max_chars, limit=args.limit,
+                max_chars=args.max_chars, chunk_chars=args.chunk_chars,
+                chunk_overlap=args.chunk_overlap, limit=args.limit,
             ):
                 if event["event"] == "delta":
                     print(event["text"], end="", file=sys.stderr, flush=True)
@@ -702,7 +816,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             report = suggest(
                 text, backend, entities=entities, families=families,
-                max_chars=args.max_chars, limit=args.limit,
+                max_chars=args.max_chars, chunk_chars=args.chunk_chars,
+                chunk_overlap=args.chunk_overlap, limit=args.limit,
             )
     except BackendError as exc:
         print(f"suggest: {exc}", file=sys.stderr)
@@ -712,7 +827,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps({"schema": "anon/1", "mode": "suggest", "file": str(source), **report}, indent=2))
     else:
-        print(f"suggest: backend {report['backend']}, {report['analyzed_chars']} of {report['chars']} chars"
+        chunks = int(report.get("chunks", 1) or 1)
+        in_chunks = f" in {chunks} chunks" if chunks > 1 else ""
+        print(f"suggest: backend {report['backend']}, {report['analyzed_chars']} of {report['chars']} chars{in_chunks}"
               + (" (TRUNCATED — the tail was not sent)" if report["truncated"] else ""))
         print(f"suggest: the engine already finds {len(report['detected'])} span(s) here")
         proposals = report["candidates"]

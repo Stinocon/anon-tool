@@ -345,6 +345,129 @@ class ParsingTest(unittest.TestCase):
         self.assertEqual(len(backend.prompts[0]), 1000)
 
 
+class CoveringBackend:
+    """A stand-in for the model that proposes the values it can see WHOLE in the prompt it got.
+
+    It makes the window boundaries observable: a value cut in half by a window is simply not
+    proposed by that window, exactly as a model would not be able to propose it.
+    """
+
+    name = "covering"
+
+    def __init__(self, values: list[str]) -> None:
+        self.values = values
+        self.prompts: list[str] = []
+
+    def complete(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return json.dumps({"candidates": [{"value": v} for v in self.values if v in prompt]})
+
+
+class ChunkTest(unittest.TestCase):
+    """Chunking is OPT-IN: without it the tail is declared, with it every window is covered once."""
+
+    def test_without_chunking_the_tail_is_still_declared(self) -> None:
+        backend = SilentBackend('{"candidates": []}')
+        report = suggest.suggest("x" * 5000, backend, max_chars=1000)
+        self.assertEqual(report["chunks"], 1)
+        self.assertTrue(report["truncated"])
+        self.assertEqual(report["chunk_overlap"], 0)
+        self.assertEqual(len(backend.prompts[0]), 1000)
+
+    def test_a_long_document_is_covered_by_overlapping_windows(self) -> None:
+        text = "x" * 5000
+        backend = SilentBackend('{"candidates": []}')
+        report = suggest.suggest(text, backend, max_chars=1000, chunk_chars=1000, chunk_overlap=200)
+        self.assertEqual(report["chunks"], len(backend.prompts))
+        self.assertFalse(report["truncated"], "the tail is covered, not dropped")
+        self.assertEqual(report["analyzed_chars"], 5000)
+        self.assertEqual(report["chunk_overlap"], 200)
+        covered: set[int] = set()
+        for start, end in suggest._windows(text, max_chars=1000, chunk_chars=1000, chunk_overlap=200):
+            covered.update(range(start, end))
+        self.assertEqual(len(covered), len(text), "every position is in at least one window")
+
+    def test_a_value_straddling_a_cut_is_seen_whole_in_the_next_window(self) -> None:
+        value = "mario.rossi@contoso.it"
+        text = "a" * 990 + value + "b" * 2000  # the value crosses the first cut at 1000
+        backend = CoveringBackend([value])
+        report = suggest.suggest(text, backend, chunk_chars=1000, chunk_overlap=200)
+        self.assertEqual([item["value"] for item in report["candidates"]], [value])
+        self.assertEqual(report["candidates"][0]["count"], 1)
+        self.assertTrue(any(value in prompt for prompt in backend.prompts))
+
+    def test_a_value_in_the_overlap_is_one_candidate_not_two(self) -> None:
+        value = "mario.rossi@contoso.it"
+        # window 0 = [0, 1000); window 1 starts at 800: a value at 850 is seen by BOTH
+        text = "a" * 850 + value + "b" * 2000
+        backend = CoveringBackend([value])
+        report = suggest.suggest(text, backend, chunk_chars=1000, chunk_overlap=200)
+        self.assertEqual([item["value"] for item in report["candidates"]], [value])
+        self.assertEqual(report["candidates"][0]["count"], 1, "one occurrence, one candidate")
+
+    def test_the_streamed_chunked_report_equals_the_blocking_one(self) -> None:
+        text = "Contoso " + "x" * 3000
+        backend = SilentBackend(json.dumps({"candidates": [{"value": "Contoso"}]}))
+        blocking = suggest.suggest(text, backend, chunk_chars=1000, chunk_overlap=200)
+        events = list(suggest.suggest_events(text, backend, chunk_chars=1000, chunk_overlap=200))
+        self.assertEqual(events[-1]["report"], blocking)
+        self.assertEqual(events[0]["chunks"], blocking["chunks"])
+
+    def test_an_overlap_that_does_not_advance_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            suggest._windows("x" * 100, max_chars=10, chunk_chars=100, chunk_overlap=100)
+        with self.assertRaises(ValueError):
+            suggest.validate_chunking(100, -1)
+        suggest.validate_chunking(0, 5000)  # chunking off: the overlap is not consulted
+
+    def test_boundaries_land_on_whitespace_in_normal_text(self) -> None:
+        text = ("parola " * 400).strip()
+        windows = suggest._windows(text, max_chars=100, chunk_chars=100, chunk_overlap=30)
+        self.assertGreater(len(windows), 1)
+        for start, end in windows:
+            if start:
+                self.assertTrue(text[start - 1].isspace(), text[start - 20:start + 5])
+            if end < len(text):
+                self.assertTrue(text[end].isspace(), text[end - 5:end + 20])
+
+    def test_a_multi_word_value_on_a_cut_is_whole_in_some_window(self) -> None:
+        """The regression a review found: moving the next window's START forward to a word boundary
+        could eat the overlap and leave a multi-word value whole in NO window, so only its fragment
+        was proposed. The start may only move BACK."""
+        value = "Mario De Rossi"
+        text = "x" * 9992 + value + " " + "y" * 3000  # a space inside the value sits at the cut
+        backend = CoveringBackend([value])
+        report = suggest.suggest(text, backend, chunk_chars=10_000, chunk_overlap=500)
+        self.assertEqual([item["value"] for item in report["candidates"]], [value])
+        self.assertTrue(any(value in prompt for prompt in backend.prompts), "seen whole somewhere")
+
+    def test_every_window_keeps_the_full_overlap_and_reaches_the_end(self) -> None:
+        """The structural conditions that ARE the coverage guarantee, over random texts.
+
+        Contiguity plus `next_start <= end - overlap` plus `first_start = 0` plus `last_end = len`
+        is exactly the hypothesis of the proof that any run no longer than the overlap is whole in
+        some window — checked directly, so a boundary change that breaks it fails here.
+        """
+        import random
+
+        rng = random.Random(20260925)
+        for _ in range(200):
+            text = " ".join("w" * rng.randint(1, 12) for _ in range(rng.randint(4, 80)))
+            chunk = rng.randint(20, 80)
+            overlap = rng.randint(0, chunk - 1)
+            windows = suggest._windows(
+                text, max_chars=chunk, chunk_chars=chunk, chunk_overlap=overlap
+            )
+            self.assertEqual(windows[0][0], 0)
+            self.assertEqual(windows[-1][1], len(text))
+            for (start, end), (next_start, _next_end) in zip(windows, windows[1:]):
+                self.assertGreater(next_start, start, f"no progress: {windows}")
+                self.assertLessEqual(next_start, end, f"gap: {windows}")
+                self.assertLessEqual(
+                    next_start, end - overlap, f"overlap eaten: chunk={chunk} overlap={overlap} {windows}"
+                )
+
+
 class CliTest(unittest.TestCase):
     """End to end, against a real HTTP server on 127.0.0.1 — the path that would actually run."""
 
@@ -443,6 +566,27 @@ class CliTest(unittest.TestCase):
                                   "--max-chars", "5")
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
         self.assertIn("TRUNCATED", result.stdout, "the operator must see that the tail was not sent")
+
+    def test_chunking_covers_the_whole_document_with_one_call_per_window(self) -> None:
+        long_source = self.tmp / "lungo.txt"
+        long_source.write_text("Contoso " + "x" * 3000, encoding="utf-8")
+        result = self.run_suggest(str(long_source), "--url", self.url, "--model", "fake",
+                                  "--max-chars", "1000", "--chunk-chars", "1000",
+                                  "--chunk-overlap", "200", "--json")
+        self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
+        report = json.loads(result.stdout)
+        self.assertGreater(report["chunks"], 1)
+        self.assertFalse(report["truncated"])
+        self.assertEqual(report["analyzed_chars"], len(long_source.read_text(encoding="utf-8")))
+        self.assertEqual(len(self.requests), report["chunks"], "one model call per window")
+
+    def test_chunking_says_the_window_count_to_a_human(self) -> None:
+        long_source = self.tmp / "lungo.txt"
+        long_source.write_text("Contoso " + "x" * 3000, encoding="utf-8")
+        result = self.run_suggest(str(long_source), "--url", self.url, "--model", "fake",
+                                  "--chunk-chars", "1000", "--chunk-overlap", "200")
+        self.assertIn("chunks", result.stdout, result.stdout)
+        self.assertNotIn("TRUNCATED", result.stdout)
 
     def test_streaming_shows_the_answer_while_it_arrives_and_the_report_is_unchanged(self) -> None:
         """`--stream` moves the PROGRESS to stderr; stdout stays the report, and it is the same one."""

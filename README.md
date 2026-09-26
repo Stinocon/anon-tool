@@ -310,6 +310,18 @@ UI server) — a long text does not hang, it answers with an error. The panel sh
 while it waits, so the call reads as working rather than frozen. To read more at once, split the
 document, raise the timeout, or point the seam at a faster model.
 
+**A document longer than the window can be COVERED, not cut — opt-in.** With `--chunk-chars` on
+`suggest.py` (or `--suggest-chunk-chars` on the UI server) the text is split into overlapping
+windows of that size, one model call each, and the proposals are merged **by value**: the same
+value seen by two windows is one candidate, its occurrences counted once. The overlap
+(`--chunk-overlap`, default 500) is what keeps a value that straddles a cut whole in at least one
+of the two windows, and the boundaries are nudged to whitespace so a token is never cut in half —
+half an email is a prefix the engine would propose as if it were the value. The report and the
+panel then say the document was covered in *N* chunks instead of `TRUNCATED`. It is off by default:
+it multiplies the calls — and the waiting — by the number of windows, so the single window stays the
+cheap default, and a pair that cannot advance (`--chunk-overlap` not smaller than `--chunk-chars`)
+is refused at startup rather than looped on.
+
 **The answer arrives while it is being written.** The panel reads the model's reply as server-sent
 events (`/api/suggest-stream`) and shows the text as it comes, instead of a bar that sits still for
 twenty seconds; `suggest.py --stream` does the same on a terminal, printing the deltas on stderr and

@@ -446,6 +446,46 @@ class SuggestTest(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
+    def test_the_state_states_the_chunking_configuration(self) -> None:
+        """Chunking is OPT-IN: with no flag the seam still truncates, and the state says so."""
+        status, body = self.call("/api/state")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["suggest_chunk_chars"], 0)
+        self.assertEqual(body["suggest_chunk_overlap"], 500)
+
+    def test_chunking_covers_a_long_document_from_the_ui(self) -> None:
+        process, port, token = self._spawn(
+            self.tmp,
+            "--suggest-url", f"http://127.0.0.1:{self.model.server_address[1]}/v1/chat/completions",
+            "--suggest-model", "fake",
+            "--suggest-chunk-chars", "1000", "--suggest-chunk-overlap", "200",
+        )
+        try:
+            status, state = self.call("/api/state", server=(process, port, token))
+            self.assertEqual(status, 200, state)
+            self.assertEqual(state["suggest_chunk_chars"], 1000)
+            self.assertEqual(state["suggest_chunk_overlap"], 200)
+            status, report = self.call(
+                "/api/suggest", {"text": "Contoso " + "x" * 3000}, server=(process, port, token)
+            )
+            self.assertEqual(status, 200, report)
+            self.assertGreater(report["chunks"], 1)
+            self.assertFalse(report["truncated"], "the tail is covered, not dropped")
+            self.assertEqual([item["value"] for item in report["candidates"]], ["Contoso"])
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_a_chunk_pair_that_cannot_advance_is_refused_at_startup(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SERVER), "--port", str(free_port()),
+             "--suggest-url", "http://127.0.0.1:9/v1/chat/completions", "--suggest-model", "m",
+             "--suggest-chunk-chars", "100", "--suggest-chunk-overlap", "100"],
+            env={**os.environ, "ANON_HOME": str(self.tmp)}, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("chunk-overlap", result.stderr)
+
     def call_text(self, path: str, payload: dict, server: tuple | None = None) -> tuple[int, str]:
         """A raw body, for a response that is not JSON (the event stream)."""
         process, port, token = server or (self.process, self.port, self.token)

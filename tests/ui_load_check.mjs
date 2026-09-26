@@ -125,6 +125,7 @@ const stubPayload = (url) => {
     version: "test", schema: "anon/1", catalogs: [], patterns: ["identity"],
     maps_count: 0, converter: false, suggest: false, suggest_backend: null,
     suggest_max_chars: 20000, suggest_timeout: 60,
+    suggest_chunk_chars: 1000, suggest_chunk_overlap: 200,
     build: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678abcdef001122334455667788",
     entities_path: "/tmp/entities.txt",
     max_upload_bytes: 160 * 1024 * 1024,
@@ -240,6 +241,14 @@ try {
     /25000/.test(document.getElementById("suggest-count").textContent) &&
       /20000/.test(document.getElementById("suggest-count").textContent),
     document.getElementById("suggest-count").textContent,
+  );
+  // Il chunking e' configurato dal server: quando e' acceso il pannello lo DICE, o la frase
+  // "i primi {max} caratteri" si leggerebbe come "il resto si perde" mentre non si perde.
+  check(
+    "the panel states chunking when the server covers long documents in chunks",
+    /1000/.test(document.getElementById("suggest-limits").textContent) &&
+      /200/.test(document.getElementById("suggest-limits").textContent),
+    document.getElementById("suggest-limits").textContent,
   );
 
   // --- PIU' file aprono una coda: una riga ciascuno, il bottone le processa in ordine ---

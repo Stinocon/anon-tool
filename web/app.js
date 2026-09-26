@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, anonFile: null, anonQueue: [], deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
+const state = { maps: [], selectedMap: null, anonFile: null, anonQueue: [], deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestChunkChars: 0, suggestChunkOverlap: 0, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -439,6 +439,9 @@ async function boot() {
   // suoi, e una seconda copia li farebbe divergere senza che nessuno se ne accorga.
   state.suggestMaxChars = info.suggest_max_chars || null;
   state.suggestTimeout = info.suggest_timeout || null;
+  // Chunking is the server's configuration, not a knob the page owns: the panel only states it.
+  state.suggestChunkChars = info.suggest_chunk_chars || 0;
+  state.suggestChunkOverlap = info.suggest_chunk_overlap || 0;
   updateSuggestLimits();
   updateSuggestCount();
 
@@ -992,9 +995,15 @@ function renderSuggestions(proposals) {
 function updateSuggestLimits() {
   const element = $("suggest-limits");
   if (!element) return;
-  element.textContent = state.suggestMaxChars && state.suggestTimeout
+  const limits = state.suggestMaxChars && state.suggestTimeout
     ? i18n.t("suggest.limits", { max: state.suggestMaxChars, timeout: Math.round(state.suggestTimeout) })
     : "";
+  // When the server covers a long document in chunks, the panel says so: otherwise the "first
+  // {max} characters" sentence would read as "the rest is dropped" when it is not.
+  const chunks = state.suggestChunkChars
+    ? i18n.t("suggest.chunked", { chunk: state.suggestChunkChars, overlap: state.suggestChunkOverlap })
+    : "";
+  element.textContent = limits + chunks;
 }
 
 /** Quanti caratteri sono stati incollati, e quanti ne ricevera' il modello: il resto non parte. */

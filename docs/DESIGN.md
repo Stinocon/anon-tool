@@ -335,6 +335,17 @@ propose half a value. A failure after the stream has begun cannot change a statu
 already 200, so it becomes an `error` event: the client is told, rather than handed a short answer
 that looks complete.
 
+**A document longer than the window is covered, opt-in, without a second mechanism.**
+`--chunk-chars` splits the text into overlapping windows, one model call each, and the SAME
+`parse_candidates` locates every value in the FULL document; `_merge` then keeps one candidate per
+value, unioning its spans so its count is the real number of occurrences. The overlap is the
+correctness argument: a value shorter than it always lands WHOLE in at least one of two neighbouring
+windows, and the boundaries are nudged to whitespace so a token is never cut in half — half an email
+is a prefix the engine would propose as if it were the value. `analyzed_chars` stays COVERAGE, never
+the sum of the windows: with overlap the same characters are sent twice, and summing them would
+report a document longer than the one that exists. Off by default (it costs one call per window),
+and a pair that cannot advance is refused at startup rather than looped on.
+
 ## 8. Known limits (deliberate)
 
 - contextual references ("the client from Ancona") — a human read is still required;
