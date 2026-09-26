@@ -216,6 +216,7 @@ The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard a
 |---|---|
 | `anon.py` | engine: detection, redaction, map, `--check`, `--audit` |
 | `deanon.py` | inverse: restores the real values, in plain text and inside `.docx/.xlsx/.pptx/.odt` |
+| `suggest.py` | local-model seam: asks a loopback model for candidates, locates them in the document itself, writes nothing |
 | `convert.py` | document → Markdown, using a pinned [anydoc](https://github.com/firecrawl/anydoc) |
 | `pdfout.py` | text → a plain text-only PDF: a redacted PDF is rebuilt, never rewritten |
 | `web/` | local UI: stdlib HTTP server plus a vanilla front-end (no framework, no CDN, no build) |
@@ -463,9 +464,10 @@ The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 `make test` is the suite; two further gates answer the question a green suite does not. `make
 coverage` measures how much of the shipped engine the suites actually RUN (stdlib `sys.monitoring`,
 propagated to the CLI subprocesses) and fails below a declared floor; `make mutate` breaks one stated
-invariant at a time — a literal placeholder, a tag collision, an unterminated tag, the deanon
-completeness verdict, the PDF xref, the model's hallucination drop, the backup passphrase refusal,
-the git guard's filter check, the MCP size bound — and requires the named test to FAIL on each. Both
+invariant at a time — a reused literal placeholder, a tag collision, an unterminated tag, the
+locator's casefold, the deanon completeness verdict, the PDF xref, the model's hallucination drop,
+the backup passphrase refusal, the git guard's filter check and its index check, the MCP size bound
+and the MCP frame depth — and requires the named test to FAIL on each. Both
 run in CI and in the local verify gate; a defect that survives the mutation corpus is a hole in the
 suite, not a style issue.
 
@@ -478,7 +480,7 @@ a subdirectory or in the operator's global attributes file cannot hide; `unspeci
 pass.
 
 ```bash
-make test      # engine suite, web integration, UI load check, doc-number gate
+make test      # engine, web, local-model seam, backup, MCP, git guard, UI load, doc numbers
 make smoke     # build the container and exercise every endpoint
 make up-slim   # the text-only container variant (port 1408)
 
