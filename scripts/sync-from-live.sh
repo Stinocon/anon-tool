@@ -36,9 +36,20 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 for f in anon.py deanon.py convert.py mcp_anon.py; do
   [ -f "$LIVE/$f" ] && cp "$LIVE/$f" "$REPO/$f"
 done
-for d in tests catalogs web; do
+for d in catalogs web; do
   [ -d "$LIVE/$d" ] && rsync -a --delete "$LIVE/$d/" "$REPO/$d/"
 done
+# `tests/` is mirrored too, but it is NOT a pure mirror any more: `test_backup.py`, `test_mcp.py`
+# and `test_git_guard.py` test `scripts/`, which is repo-only, so they cannot exist in the runtime
+# tree. `--delete` would remove them from the repository — the only copy — on the next sync. They
+# are PROTECTED from deletion (a NEW repo-only test has to be added here; the leading `/` anchors
+# the pattern to the tests/ root, so a same-named file deeper down is still deleted); everything
+# else still mirrors live -> repo, and a test deleted on the live side is still removed here.
+if [ -d "$LIVE/tests" ]; then
+  rsync -a --delete \
+    --filter='P /test_backup.py' --filter='P /test_mcp.py' --filter='P /test_git_guard.py' \
+    "$LIVE/tests/" "$REPO/tests/"
+fi
 
 # The hashed pin is generated in the repo; the live copy is what convert.py reads.
 [ -f "$REPO/requirements-anydoc.txt" ] && cp "$REPO/requirements-anydoc.txt" "$LIVE/requirements-anydoc.txt"
