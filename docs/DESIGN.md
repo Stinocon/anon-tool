@@ -38,7 +38,7 @@ applies the substitution. The engine stays the only thing that ever writes.
 ```
                   ┌──────────────────────────────────────────┐
    CLI / skill ──►│  engine: anon.py · deanon.py              │◄── web UI (server.py)
-   Pi guard   ──► │  detect · anonymize · audit · deanon      │
+   Pi guard   ──► │  detect · anonymize · audit · deanon      │◄── MCP seam (mcp_anon.py)
                   └──────────────────────────────────────────┘
                         │                        │
                         ▼                        ▼
@@ -48,13 +48,16 @@ applies the substitution. The engine stays the only thing that ever writes.
 
 One engine, several front-ends. **The web UI does not reimplement any detection logic** — it
 imports the same module. Two copies of redaction logic diverge, and divergence in a privacy tool
-is a silent hole. This is why the CLI, the Pi guard, the skill and the web app all inherit the
-same tests and the same adversarial reviews.
+is a silent hole. This is why the CLI, the Pi guard, the skill, the web app and the **MCP seam**
+all inherit the same tests and the same adversarial reviews.
 
 The web app is the only front-end with a network surface, so its perimeter — bind address, token,
 `Host`/`Origin`, no client paths, the caps, the container hardening — is stated where a reader
-looking for a threat model goes: [`../SECURITY.md`](../SECURITY.md). This document stays on the
-engine.
+looking for a threat model goes: [`../SECURITY.md`](../SECURITY.md). The **MCP seam**
+(`mcp_anon.py`) is a stdio-only server — no socket at all — exposing `check` and `anonymize`; it
+returns a verdict, the redacted text and a map id, and never a real value, which stays in
+`~/.anon/maps/`. It reaches no network stack, and `OfflineContractTest` checks it by name. This
+document stays on the engine.
 
 ## 4. Losslessness
 
