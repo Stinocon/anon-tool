@@ -54,6 +54,12 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
   values that do not belong to that document;
 - any way the private store's backup or restore path writes outside its destination, accepts a
   payload that does not match its own manifest, or puts the real values into the archive in clear;
+- any way the MCP seam (`mcp_anon.py`: `check`/`anonymize`) hands back a real value instead of a
+  verdict, the redacted text or a map id, or reaches the network — it is stdio only, it imports no
+  network stack, and a value it returns is a bug, not a feature;
+- any way a clean/smudge filter runs under the repository: a `filter` attribute rewrites a file
+  between the working tree and the object database, so what is committed is not what was reviewed.
+  The `pre-commit` hook (`make hooks`) refuses it;
 - any way the engine silently fails open without a visible indicator.
 
 ## Out of scope (declared limits, see `docs/DESIGN.md` §8)

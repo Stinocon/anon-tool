@@ -30,6 +30,20 @@ enforces that they agree.
 
 ### Added
 
+- **An MCP seam, value-free by default.** `mcp_anon.py` speaks newline-delimited JSON-RPC over
+  stdin/stdout with two tools: `check` returns the verdict, the per-type counts and the line numbers
+  and never a value; `anonymize` returns the redacted text, the counts and the map id, and writes
+  the reversible map to `~/.anon/maps/` exactly like the CLI. It reads the operator's dictionary the
+  way the CLI does, bounds the text it accepts, imports no network stack (checked by name in
+  `OfflineContractTest`), and keeps stdout for protocol frames only.
+
+- **A pre-commit guard that refuses clean/smudge filters.** `git-hooks/pre-commit` (installed with
+  `make hooks`) asks `git check-attr` about every path in the index and refuses when a `filter`
+  attribute is active anywhere — a subdirectory `.gitattributes`, the per-repo attributes file, or
+  the operator's global one. A filter rewrites a file between the working tree and the object
+  database, so what is committed is not what was reviewed; `unspecified` and `unset` still pass.
+  Both new surfaces joined the mutation corpus.
+
 - **Two gates that ask what a green suite cannot.** `scripts/coverage.py` measures how much of the
   shipped engine the suites execute (stdlib `sys.monitoring`, propagated into the CLI subprocesses)
   and fails below a declared floor; `scripts/mutate.py` applies a corpus of deliberate defects, one

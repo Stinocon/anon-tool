@@ -13,7 +13,7 @@ SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall coverage mutate backup restore
+.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall coverage mutate hooks backup restore
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -46,13 +46,18 @@ build: ## build the image only
 native: ## run the server directly, without Docker
 	python3 web/server.py --port $(PORT)
 
-test: ## engine + web + local-model seam + private-store backup + UI load check + doc numbers (no Docker)
+test: ## engine + web + local-model seam + backup + MCP + git guard + UI load + doc numbers (no Docker)
 	python3 tests/test_anon.py
 	python3 tests/test_web.py
 	python3 tests/test_suggest.py
 	python3 tests/test_backup.py
+	python3 tests/test_mcp.py
+	python3 tests/test_git_guard.py
 	node tests/ui_load_check.mjs
 	python3 scripts/check-doc-numbers.py
+
+hooks: ## install git-hooks/ into .git/hooks/ (pre-commit refuses clean/smudge filters)
+	bash scripts/install-git-hooks.sh
 
 model: ## download the local suggestion model (~2 GB, checksum-checked) and start it beside the UI
 	bash scripts/fetch-suggest-model.sh

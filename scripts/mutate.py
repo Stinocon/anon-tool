@@ -110,6 +110,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         test="tests/test_backup.py BackupTest.test_an_empty_passphrase_is_refused_and_writes_no_archive",
         reason="`die` inside `$(...)` exits only the subshell: without `|| exit` the run reaches openssl",
     ),
+    Mutation(
+        name="guard: the pre-commit filter check is disabled",
+        path="git-hooks/pre-commit",
+        find='        if value not in (b"unspecified", b"unset"):',
+        replace="        if False:",
+        test="tests/test_git_guard.py GitFilterGuardTest.test_a_clean_smudge_filter_is_refused",
+        reason="a clean/smudge filter rewrites what is committed and what a clone gets",
+    ),
+    Mutation(
+        name="guard: only the worktree attributes are checked, not the index",
+        path="git-hooks/pre-commit",
+        find='    for source, extra in (("worktree", ()), ("index", ("--cached",))):',
+        replace='    for source, extra in (("worktree", ()),):',
+        test="tests/test_git_guard.py GitFilterGuardTest.test_a_filter_staged_but_removed_from_the_worktree_is_still_refused",
+        reason="the index is what the commit carries; a staged filter must not hide",
+    ),
+    Mutation(
+        name="mcp: the text-size bound is removed",
+        path="mcp_anon.py",
+        find="    if len(text) > MAX_TEXT_CHARS:",
+        replace="    if False:",
+        test="tests/test_mcp.py McpTest.test_an_oversized_text_is_refused",
+        reason="the transport must bound what it hands the engine, not trust the caller",
+    ),
+    Mutation(
+        name="mcp: a deeply nested frame kills the transport",
+        path="mcp_anon.py",
+        find="        except (json.JSONDecodeError, RecursionError, MemoryError) as exc:",
+        replace="        except json.JSONDecodeError as exc:",
+        test="tests/test_mcp.py McpTest.test_a_deeply_nested_frame_does_not_kill_the_transport",
+        reason="RecursionError is not JSONDecodeError: one bad frame must not end the server",
+    ),
 )
 
 IGNORED = (".git", ".pi", "__pycache__", ".pytest_cache")

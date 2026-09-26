@@ -32,9 +32,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # What the gate measures: the shipped code that makes the privacy decision. `web/` is driven through
 # subprocesses and a UI, so its line coverage is not comparable to the engine's.
-SOURCES = ("anon.py", "deanon.py", "suggest.py", "pdfout.py")
-SUITES = ("tests/test_anon.py", "tests/test_suggest.py")
-FLOORS = {"anon.py": 85.0, "deanon.py": 78.0, "suggest.py": 88.0, "pdfout.py": 72.0}
+SOURCES = ("anon.py", "deanon.py", "suggest.py", "pdfout.py", "mcp_anon.py")
+SUITES = ("tests/test_anon.py", "tests/test_suggest.py", "tests/test_mcp.py")
+FLOORS = {"anon.py": 85.0, "deanon.py": 78.0, "suggest.py": 88.0, "pdfout.py": 72.0, "mcp_anon.py": 83.0}
 
 # Installed into every child through PYTHONPATH. It must print NOTHING (the suites' output is the
 # signal) and must never raise: a failure to install the monitor degrades to "no record", not to a

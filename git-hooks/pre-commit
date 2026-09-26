@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""pre-commit — refuse a tree whose content git can silently rewrite on the way in or out.
+
+A `filter` attribute is the clean/smudge pair: it rewrites a file between the working tree and the
+object database, so what is committed is not the bytes that were reviewed, and a fresh clone gets
+different bytes again. In a tool whose whole promise is "what you see is what is scanned", that is
+the one git feature that must never be switched on underneath it — a silent rewrite of the content
+in both directions.
+
+It is therefore refused, and refused CLOSED: `git check-attr` is asked about every path in the index
+in BOTH sources — the worktree and the index (`--cached`) — so a rule cannot hide in a file we did
+not think to read (a `.gitattributes` in a subdirectory, the per-repo `.git/info/attributes`, or the
+operator's global attributes file), nor in the gap between what is staged and what is on disk.
+`unspecified` and `unset` are fine — neither applies a filter. Anything else (a name, or `set` with
+no value) means a filter IS active on that path, and the commit is refused.
+
+Installed per repository — see `scripts/install-git-hooks.sh`. A global `core.hooksPath` would
+disable the repository's own hooks, which is worse than the problem it solves.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+
+def _git(*args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["git", *args], input=stdin, capture_output=True)
+
+
+def main() -> int:
+    if _git("rev-parse", "--git-dir").returncode != 0:
+        return 0  # not a repository: nothing to guard
+
+    listing = _git("ls-files", "-z")
+    if listing.returncode != 0:
+        print("pre-commit: cannot list the index — refusing (fail-closed)", file=sys.stderr)
+        return 1
+
+    # BOTH attribute sources: the worktree (what a checkout would apply) and the index (`--cached`,
+    # what THIS commit will carry). They can disagree — a staged `.gitattributes` with a filter whose
+    # worktree copy was emptied would otherwise pass while the filter is still in the commit.
+    violations: dict[tuple[str, str], str] = {}
+    for source, extra in (("worktree", ()), ("index", ("--cached",))):
+        checked = _git("check-attr", *extra, "--stdin", "-z", "filter", stdin=listing.stdout)
+        if checked.returncode != 0:
+            print(
+                f"pre-commit: `git check-attr` on the {source} failed — refusing (fail-closed)",
+                file=sys.stderr,
+            )
+            return 1
+        fields = checked.stdout.split(b"\0")
+        for index in range(0, len(fields) - 2, 3):
+            path, attribute, value = fields[index], fields[index + 1], fields[index + 2]
+            if attribute != b"filter":
+                continue  # a malformed stream: skip rather than read the wrong field
+            if value not in (b"unspecified", b"unset"):
+                violations[(path.decode("utf-8", "replace"), value.decode("utf-8", "replace"))] = source
+
+    if violations:
+        print("pre-commit: REFUSING — a `filter` attribute is active on this tree:", file=sys.stderr)
+        for (path, value), source in list(violations.items())[:10]:
+            shown = value or "(set with no value)"
+            print(f"  {path}  ->  filter={shown}  [{source}]", file=sys.stderr)
+        if len(violations) > 10:
+            print(f"  … and {len(violations) - 10} more", file=sys.stderr)
+        print(
+            "A clean/smudge filter rewrites files between the working tree and the object\n"
+            "database: what is committed is not what was reviewed, and a clone gets different\n"
+            "bytes. This tool must never have that under it. Remove the attribute, or the filter.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

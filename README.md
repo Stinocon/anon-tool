@@ -219,6 +219,7 @@ The container mounts `~/.anon` at `/data`, so the UI, the CLI and the Pi guard a
 | `convert.py` | document → Markdown, using a pinned [anydoc](https://github.com/firecrawl/anydoc) |
 | `pdfout.py` | text → a plain text-only PDF: a redacted PDF is rebuilt, never rewritten |
 | `web/` | local UI: stdlib HTTP server plus a vanilla front-end (no framework, no CDN, no build) |
+| `mcp_anon.py` | stdio MCP server: `check` and `anonymize`, value-free by default |
 | `catalogs/` | opt-in lists: Italian municipalities and consumer mail domains, plus the IT vendor and product lists |
 | `~/.anon/maps/` | reversible maps — the only place the real values live, mode 0600, never in a repo |
 
@@ -367,6 +368,26 @@ python3 ~/.anon/web/server.py --port 1407 \
 See `docs/DESIGN.md` §7 for the boundary and `CHANGELOG.md` for the shipped model and what it was
 measured to do.
 
+## The MCP seam (a harness, not a network)
+
+`mcp_anon.py` speaks MCP on stdin/stdout with two tools, so a harness or a model can ask the engine
+a question without a shell:
+
+- **`check`** answers with the verdict, the per-type counts and the line numbers of the findings —
+  never a value. The caller learns *that* the text is sensitive, not *what* is in it;
+- **`anonymize`** returns the redacted text, the counts and the map id, and writes the reversible map
+  to `~/.anon/maps/` exactly like the CLI. The real values stay in the map; the answer is what to
+  deliver, not what to protect.
+
+It reads the operator's dictionary the way the CLI does, bounds the text it accepts, imports no
+network stack (`OfflineContractTest` checks it by name), and keeps stdout for protocol frames only.
+Register it where your MCP client keeps its servers, alongside its other stdio servers:
+
+```json
+{ "mcpServers": { "anon": { "transport": "stdio",
+  "command": "python3", "args": ["/Users/you/.anon/mcp_anon.py"], "lifecycle": "lazy" } } }
+```
+
 ## The private store, and its backup
 
 Everything that must never be committed lives in one directory, `~/.anon`: the **maps** (the real
@@ -439,6 +460,23 @@ The full perimeter and the threat model are in [`SECURITY.md`](SECURITY.md) and
 
 ## Development
 
+`make test` is the suite; two further gates answer the question a green suite does not. `make
+coverage` measures how much of the shipped engine the suites actually RUN (stdlib `sys.monitoring`,
+propagated to the CLI subprocesses) and fails below a declared floor; `make mutate` breaks one stated
+invariant at a time — a literal placeholder, a tag collision, an unterminated tag, the deanon
+completeness verdict, the PDF xref, the model's hallucination drop, the backup passphrase refusal,
+the git guard's filter check, the MCP size bound — and requires the named test to FAIL on each. Both
+run in CI and in the local verify gate; a defect that survives the mutation corpus is a hole in the
+suite, not a style issue.
+
+`make hooks` installs `git-hooks/` into `.git/hooks/`. The `pre-commit` refuses a tree where a
+`filter` attribute (the clean/smudge pair) is active: a filter rewrites a file between the working
+tree and the object database, so what is committed is not what was reviewed and a clone gets
+different bytes — the one git feature that must never run underneath a tool whose promise is "what
+you see is what is scanned". The check is `git check-attr` over every path in the index, so a rule in
+a subdirectory or in the operator's global attributes file cannot hide; `unspecified` and `unset`
+pass.
+
 ```bash
 make test      # engine suite, web integration, UI load check, doc-number gate
 make smoke     # build the container and exercise every endpoint
@@ -468,16 +506,6 @@ python3 scripts/pin-converter.py > requirements-anydoc.txt
 
 The converter is installed from `requirements-anydoc.txt` with `--require-hashes`, so a swapped
 wheel cannot enter the image or the native venv.
-
-`scripts/coverage.py` measures the lines of `anon.py`, `deanon.py`, `suggest.py` and `pdfout.py`
-the suites actually execute, with the stdlib's `sys.monitoring` and the monitoring propagated into
-the CLI subprocesses (or every line they run would count as uncovered); it fails below a floor that
-sits a few points under the measured value, so an optional skip cannot fail it while a real loss
-can. `scripts/mutate.py` is the sharp gate: it copies the tree, applies ONE deliberate defect at a
-time — a reused literal placeholder, a tag collision, an unterminated tag, a false completeness
-verdict, a shifted PDF xref, a proposed hallucination, a passphrase refusal that does not stop the
-run — and requires the named test to FAIL on each. A defect that survives is a hole in the suite,
-and the gate exits non-zero. Both run in CI and in the local verify gate.
 
 `docs/OPEN-ISSUES.md` records what is intentionally left for a later pass.
 

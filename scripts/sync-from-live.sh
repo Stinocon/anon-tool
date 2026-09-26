@@ -7,7 +7,7 @@
 # the DECs point at it), so it stays the runtime source of truth; this repo is the versioned
 # copy. Same shape as the sync that ships this repo's Pi skill (pi-workbench), with a different data policy:
 #
-#   mirrored  : anon.py, deanon.py, convert.py, tests/, catalogs/, web/   (live -> repo)
+#   mirrored  : anon.py, deanon.py, convert.py, mcp_anon.py, tests/, catalogs/, web/   (live -> repo)
 #   repo-only : README.md, LICENSE, Dockerfile, docker-compose.yml, scripts/, docs/, .gitignore
 #   generated : requirements-anydoc.txt — written by scripts/pin-converter.py IN the repo, and the
 #               live copy is refreshed from it below: convert.py reads the file next to itself, so
@@ -33,7 +33,7 @@ while ! mkdir "$LOCK" 2>/dev/null; do sleep 0.2; done
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 # --- mirror the code subset ----------------------------------------------
-for f in anon.py deanon.py convert.py; do
+for f in anon.py deanon.py convert.py mcp_anon.py; do
   [ -f "$LIVE/$f" ] && cp "$LIVE/$f" "$REPO/$f"
 done
 for d in tests catalogs web; do

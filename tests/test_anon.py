@@ -3122,7 +3122,7 @@ class OfflineContractTest(unittest.TestCase):
     second module cannot quietly acquire the capability and the exception cannot spread.
     """
 
-    SCRIPTS = ("anon.py", "deanon.py", "convert.py", "pdfout.py")
+    SCRIPTS = ("anon.py", "deanon.py", "convert.py", "pdfout.py", "mcp_anon.py")
     # The declared exception, named so it stays one: see the class docstring.
     NETWORK_CLIENT = "suggest.py"
     # A network STACK, not a network-shaped name: `urllib.parse` and `http.cookies` are parsers and
