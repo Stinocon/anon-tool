@@ -444,6 +444,11 @@ make test      # engine suite, web integration, UI load check, doc-number gate
 make smoke     # build the container and exercise every endpoint
 make up-slim   # the text-only container variant (port 1408)
 
+# A green suite says the tests PASS. These two ask what that does not: does the suite RUN the
+# engine, and would it FAIL if the engine were wrong? Both are gates (CI and `.pi/verify.json`).
+make coverage  # how much of the shipped engine the suites execute, with a floor that fails
+make mutate    # one deliberate defect per invariant; the named test must fail on each
+
 # How fast can the engine check a file? The Pi guard's size cap is derived from this measurement,
 # and the number depends on the dictionary size — run it with the dictionary you actually use.
 python3 scripts/bench-check.py --mb 8 --entities 200
@@ -463,6 +468,16 @@ python3 scripts/pin-converter.py > requirements-anydoc.txt
 
 The converter is installed from `requirements-anydoc.txt` with `--require-hashes`, so a swapped
 wheel cannot enter the image or the native venv.
+
+`scripts/coverage.py` measures the lines of `anon.py`, `deanon.py`, `suggest.py` and `pdfout.py`
+the suites actually execute, with the stdlib's `sys.monitoring` and the monitoring propagated into
+the CLI subprocesses (or every line they run would count as uncovered); it fails below a floor that
+sits a few points under the measured value, so an optional skip cannot fail it while a real loss
+can. `scripts/mutate.py` is the sharp gate: it copies the tree, applies ONE deliberate defect at a
+time — a reused literal placeholder, a tag collision, an unterminated tag, a false completeness
+verdict, a shifted PDF xref, a proposed hallucination, a passphrase refusal that does not stop the
+run — and requires the named test to FAIL on each. A defect that survives is a hole in the suite,
+and the gate exits non-zero. Both run in CI and in the local verify gate.
 
 `docs/OPEN-ISSUES.md` records what is intentionally left for a later pass.
 

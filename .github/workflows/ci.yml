@@ -45,11 +45,20 @@ jobs:
       - name: Local-model seam (loopback only, fail-closed, writes nothing)
         run: python3 tests/test_suggest.py
 
+      - name: Private-store backup and restore
+        run: python3 tests/test_backup.py
+
       - name: UI loads without throwing
         run: node tests/ui_load_check.mjs
 
       - name: Numbers in the docs match the code
         run: python3 scripts/check-doc-numbers.py
+
+      - name: Coverage floor — the suites run the shipped engine
+        run: python3 scripts/coverage.py
+
+      - name: Mutation corpus — every defect must make a test fail
+        run: python3 scripts/mutate.py
 
       - name: Summary
         if: always()
@@ -63,5 +72,5 @@ jobs:
               echo "- document converter: **NOT installed** — the docx/pdf tests were **skipped**,"
               echo "  so this run did NOT exercise the conversion path (see the *Install* step's log)"
             fi
-            echo "- gates run: engine suite, web integration, local-model seam, UI load, documentation numbers"
+            echo "- gates run: engine suite, web integration, local-model seam, private-store backup, UI load, documentation numbers, coverage floor, mutation corpus"
           } >> "$GITHUB_STEP_SUMMARY"

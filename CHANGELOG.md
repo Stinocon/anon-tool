@@ -30,6 +30,13 @@ enforces that they agree.
 
 ### Added
 
+- **Two gates that ask what a green suite cannot.** `scripts/coverage.py` measures how much of the
+  shipped engine the suites execute (stdlib `sys.monitoring`, propagated into the CLI subprocesses)
+  and fails below a declared floor; `scripts/mutate.py` applies a corpus of deliberate defects, one
+  per invariant, and requires each named test to fail on it. They are `make coverage` / `make
+  mutate`, run in CI, and are gates in `.pi/verify.json`. Writing the corpus already found one hole:
+  the reserved-placeholder rule was untested for a literal placeholder carrying the run's own tag.
+
 - **A long document can be covered instead of truncated, opt-in.** `suggest.py --chunk-chars`
   (and the UI server's `--suggest-chunk-chars`) splits the text into overlapping windows, asks the
   model once per window and merges the proposals by value, so a value seen by two windows is one

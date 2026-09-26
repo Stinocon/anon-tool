@@ -13,7 +13,7 @@ SLIM_PORT ?= 1408
 ANON_HOME ?= $(HOME)/.anon
 COMPOSE ?= docker compose
 
-.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall backup restore
+.PHONY: help up up-slim down logs restart build native test smoke clean model model-stop bench-model check-container recall coverage mutate backup restore
 
 help:
 	@grep -E '^[a-z-]+:' $(MAKEFILE_LIST) | cut -d: -f1 | sed 's/^/  make /'
@@ -72,6 +72,12 @@ check-container: ## fail if a running container does not serve the current code
 
 recall: ## measure the engine's recall on the labelled corpus (fp-sweep measures the other direction)
 	python3 scripts/recall-sweep.py
+
+coverage: ## how much of the shipped engine the tests run (a floor below fails)
+	python3 scripts/coverage.py
+
+mutate: ## break one invariant at a time; every defect must make a test fail
+	python3 scripts/mutate.py
 
 backup: ## encrypt the private store (maps + dictionary) into an archive: BACKUP=path to choose it
 	bash scripts/anon-home-backup.sh backup $(if $(BACKUP),--out=$(BACKUP),)

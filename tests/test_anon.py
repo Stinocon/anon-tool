@@ -487,6 +487,17 @@ class RoundTripTest(unittest.TestCase):
             restored, _ = deanon.deanonize(redacted, entries)
             self.assertEqual(restored, source)
 
+    def test_a_literal_tagged_placeholder_is_not_reused(self) -> None:
+        """The case the untagged round-trip cannot see: a literal `[EMAIL-1-aaaa]` and a fresh run
+        with the SAME tag. The reserved number must be skipped, or deanon rewrites both tokens to
+        the same value and the source is no longer restorable."""
+        source = "[EMAIL-1-aaaa] e info@acme.it"
+        redacted, entries, _ = anon.anonymize(source, self.entities, tag="aaaa")
+        self.assertNotIn("[EMAIL-1-aaaa] e [EMAIL-1-aaaa]", redacted)
+        self.assertIn("[EMAIL-2-aaaa]", redacted, "the reserved number must be skipped")
+        restored, _ = deanon.deanonize(redacted, entries)
+        self.assertEqual(restored, source)
+
     def test_international_phone(self) -> None:
         for phone in ("+1 415 555 0199", "+44 20 7946 0958", "+39 02 1234567", "333 1234567"):
             self.assertEqual(len(anon.detect(phone, self.entities)), 1, f"missed phone {phone!r}")
@@ -3052,6 +3063,26 @@ class PdfOutputTest(unittest.TestCase):
     def test_accented_letters_survive_the_encoding(self) -> None:
         data = self.pdfout.build_pdf("perché à è é ì ò ù\n")
         self.assertIn("perché à è é ì ò ù".encode("cp1252"), data)
+
+    def test_every_xref_offset_points_at_its_object(self) -> None:
+        """The xref is the file's own index: an offset that is off by one is a PDF a reader refuses,
+        and nothing else in the suite looks inside the table (the converter round-trip is gated on a
+        converter that must be installed). Resolve each entry the way a reader would."""
+        data = self.pdfout.build_pdf("Riga uno\nRiga due\n")
+        xref_at = data.index(b"\nxref\n") + 1
+        lines = data[xref_at:].split(b"\n")
+        self.assertEqual(lines[0], b"xref")
+        size = int(lines[1].split()[1])
+        # lines[2] is object 0 (the free head); object `number` is at lines[2 + number]
+        for number in range(1, size):
+            offset = int(lines[2 + number].split()[0])
+            header = b"%d 0 obj" % number
+            self.assertEqual(
+                data[offset:offset + len(header)], header,
+                f"object {number} is not at its xref offset {offset}",
+            )
+        startxref = int(data.rsplit(b"startxref\n", 1)[1].split(b"\n", 1)[0])
+        self.assertEqual(startxref, xref_at, "startxref must point at the xref table")
 
     def test_a_generated_pdf_round_trips_through_the_converter(self) -> None:
         """The only proof the PDF is real: a reader gets the text back, placeholders included."""

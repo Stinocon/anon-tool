@@ -1,6 +1,8 @@
 {
   "gates": [
     { "name": "tests", "command": "make test" },
+    { "name": "coverage", "command": "python3 scripts/coverage.py" },
+    { "name": "mutations", "command": "python3 scripts/mutate.py" },
     { "name": "container-fresh", "command": "python3 scripts/check-container-fresh.py" }
   ],
   "timeoutMs": 600000
