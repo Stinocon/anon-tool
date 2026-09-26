@@ -75,7 +75,16 @@ ITER=600000
 hash_of() { "${SHA[@]}" "$1" | awk '{print $1}'; }
 
 passphrase() {  # $1 = "confirm" to ask twice (backup); restore asks once
-  if [ -n "${ANON_BACKUP_PASSPHRASE:-}" ]; then printf '%s' "$ANON_BACKUP_PASSPHRASE"; return 0; fi
+  # Set-but-empty is a REFUSAL, not a request to prompt: a caller that set the variable to an
+  # empty string meant to run non-interactively, and prompting instead hides that mistake.
+  if [ "${ANON_BACKUP_PASSPHRASE+x}" = x ]; then
+    [ -n "$ANON_BACKUP_PASSPHRASE" ] || die "empty passphrase — refusing"
+    printf '%s' "$ANON_BACKUP_PASSPHRASE"; return 0
+  fi
+  # A prompt needs a terminal to read from. With stdin on a pipe nobody closes — a test harness, a
+  # cron job, a service — `read` blocks forever: the run neither finishes nor fails. Refuse
+  # instead; the passphrase has an explicit channel, `ANON_BACKUP_PASSPHRASE`.
+  [ -t 0 ] || die "no terminal to prompt on: set ANON_BACKUP_PASSPHRASE"
   local p='' p2=''
   printf 'Passphrase: ' >&2
   IFS= read -rs p || die "no passphrase read"
@@ -154,7 +163,7 @@ cmd_backup() {  # $1 = destination (optional; --out=FILE wins)
   [ -n "$OUT" ] && out="$OUT"
   # Read first, and drop the inherited copy before starting any other program: everything below runs
   # without it, so no child of this script — openssl included — carries the passphrase.
-  pass="$(passphrase confirm)"
+  pass="$(passphrase confirm)" || exit $?
   unset ANON_BACKUP_PASSPHRASE
   [ -n "$out" ] || out="$HOME/private-backups/anon-home-$(date +%Y%m%d-%H%M).tar.gz.enc"
   if [ -e "$out" ] && [ "$FORCE" != 1 ]; then die "$out exists — use --out=FILE or --force"; fi
@@ -247,7 +256,7 @@ cmd_restore() {  # $1 = archive, $2 = target directory (optional)
   [ -f "$archive" ] || die "$archive does not exist"
 
   # read and drop the inherited copy before any other program runs (`mktemp` below is the first)
-  pass="$(passphrase)"
+  pass="$(passphrase)" || exit $?
   unset ANON_BACKUP_PASSPHRASE
 
   WORK="$(mktemp -d)" || die "mktemp failed"

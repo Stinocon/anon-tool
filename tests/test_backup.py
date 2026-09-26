@@ -377,9 +377,49 @@ class BackupTest(unittest.TestCase):
         archive = self.tmp / "store.enc"
         done = self.run_script("backup", f"--home={home}", f"--out={archive}", passphrase="",
                                extra_env={"ANON_BACKUP_PASSPHRASE": ""})
-        self.assertNotEqual(done.returncode, 0)
+        # Exit 1 and the refusal's own message: a nonzero code alone also matches the incidental
+        # failure where the script ran on with an empty passphrase and openssl refused it later.
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertIn("empty passphrase", done.stderr)
+        # The refusal must STOP the script. A `die` inside the `$(...)` that reads the passphrase
+        # exits only the subshell, and the run then continues to tar and openssl; the incidental
+        # `exit 1` from openssl would keep a `returncode == 1` assertion green. The archive step is
+        # what must not have happened.
+        self.assertNotIn("openssl", done.stderr)
         self.assertFalse(archive.exists())
         self.assertFalse((self.tmp / "store.enc.partial").exists())
+
+    def test_a_prompt_without_a_terminal_refuses_instead_of_hanging(self) -> None:
+        """No `ANON_BACKUP_PASSPHRASE` and stdin on an open pipe: `read` would block forever.
+
+        A test harness, cron or a service hands the script a stdin that nobody closes, so a prompt
+        there is a hang with no archive and no message. The refusal must come from the script, not
+        from the caller remembering to set the variable.
+        """
+        home = self.make_home()
+        archive = self.tmp / "store.enc"
+        env = dict(os.environ)
+        env.pop("ANON_BACKUP_PASSPHRASE", None)
+        read_end, write_end = os.pipe()
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT), "backup", f"--home={home}", f"--out={archive}"],
+            cwd=str(HOME), env=env, stdin=read_end,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        os.close(read_end)  # the child holds its own copy; the write end is kept OPEN on purpose
+        try:
+            _, err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            self.fail("the script blocked on a prompt with no terminal")
+        finally:
+            os.close(write_end)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(proc.returncode, 1, err)
+        self.assertIn("terminal", err)
+        self.assertNotIn("openssl", err)  # same reason: the refusal must stop before the archive step
+        self.assertFalse(archive.exists())
 
     def test_an_existing_archive_is_refused_without_force(self) -> None:
         home = self.make_home()

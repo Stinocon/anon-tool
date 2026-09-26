@@ -168,6 +168,11 @@ value is ever written to the page (the view is built with `textContent`; the val
 substitutions per type and the placeholder list — so a delivery can be checked against the map
 without the report ever carrying a real value.
 
+Drop more than one file and they become a **queue**: one card per file, each with its own status
+and its own artifacts (the redacted document, the Markdown, the report). They run one after another
+from the page, so one document's map can never be shown for another's, and the server still answers
+one request at a time. Picking several files does the same; a single file keeps the one-step flow.
+
 Upload a document and you get **two artifacts from one redaction**: the document itself, redacted
 in place (`verbale.redacted.docx` — same type, same layout, headers, footers and properties
 rewritten where they live), and the Markdown the model reads, **derived from the already redacted
@@ -378,7 +383,8 @@ it never deletes: a non-empty `~/.anon` is **moved** to `~/.anon.pre-restore-<da
 What goes in: everything under `~/.anon` except `models/` (2 GB, re-downloadable with `make model`),
 `__pycache__/` and `*.pyc`. Contents, paths and modes travel; the filesystem's own bookkeeping
 does not — extended attributes and ACLs are stripped, so an archive made on a Mac extracts cleanly
-with GNU tar on Linux. The passphrase is asked for and never stored anywhere; scripted use can set
+with GNU tar on Linux. The passphrase is asked for on a terminal and never stored anywhere (a
+non-interactive run with no terminal refuses instead of hanging on a prompt); scripted use can set
 `ANON_BACKUP_PASSPHRASE`, which is also why it is not the default — the variable is read once and
 removed before the script starts any other program, but a same-user process can still read it from
 the environment while the script is starting.

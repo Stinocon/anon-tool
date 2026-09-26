@@ -50,7 +50,7 @@
   <section id="panel-anon" role="tabpanel" aria-labelledby="tab-anon" class="panel is-active">
     <div class="card">
       <label class="drop" id="drop-anon">
-        <input type="file" id="file-anon" hidden>
+        <input type="file" id="file-anon" multiple hidden>
         <span class="drop-title" id="drop-anon-title">Trascina qui il documento</span>
         <span class="muted small"><span id="drop-anon-hint">doc · docx · pdf · txt · md · json · yaml · csv — fino a</span> <span id="upload-limit">160 MB</span><span id="drop-anon-hint-tail">, oppure incolla il testo qui sotto</span></span>
       </label>
@@ -83,6 +83,16 @@
         <div class="progress-track"><div class="progress-fill" id="anon-progress-fill"></div></div>
         <span class="progress-label" id="anon-progress-label" role="status" aria-live="polite"></span>
       </div>
+    </div>
+
+    <!-- La coda compare solo con PIU' file: ognuno ha la sua riga, la sua chiamata e i suoi
+         artefatti. Con un file solo il flusso classico resta identico. -->
+    <div class="card" id="anon-queue-card" hidden>
+      <div class="result-head">
+        <h2 id="anon-queue-title">Coda</h2>
+        <span id="anon-queue-summary" class="muted small"></span>
+      </div>
+      <div id="anon-queue" class="anon-queue"></div>
     </div>
 
     <div class="card result" id="anon-result" hidden>

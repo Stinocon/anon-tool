@@ -49,7 +49,6 @@ function makeElement(tag = "div") {
     value: "",
     checked: true,
     textContent: "",
-    innerHTML: "",
     href: "",
     download: "",
     files: [],
@@ -75,6 +74,18 @@ function makeElement(tag = "div") {
     querySelectorAll: () => [],
     closest: () => null,
   };
+  // `innerHTML` is a real accessor, not a field: the app clears a container by assigning "", and a
+  // plain field left the old children in place — every re-render doubled the rows, and a count
+  // assertion would have read the accumulation instead of the current state.
+  let html = "";
+  Object.defineProperty(element, "innerHTML", {
+    get: () => html,
+    set(value) {
+      html = String(value);
+      element.children = [];
+      element.lastChild = undefined;
+    },
+  });
   return element;
 }
 
@@ -119,7 +130,11 @@ const stubPayload = (url) => {
     max_upload_bytes: 160 * 1024 * 1024,
   };
 };
-globalThis.fetch = async (url) => ({ ok: true, status: 200, json: async () => stubPayload(url) });
+const fetched = [];
+globalThis.fetch = async (url) => {
+  fetched.push(String(url));
+  return { ok: true, status: 200, json: async () => stubPayload(url) };
+};
 
 /** A file the browser would hand to a drop handler (only what the app actually reads). */
 const makeFile = (name, size, text = "") => ({ name, size, text: async () => text });
@@ -225,6 +240,67 @@ try {
     /25000/.test(document.getElementById("suggest-count").textContent) &&
       /20000/.test(document.getElementById("suggest-count").textContent),
     document.getElementById("suggest-count").textContent,
+  );
+
+  // --- PIU' file aprono una coda: una riga ciascuno, il bottone le processa in ordine ---
+  const queueCard = document.getElementById("anon-queue-card");
+  const queueBox = document.getElementById("anon-queue");
+  dropAnon.dispatchEvent({
+    type: "drop",
+    preventDefault() {},
+    dataTransfer: { files: [makeFile("uno.docx", 1024), makeFile("due.pdf", 2048)] },
+  });
+  await settle();
+  check(
+    "two dropped documents open a queue with one row each",
+    queueCard.hidden === false && queueBox.children.length === 2,
+    `hidden=${queueCard.hidden} rows=${queueBox.children.length}`,
+  );
+  check(
+    "each queue row names its own file",
+    queueBox.children[0]?.children[0]?.children[0]?.textContent === "uno.docx" &&
+      queueBox.children[1]?.children[0]?.children[0]?.textContent === "due.pdf",
+    queueBox.children.map((row) => row.children[0]?.children[0]?.textContent).join(", "),
+  );
+  check("the queue arms the run button", runAnon.disabled === false, `disabled=${runAnon.disabled}`);
+  check(
+    "the queue empties the textarea, so only the queue is armed",
+    document.getElementById("text-anon").value === "",
+    document.getElementById("text-anon").value,
+  );
+  // Svuotare la coda richiude la scheda e disarma il bottone: uno stato che resta non e' un gesto.
+  document.getElementById("clear-anon").dispatchEvent({ type: "click" });
+  await settle();
+  check(
+    "clearing the queue closes the card and disarms the run button",
+    queueCard.hidden === true && queueBox.children.length === 0 && runAnon.disabled === true,
+    `hidden=${queueCard.hidden} rows=${queueBox.children.length} disabled=${runAnon.disabled}`,
+  );
+
+  // --- un file gia' fatto non viene riprocessato: la seconda pressione non rifa' la coda ---
+  // (testi, non documenti: il percorso di upload usa XHR, che questo harness non simula)
+  dropAnon.dispatchEvent({
+    type: "drop",
+    preventDefault() {},
+    dataTransfer: { files: [makeFile("uno.txt", 5, "Cliente Contoso\n"), makeFile("due.txt", 5, "10.20.30.40\n")] },
+  });
+  await settle();
+  const anonCalls = () => fetched.filter((url) => url.includes("/api/anonymize")).length;
+  const before = anonCalls();
+  document.getElementById("run-anon").dispatchEvent({ type: "click" });
+  for (let i = 0; i < 10 && !queueBox.children.every((row) => row.dataset.state === "done"); i++) await settle();
+  const afterFirst = anonCalls();
+  check(
+    "a queue run calls the server once per file",
+    afterFirst - before === 2,
+    `calls=${afterFirst - before}`,
+  );
+  document.getElementById("run-anon").dispatchEvent({ type: "click" });
+  for (let i = 0; i < 5; i++) await settle();
+  check(
+    "a second run does not re-process the files already done",
+    anonCalls() === afterFirst,
+    `afterFirst=${afterFirst} afterSecond=${anonCalls()}`,
   );
 
   if (failures.length) {

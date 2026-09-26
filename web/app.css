@@ -279,6 +279,25 @@ button[disabled] { opacity: 0.45; cursor: not-allowed; }
 
 /* Suggerimenti dal modello locale: una riga per proposta, con tipo e casella di approvazione. */
 .suggest-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+
+/* Coda multi-file: una riga per documento, con il suo stato e i suoi artefatti. Il colore di
+   bordo dice a colpo d'occhio quale file sta girando e quale ha fallito. */
+.anon-queue { display: grid; gap: var(--space-2); }
+.queue-item { border: 1px solid var(--border); border-radius: var(--radius-sm);
+              padding: var(--space-3); background: var(--bg-code); }
+.queue-item[data-state="running"] { border-color: var(--accent); }
+.queue-item[data-state="error"] { border-color: var(--danger-bd); background: var(--danger-bg); }
+.queue-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); }
+.queue-name { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+              font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.queue-state { font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: 0.05em;
+               color: var(--text-muted); white-space: nowrap; }
+.queue-item[data-state="done"] .queue-state { color: var(--ok); }
+.queue-item[data-state="error"] .queue-state { color: var(--danger); }
+.queue-body { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+.queue-message { margin: var(--space-2) 0 0; font-size: var(--fs-sm); color: var(--danger); }
+.queue-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.queue-actions button { padding: var(--space-1) var(--space-3); font-size: var(--fs-xs); }
 .suggest-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .suggest-value { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 4px;
   padding: 1px 6px; overflow-wrap: anywhere;

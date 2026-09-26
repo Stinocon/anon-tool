@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, anonFile: null, deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
+const state = { maps: [], selectedMap: null, anonFile: null, anonQueue: [], deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -111,7 +111,12 @@ function progressStateOf(bar) {
 }
 
 function progressStart(label, bar = PROGRESS_ANON) {
-  progressStateOf(bar).shownAt = Date.now();
+  const barState = progressStateOf(bar);
+  // A previous `progressWait` may still be ticking: a queue runs many files through one bar, and
+  // the stale interval would keep overwriting the label with the PREVIOUS file's seconds.
+  clearInterval(barState.timer);
+  barState.timer = null;
+  barState.shownAt = Date.now();
   $(bar).hidden = false;
   $(bar).classList.remove("is-waiting");
   $(`${bar}-fill`).style.width = "2%";
@@ -298,7 +303,7 @@ async function downloadFromServer(url, name) {
   saveBlob(name, await response.blob());
 }
 
-function dropzone(zone, input, onFile) {
+function dropzone(zone, input, onFiles) {
   zone.addEventListener("dragover", (event) => {
     event.preventDefault();
     zone.classList.add("is-over");
@@ -307,9 +312,9 @@ function dropzone(zone, input, onFile) {
   zone.addEventListener("drop", (event) => {
     event.preventDefault();
     zone.classList.remove("is-over");
-    if (event.dataTransfer.files.length) onFile(event.dataTransfer.files[0]);
+    if (event.dataTransfer.files.length) onFiles([...event.dataTransfer.files]);
   });
-  if (input) input.addEventListener("change", () => input.files.length && onFile(input.files[0]));
+  if (input) input.addEventListener("change", () => input.files.length && onFiles([...input.files]));
 }
 
 const selected = (selector) =>
@@ -395,8 +400,8 @@ function optionsSummary() {
 }
 
 function refreshButtons() {
-  $("run-anon").disabled = !$("text-anon").value.trim() && !state.anonFile;
-  $("clear-anon").hidden = !$("text-anon").value && !state.anonFile;
+  $("run-anon").disabled = !$("text-anon").value.trim() && !state.anonFile && !state.anonQueue.length;
+  $("clear-anon").hidden = !$("text-anon").value && !state.anonFile && !state.anonQueue.length;
   $("run-deanon").disabled = !state.deanonFile || !state.selectedMap;
   $("run-audit").disabled = !$("text-audit").value.trim();
   $("save-entities").disabled = $("entities-text").value === state.entitiesLoaded;
@@ -518,73 +523,202 @@ async function loadMaps() {
 }
 
 /* ------------------------------------------------------------ anonimizza */
+/** Una sola anonimizzazione, qualunque sia la sorgente: un documento che il server converte, o
+    del testo. Restituisce `{ result, baseName }`, tutto cio' che serve a mostrare o archiviare
+    l'esito. Estratta perche' una coda di file e un file singolo eseguano lo STESSO codice: una
+    seconda copia e' il posto in cui i due percorsi smettono di essere d'accordo. */
+async function anonymizeSource({ file, text }) {
+  if (file && isDocument(file.name)) {
+    progressStart(i18n.t("progress.loading", { name: file.name, size: humanSize(file.size) }));
+    const result = await requestWithProgress(
+      "/api/anonymize-document",
+      {
+        "X-Filename": file.name,
+        "X-Catalogs": selected(".catalog").join(","),
+        "X-Patterns": selected(".pattern").join(","),
+        "Content-Type": "application/octet-stream",
+      },
+      await file.arrayBuffer(),
+      (fraction) => {
+        if (fraction >= 1) progressWait(i18n.t("progress.converting"));
+        else progressPercent(fraction);
+      },
+    );
+    return { result, baseName: `${stripExtension(file.name)}.redacted.md` };
+  }
+  const result = await request("/api/anonymize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: file ? await file.text() : text,
+      catalogs: selected(".catalog"),
+      patterns: selected(".pattern"),
+    }),
+  });
+  return { result, baseName: `${file ? stripExtension(file.name) : i18n.t("filename.text")}.redacted.txt` };
+}
+
+/** Scrive la scheda dettagliata (evidenziazione, mappa, download) a partire da UN esito. La coda
+    tiene la sua fotografia per file, quindi questa descrive solo l'ULTIMO mostrato. */
+function presentResult(name, result, baseName) {
+  state.lastMapId = result.map_id;
+  pending = {
+    text: result.redacted,
+    name: baseName,
+    containerUrl: result.container_url || null,
+    containerName: result.container_name || "",
+  };
+  $("anon-result").hidden = false;
+  $("anon-result-title").textContent = i18n.t("result.title", { name });
+  chips($("anon-counts"), result.counts);
+  $("redacted").value = result.redacted;
+  renderHighlight(result.redacted);
+  state.lastReport = redactionReport(name, result);
+  state.lastReportName = `${stripExtension(baseName)}.report.md`;
+  $("download-report").hidden = false;
+  // The document itself, when the upload was one we can rewrite. One redaction produced both
+  // artifacts and one map, so they can never disagree; the button is absent when there is
+  // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).
+  $("download-document").hidden = !pending.containerUrl;
+  $("download-document").title = pending.containerUrl
+    ? i18n.t("result.sameMap", { name: pending.containerName })
+    : "";
+  $("mapping").innerHTML = `<span class="muted small">${i18n.t("mapping.notShown")}</span>`;
+}
+
+/* --------------------------------------------------------------- coda file */
+/* La coda e' SEQUENZIALE e lato client: il server resta one-shot, ogni file ha la sua chiamata,
+   la sua mappa e i suoi artefatti. Nessuno stato condiviso fra i file: l'esito di ciascuno e'
+   fotografato sulla sua riga quando arriva, cosi' il file B non puo' mostrare la mappa di A. */
+function queueButton(label, handler) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+function queueRow(item) {
+  const row = document.createElement("div");
+  row.className = "queue-item";
+  row.dataset.state = item.status;
+
+  const head = document.createElement("div");
+  head.className = "queue-head";
+  const name = document.createElement("span");
+  name.className = "queue-name";
+  name.textContent = item.file.name;
+  const status = document.createElement("span");
+  status.className = "queue-state";
+  status.textContent = i18n.t(`queue.${item.status}`);
+  head.append(name, status);
+  row.append(head);
+
+  if (item.status === "error") {
+    const message = document.createElement("p");
+    message.className = "queue-message";
+    message.textContent = item.message || "";
+    row.append(message);
+    return row;
+  }
+  if (item.status !== "done") return row;
+
+  const body = document.createElement("div");
+  body.className = "queue-body";
+  const counts = document.createElement("div");
+  counts.className = "chips";
+  chips(counts, item.result.counts);
+  body.append(counts);
+
+  const actions = document.createElement("div");
+  actions.className = "queue-actions";
+  if (item.result.container_url) {
+    actions.append(queueButton(i18n.t("queue.document"), async () => {
+      await downloadFromServer(item.result.container_url, item.result.container_name);
+    }));
+  }
+  actions.append(queueButton(i18n.t("queue.text"), () => download(item.baseName, item.result.redacted)));
+  actions.append(queueButton(i18n.t("queue.report"), () => download(item.reportName, item.report)));
+  body.append(actions);
+  row.append(body);
+  return row;
+}
+
+function renderQueue() {
+  const card = $("anon-queue-card");
+  const box = $("anon-queue");
+  const items = state.anonQueue;
+  card.hidden = items.length === 0;
+  box.innerHTML = "";
+  for (const item of items) box.append(queueRow(item));
+  const done = items.filter((item) => item.status === "done").length;
+  $("anon-queue-summary").textContent = items.length
+    ? i18n.t("queue.summary", { done, total: items.length })
+    : "";
+}
+
+async function runQueue() {
+  let lastOk = null;
+  const total = state.anonQueue.length;
+  for (const item of state.anonQueue) {
+    // Un file gia' fatto conserva la sua mappa e i suoi artefatti: riprocessarlo creerebbe una
+    // seconda mappa per lo stesso file e, se fallisse, trasformerebbe una riga con i download in
+    // un errore. Solo cio' che non e' ancora riuscito viene eseguito.
+    if (item.status === "done") continue;
+    item.status = "running";
+    renderQueue();
+    // Un file di testo non ha una percentuale da mostrare: se la barra del documento precedente
+    // restasse a video, mostrerebbe l'etichetta sbagliata mentre gira questo file.
+    if (!isDocument(item.file.name)) progressStop();
+    const done = state.anonQueue.filter((other) => other.status === "done").length;
+    setStatus($("anon-status"), i18n.t("queue.progress", { done: done + 1, total }));
+    try {
+      const { result, baseName } = await anonymizeSource({ file: item.file });
+      item.result = result;
+      item.baseName = baseName;
+      const name = result.container_name || baseName;
+      item.report = redactionReport(name, result);
+      item.reportName = `${stripExtension(baseName)}.report.md`;
+      item.status = "done";
+      lastOk = { name, result, baseName };
+    } catch (error) {
+      item.status = "error";
+      item.message = String(error.message || error);
+    }
+    renderQueue();
+  }
+  if (lastOk) presentResult(lastOk.name, lastOk.result, lastOk.baseName);
+  const ok = state.anonQueue.filter((item) => item.status === "done").length;
+  const failed = state.anonQueue.filter((item) => item.status === "error").length;
+  if (failed) {
+    setStatus(
+      $("anon-status"),
+      i18n.t("queue.finished", { ok, total }) + i18n.t("queue.failed", { n: failed }),
+      "error",
+    );
+  } else {
+    setStatus($("anon-status"), i18n.t("queue.finished", { ok, total }), "ok");
+  }
+  if (lastOk) $("anon-result").scrollIntoView({ block: "nearest" });
+  await loadMaps();
+}
+
 $("run-anon").addEventListener("click", async () => {
   const button = $("run-anon");
-  const file = state.anonFile;
-  const text = $("text-anon").value;
   show(button, true);
   setStatus($("anon-status"), i18n.t("progress.processing"));
   try {
-    let result;
-    let baseName;
-    if (file && isDocument(file.name)) {
-      progressStart(i18n.t("progress.loading", { name: file.name, size: humanSize(file.size) }));
-      result = await requestWithProgress(
-        "/api/anonymize-document",
-        {
-          "X-Filename": file.name,
-          "X-Catalogs": selected(".catalog").join(","),
-          "X-Patterns": selected(".pattern").join(","),
-          "Content-Type": "application/octet-stream",
-        },
-        await file.arrayBuffer(),
-        (fraction) => {
-          if (fraction >= 1) progressWait(i18n.t("progress.converting"));
-          else progressPercent(fraction);
-        },
-      );
-      baseName = `${stripExtension(file.name)}.redacted.md`;
-    } else {
-      result = await request("/api/anonymize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: file ? await file.text() : text,
-          catalogs: selected(".catalog"),
-          patterns: selected(".pattern"),
-        }),
-      });
-      baseName = `${file ? stripExtension(file.name) : i18n.t("filename.text")}.redacted.txt`;
+    if (state.anonQueue.length) {
+      await runQueue();
+      return;
     }
-    state.lastMapId = result.map_id;
-    pending = {
-      text: result.redacted,
-      name: baseName,
-      containerUrl: result.container_url || null,
-      containerName: result.container_name || "",
-    };
-
-    $("anon-result").hidden = false;
-    $("anon-result-title").textContent = i18n.t("result.title", { name: pending.containerName || baseName });
-    chips($("anon-counts"), result.counts);
-    $("redacted").value = result.redacted;
-    renderHighlight(result.redacted);
-    state.lastReport = redactionReport(pending.containerName || baseName, result);
-    state.lastReportName = `${stripExtension(baseName)}.report.md`;
-    $("download-report").hidden = false;
-    // The document itself, when the upload was one we can rewrite. One redaction produced both
-    // artifacts and one map, so they can never disagree; the button is absent when there is
-    // nothing to hand back (a PDF, a container we cannot open, or nothing to redact).
-    $("download-document").hidden = !pending.containerUrl;
-    $("download-document").title = pending.containerUrl
-      ? i18n.t("result.sameMap", { name: pending.containerName })
-      : "";
+    const { result, baseName } = await anonymizeSource({ file: state.anonFile, text: $("text-anon").value });
+    presentResult(result.container_name || baseName, result, baseName);
     if (result.container_error) {
       setStatus($("anon-status"), i18n.t("status.notRewritable", { detail: result.container_error }), "warn");
     } else {
       setStatus($("anon-status"), i18n.t("status.rulesApplied", { n: result.rules_applied }), "ok");
     }
-    $("mapping").innerHTML = `<span class="muted small">${i18n.t("mapping.notShown")}</span>`;
     $("anon-result").scrollIntoView({ block: "nearest" });
     await loadMaps();
   } catch (error) {
@@ -602,6 +736,8 @@ $("clear-anon").addEventListener("click", () => {
   $("text-anon").value = "";
   $("file-anon").value = "";
   state.anonFile = null;
+  state.anonQueue = [];
+  renderQueue();
   pending = { text: "", name: "redatto.txt", containerUrl: null, containerName: "" };
   $("download-document").hidden = true;
   progressStop();
@@ -1003,18 +1139,51 @@ async function acceptAnonFile(file) {
   setStatus($("anon-status"), i18n.t("file.loaded", { name: file.name }), "ok");
 }
 
-dropzone($("drop-anon"), $("file-anon"), async (file) => {
-  await acceptAnonFile(file);
+/** Un drop con PIU' file apre una coda: ogni file ha la sua riga, la sua chiamata e i suoi
+    artefatti. Un file solo resta il percorso classico (un testo riempie l'area, un documento arma
+    il bottone), cosi' il gesto piu' comune non cambia. */
+async function acceptAnonFiles(files) {
+  const list = [...files];
+  if (!list.length) return;
+  if (list.length === 1 && !state.anonQueue.length) {
+    await acceptAnonFile(list[0]);
+    refreshButtons();
+    return;
+  }
+  // Un'area di testo con dentro qualcosa verrebbe ignorata dalla coda: si svuota, cosi' l'unico
+  // input armato e' la coda stessa e non resta testo che sembra in attesa di partire.
+  $("text-anon").value = "";
+  state.anonFile = null;
+  $("file-anon").value = "";
+  const refused = [];
+  for (const file of list) {
+    if (state.maxUploadBytes && file.size > state.maxUploadBytes) refused.push(file);
+    else state.anonQueue.push({ file, status: "queued" });
+  }
+  renderQueue();
+  if (refused.length && !state.anonQueue.length) {
+    setStatus($("anon-status"), i18n.t("queue.refused", { n: refused.length }), "error");
+  } else if (refused.length) {
+    setStatus(
+      $("anon-status"),
+      i18n.t("queue.ready", { n: state.anonQueue.length }) + i18n.t("queue.refused", { n: refused.length }),
+      "error",
+    );
+  } else {
+    setStatus($("anon-status"), i18n.t("queue.ready", { n: state.anonQueue.length }), "ok");
+  }
+  refreshButtons();
+}
+
+dropzone($("drop-anon"), $("file-anon"), (files) => acceptAnonFiles(files));
+dropzone($("drop-deanon"), $("file-deanon"), (files) => {
+  state.deanonFile = files[0];
+  setStatus($("deanon-status"), i18n.t("file.ready", { name: files[0].name }), "ok");
   refreshButtons();
 });
-dropzone($("drop-deanon"), $("file-deanon"), (file) => {
-  state.deanonFile = file;
-  setStatus($("deanon-status"), i18n.t("file.ready", { name: file.name }), "ok");
-  refreshButtons();
-});
-dropzone($("drop-audit"), $("file-audit"), async (file) => {
-  $("text-audit").value = await file.text();
-  setStatus($("audit-status"), i18n.t("file.loaded", { name: file.name }), "ok");
+dropzone($("drop-audit"), $("file-audit"), async (files) => {
+  $("text-audit").value = await files[0].text();
+  setStatus($("audit-status"), i18n.t("file.loaded", { name: files[0].name }), "ok");
   refreshButtons();
 });
 

@@ -12,6 +12,12 @@ enforces that they agree.
 
 ### Fixed
 
+- **A backup with no terminal refuses instead of hanging on the passphrase prompt.** With
+  `ANON_BACKUP_PASSPHRASE` unset and stdin not a terminal — a test harness, cron, a service — the
+  prompt blocked with no archive and no message. It now fails closed, and a variable that is set to
+  an empty string is a refusal rather than a request to prompt. The refusal also stops the run
+  before the archive step, instead of being swallowed by the subshell that reads the passphrase.
+
 - **The XML tokenizer no longer moves a text boundary on legal XML.** A `>` inside a quoted
   attribute value, in a comment, in a CDATA body or in a doctype's internal subset used to end the
   markup span early, leaking the tail into the visible text and shifting every offset after it —
@@ -23,6 +29,11 @@ enforces that they agree.
   tool reported that it found nothing.
 
 ### Added
+
+- **Several dropped files run as a queue.** More than one file opens a card per file, each with its
+  own status and its own artifacts — the redacted document, the Markdown and the report — processed
+  one after another by the page. The server still answers one request at a time, and no file can
+  show another's map. A single file keeps the one-step flow.
 
 - **The local model's answer is streamed.** The panel reads it as server-sent events
   (`/api/suggest-stream`) and shows the text while it arrives, and `suggest.py --stream` does the
