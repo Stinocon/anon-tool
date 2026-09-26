@@ -1030,7 +1030,15 @@ class CodeFingerprintTest(unittest.TestCase):
             shutil.rmtree(root, ignore_errors=True)
 
     def test_the_container_fresh_gate_is_wired_and_the_script_exists(self) -> None:
-        """A script nobody runs is a comment: the gate has to declare it."""
+        """A script nobody runs is a comment: the gate has to declare it.
+
+        `scripts/` and `.pi/` are REPOSITORY artefacts (the mirror names them repo-only) and this
+        suite runs from both trees: from the runtime tree there is no gate to check, and skipping
+        says so instead of failing a suite whose job is to measure the engine. The repository is
+        the tree that carries `.pi/`; there the assertion below is enforced exactly as before.
+        """
+        if not (HOME / ".pi").is_dir():
+            self.skipTest(".pi/ is repo-only: this is the runtime tree, with no gate to check")
         declaration = HOME / ".pi" / "verify.json"
         self.assertTrue(declaration.is_file(), f"the gate declaration is missing: {declaration}")
         verify = json.loads(declaration.read_text(encoding="utf-8"))
@@ -1135,7 +1143,13 @@ class RecallCorpusTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        spec = importlib.util.spec_from_file_location("anon_recall_sweep", HOME / "scripts" / "recall-sweep.py")
+        sweep_path = HOME / "scripts" / "recall-sweep.py"
+        if not (HOME / ".pi").is_dir():
+            raise unittest.SkipTest(
+                f"{sweep_path.name} is a repository script; the recall measurement runs with the "
+                "repository's copy of this suite"
+            )
+        spec = importlib.util.spec_from_file_location("anon_recall_sweep", sweep_path)
         assert spec and spec.loader
         cls.sweep = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = cls.sweep

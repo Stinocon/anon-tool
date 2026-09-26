@@ -738,6 +738,11 @@ class BenchMetricTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         path = Path(__file__).resolve().parent.parent / "scripts" / "bench-suggest.py"
+        if not (HOME / ".pi").is_dir():
+            raise unittest.SkipTest(
+                f"{path.name} is a repository script; this measurement runs with the repository's "
+                "copy of this suite"
+            )
         spec = importlib.util.spec_from_file_location("bench_suggest_metric", path)
         assert spec and spec.loader
         cls.bench = importlib.util.module_from_spec(spec)
