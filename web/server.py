@@ -81,6 +81,71 @@ STDERR_KEEP_BYTES = 8192
 DEFAULT_RATE_LIMIT = 120  # requests per minute on /api/*, per process; 0 disables the bucket
 MAP_LIST_LIMIT = 100  # `/api/maps` is capped; the COUNT is not (see `_list_maps`)
 AUDIT_FINDING_LIMIT = 50  # how many findings the audit lists; `findings_truncated` says when there are more
+WORK_OWNER_FILE = "owner"  # inside a per-request work dir: the creating server's pid
+LEGACY_ORPHAN_SECONDS = 3600  # marker-less work dirs: only one this old may be a leftover
+
+
+def _request_work_dir() -> Path:
+    """Per-request work dir, marked with this server's pid. The `finally` of each request
+    deletes it; a kill cannot — and the next start sweeps what the marker says is no longer
+    served (`sweep_orphan_work`)."""
+    work = Path(tempfile.mkdtemp(prefix="anon-web-"))
+    try:
+        (work / WORK_OWNER_FILE).write_text(f"{os.getpid()}\n", encoding="ascii")
+    except OSError:
+        pass  # an unreadable marker: the sweep falls back to age
+    return work
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but is not signalable: not this sweep's to judge — never touch it
+    return True
+
+
+def _work_owner_pid(work: Path) -> int | None:
+    try:
+        pid = int((work / WORK_OWNER_FILE).read_text(encoding="ascii").strip() or "0")
+    except (OSError, ValueError):
+        return None
+    # A pid this low is not a server: 0 would "signal the process group" and read as alive,
+    # and a kill mid-write can leave an empty marker — both fall back to the age rule.
+    return pid if pid > 0 else None
+
+
+def sweep_orphan_work(root: Path | None = None) -> int:
+    """Remove the per-request work dirs a killed run left behind: each one holds the original
+    document, in clear, in the system temp dir. A dir goes when its owner pid is dead, or — for
+    pre-marker leftovers — when it is old enough that no live request can own it (the converter's
+    own timeout is minutes). A dir owned by a LIVE pid is never touched: it may be another
+    server's in-flight request. Best effort: what resists stays for the next start. Returns
+    how many dirs went."""
+    base = Path(root) if root is not None else Path(tempfile.gettempdir())
+    removed = 0
+    for path in sorted(base.glob("anon-web-*")):
+        if not path.is_dir():
+            continue
+        pid = _work_owner_pid(path)
+        if pid is not None:
+            if _pid_is_alive(pid):
+                continue
+        else:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue  # vanished between the listing and the look: gone is the goal
+            if time.time() - mtime < LEGACY_ORPHAN_SECONDS:
+                continue  # no marker and young: a live pre-marker request may still own it
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            continue
+        removed += 1
+    return removed
 # The tool ships its own converter; the Pi `docs` skill is used only as a fallback when the
 # tool's own convert.py is missing (older installs).
 def _default_converter() -> Path:
@@ -830,7 +895,7 @@ class Handler(BaseHTTPRequestHandler):
         filename = Path(self.headers.get("X-Filename") or "upload.bin").name
         catalogs = self.headers.get("X-Catalogs")
         patterns = self.headers.get("X-Patterns")
-        work = Path(tempfile.mkdtemp(prefix="anon-web-"))
+        work = _request_work_dir()
         try:
             source = work / filename
             source.write_bytes(raw)
@@ -883,7 +948,7 @@ class Handler(BaseHTTPRequestHandler):
         if not map_path.is_file():
             raise ValueError("unknown map id")
         entries = deanon_engine.load_map(map_path)
-        work = Path(tempfile.mkdtemp(prefix="anon-web-"))
+        work = _request_work_dir()
         try:
             source = work / filename
             source.write_bytes(raw)
@@ -925,7 +990,7 @@ class Handler(BaseHTTPRequestHandler):
         filename = Path(self.headers.get("X-Filename") or "upload.bin").name
         catalogs = self.headers.get("X-Catalogs")
         patterns = self.headers.get("X-Patterns")
-        work = Path(tempfile.mkdtemp(prefix="anon-web-"))
+        work = _request_work_dir()
         try:
             source = work / filename
             source.write_bytes(raw)
@@ -1001,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
         text = payload.get("text")
         if not isinstance(text, str):
             raise ValueError("no text")
-        work = Path(tempfile.mkdtemp(prefix="anon-web-"))
+        work = _request_work_dir()
         try:
             probe = work / f"{name}.txt"
             probe.write_text(text, encoding="utf-8")
@@ -1148,6 +1213,10 @@ def main(argv: list[str] | None = None) -> int:
     STATE["nonce"] = secrets.token_urlsafe(16)
     STATE["port"] = args.port
     STATE["limiter"] = RateLimiter(args.rate_limit)
+    swept = sweep_orphan_work()
+    if swept:
+        print(f"server: removed {swept} work dir(s) a killed run left in the temp dir",
+              file=sys.stderr)
     server = LocalServer((args.host, args.port), Handler)
     host_display = "127.0.0.1" if loopback else args.host
     print(f"anon-tool UI on http://{host_display}:{args.port}  (Ctrl-C to stop)", flush=True)

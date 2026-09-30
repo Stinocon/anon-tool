@@ -1586,5 +1586,142 @@ class DocumentFallbackTest(unittest.TestCase):
         self.assertNotIn("mario@contoso.it", outcome["result"]["redacted"])
 
 
+
+def _observed_dead_pid() -> int:
+    """A pid that is verifiably not running — the sweep must be able to see a dead owner."""
+    for _ in range(20):
+        process = subprocess.Popen(["/usr/bin/true"])
+        process.wait()
+        try:
+            os.kill(process.pid, 0)
+        except ProcessLookupError:
+            return process.pid
+        except OSError:
+            continue  # recycled into a process we cannot signal: try another
+    raise AssertionError("could not observe a dead pid")
+
+
+class OrphanSweepTest(unittest.TestCase):
+    """A killed server cannot run its `finally`, so the per-request work dirs it leaves behind
+    hold the original document, in clear, in the system temp dir. The next start must sweep them
+    — without ever touching a dir that a live server still owns."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location("anon_web_sweep", SERVER)
+        assert spec and spec.loader
+        cls.server = importlib.util.module_from_spec(spec)
+        sys.modules["anon_web_sweep"] = cls.server
+        spec.loader.exec_module(cls.server)
+        cls.root = Path(tempfile.mkdtemp(prefix="anon-sweep-test-"))
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def _work_dir(self, name: str, pid: int | None) -> Path:
+        work = self.root / f"anon-web-{name}"
+        work.mkdir()
+        (work / "document.docx").write_bytes(b"the original document, in clear")
+        if pid is not None:
+            (work / "owner").write_text(f"{pid}\n", encoding="ascii")
+        return work
+
+    def test_the_work_of_a_dead_server_is_swept(self) -> None:
+        orphan = self._work_dir("dead", _observed_dead_pid())
+        removed = self.server.sweep_orphan_work(self.root)
+        self.assertFalse(orphan.exists(), "the killed run's document must not outlive it")
+        self.assertGreaterEqual(removed, 1)
+
+    def test_the_work_of_a_live_server_is_never_touched(self) -> None:
+        live = self._work_dir("live", os.getpid())
+        self.server.sweep_orphan_work(self.root)
+        self.assertTrue(live.exists(), "another live server's in-flight request is untouchable")
+
+    def test_a_markerless_dir_goes_only_when_old(self) -> None:
+        young = self._work_dir("young-legacy", None)
+        old = self._work_dir("old-legacy", None)
+        old_empty_marker = self._work_dir("old-empty-marker", 0)  # a kill mid-write can leave it
+        two_hours_ago = time.time() - 2 * 3600
+        os.utime(old, (two_hours_ago, two_hours_ago))
+        os.utime(old_empty_marker, (two_hours_ago, two_hours_ago))
+        self.server.sweep_orphan_work(self.root)
+        self.assertTrue(young.exists(),
+                        "a young marker-less dir may still be a live pre-marker request")
+        self.assertFalse(old.exists())
+        self.assertFalse(old_empty_marker.exists(),
+                        "pid 0 signals a process group: an empty marker must fall back to age")
+
+    def test_a_stray_file_with_the_prefix_is_ignored(self) -> None:
+        stray = self.root / "anon-web-not-a-dir"
+        stray.write_text("a file", encoding="utf-8")
+        self.server.sweep_orphan_work(self.root)
+        self.assertTrue(stray.exists())
+
+    def test_a_symlink_with_the_prefix_is_never_followed(self) -> None:
+        """A symlink named like a work dir must never let the sweep reach what it points at:
+        `rmtree` refuses it and the sweep treats the refusal as `leave it alone`."""
+        target = self.root / "real-directory"
+        target.mkdir()
+        (target / "keep-me.txt").write_text("the sweep must never delete this", encoding="utf-8")
+        link = self.root / "anon-web-malicious"
+        link.symlink_to(target, target_is_directory=True)
+        self.server.sweep_orphan_work(self.root)
+        self.assertTrue(link.is_symlink(), "the symlink itself is not the sweep's to remove")
+        self.assertTrue((target / "keep-me.txt").exists(),
+                        "what the symlink points at must stay untouched")
+
+
+class StartupSweepTest(unittest.TestCase):
+    """The sweep is wired to the server's start: a killed run's leftover is gone before the
+    first request is served."""
+
+    orphan: Path
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = Path(tempfile.mkdtemp(prefix="anon-web-test-"))
+        (cls.tmp / "maps").mkdir()
+        (cls.tmp / "catalogs").mkdir()
+        cls.orphan = cls.tmp / "anon-web-killed"
+        cls.orphan.mkdir()
+        (cls.orphan / "document.docx").write_bytes(b"the original document, in clear")
+        (cls.orphan / "owner").write_text(f"{_observed_dead_pid()}\n", encoding="ascii")
+        cls.port = free_port()
+        # TMPDIR points the server's temp dir at the sandbox, so the startup sweep lands there.
+        cls.env = {**os.environ, "ANON_HOME": str(cls.tmp), "TMPDIR": str(cls.tmp)}
+        cls.process = subprocess.Popen(
+            [sys.executable, str(SERVER), "--port", str(cls.port), "--rate-limit", "0"],
+            env=cls.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.time() + 15
+        page = None
+        while time.time() < deadline:
+            if cls.process.poll() is not None:
+                raise AssertionError(f"server died: {cls.process.stderr.read()}")
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{cls.port}/", timeout=1) as response:
+                    page = response.read().decode()
+                break
+            except Exception:  # noqa: BLE001 - still starting
+                time.sleep(0.2)
+        if page is None:
+            cls.process.kill()
+            raise AssertionError("server did not come up")
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.process.terminate()
+        try:
+            cls.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            cls.process.kill()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_a_killed_runs_leftover_is_gone_before_the_first_request(self) -> None:
+        self.assertFalse(self.orphan.exists(),
+                        "the sweep must run before the server serves anything")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

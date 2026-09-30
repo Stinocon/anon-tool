@@ -31,6 +31,13 @@ enforces that they agree.
 
 ### Fixed
 
+- A killed server could leave the per-request work directory — holding the original document,
+  in clear — in the system temp dir until the OS cleaned it. Every work dir now carries its
+  server's pid, and the next start sweeps the ones whose owner is gone; a dir owned by a live
+  server is never touched.
+
+### Fixed
+
 - **A backup with no terminal refuses instead of hanging on the passphrase prompt.** With
   `ANON_BACKUP_PASSPHRASE` unset and stdin not a terminal — a test harness, cron, a service — the
   prompt blocked with no archive and no message. It now fails closed, and a variable that is set to

@@ -450,6 +450,11 @@ and a pair that cannot advance is refused at startup rather than looped on.
   `GET /api/download/<token>/<name>` in 64 KB blocks; the URL is percent-encoded, because a browser
   encodes the path and the server is handed it still encoded. Base64 inside the JSON response would build ~1.33x the file as a string on top of
   the file, the Markdown and the decoded copies — several hundred MB of strings for one upload;
+- **the upload rests in a marked temp dir, and never beyond its request**: each per-request work
+  dir is deleted by the request's own `finally`; a kill cannot run a `finally`, so the dir also
+  carries its server's pid and the next start sweeps the ones whose owner is gone — a dir owned by
+  a live pid is never touched, because it may be another server's in-flight request. The
+  original does not outlive its request by more than the next start;
 - **one redaction, two artifacts.** The UI redacts the container once (one allocation, one map, one
   tag) and derives the Markdown from the already redacted file. Redacting the Markdown and the
   container independently with one tag would give two maps sharing it — `[EMAIL-1-tag]` meaning a
