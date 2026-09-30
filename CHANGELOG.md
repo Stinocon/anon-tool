@@ -8,6 +8,27 @@ The product version is single-sourced: it lives in `anon.py` (`VERSION`), and `d
 UI and `--version` all report it. `tests/test_anon.py::CliTest::test_product_version_is_single_sourced`
 enforces that they agree.
 
+## [2.2.0] - 2026-10-01
+
+### Added
+
+- **A surface is declared once.** The same surface, twice, in the same context — whatever the
+  types, whatever the files — matches the same text with the TYPE picked by file order. The
+  dictionary save now refuses it (both declarations named, `file:line`), the suggester's
+  *Aggiungi al dizionario* refuses a proposal whose surface is already held (naming the entry
+  that is there), and `anon.py --verify-dictionary` reports what a hand edit left behind
+  (exit 1, `--json` for the machine).
+- ***Verifica il dizionario*** (Dizionario tab): the deterministic check on the three custom
+  files, every duplicate with both declarations — and, with the local model configured, the
+  model's advice on which type fits the surface. The advice is PROGRESS: the operator picks,
+  and the save re-checks. Without a model the check still answers, with an honest note.
+
+### Fixed
+
+- The load keeps the first of a same-surface pair (deterministic — documented in DESIGN.md §5)
+  instead of leaving it to file order as an unstated accident: a duplicate never leaks, so a
+  stale dictionary keeps working while the operator picks one.
+
 ## [2.1.0] - 2026-09-30
 
 ### Added

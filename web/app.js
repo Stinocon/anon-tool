@@ -1074,11 +1074,81 @@ $("audit-reveal").addEventListener("change", () => {
 });
 
 /* --------------------------------------------------------------- dizionario */
+/* A voce the merged dictionary would hold twice is an ambiguity the save refuses and the add
+   never creates: the same surface, twice, types the span by file order. The refusal names
+   every declaration so the operator can pick one — and the element is cleared on every load
+   and successful save, so what it shows is always about the text on screen. */
+function renderDictionaryConflicts(conflicts, advice, adviceError) {
+  const box = $("dict-conflicts");
+  box.innerHTML = "";
+  if (!conflicts || !conflicts.length) {
+    box.hidden = true;
+    return;
+  }
+  const title = document.createElement("p");
+  title.className = "conflict-title";
+  title.textContent = i18n.t("dict.conflictTitle");
+  box.append(title);
+  for (const conflict of conflicts) {
+    const row = document.createElement("p");
+    row.className = "conflict-row";
+    row.textContent =
+      conflict.surface +
+      "\n" +
+      conflict.entries
+        .map((entry) => `${entry.path.split("/").pop()}:${entry.line}  ${entry.type}|${entry.value}`)
+        .join("\n");
+    box.append(row);
+  }
+  const hint = document.createElement("p");
+  hint.className = "muted small";
+  hint.textContent = i18n.t("dict.conflictHint");
+  box.append(hint);
+  for (const item of advice || []) {
+    const row = document.createElement("p");
+    row.className = "conflict-advice";
+    row.textContent = i18n.t("dict.advice", { type: item.keep, reason: item.reason });
+    box.append(row);
+  }
+  if (adviceError) {
+    const note = document.createElement("p");
+    note.className = "muted small";
+    note.textContent = i18n.t("dict.adviceMissing");
+    box.append(note);
+  }
+  box.hidden = false;
+}
+
+$("verify-dictionary").addEventListener("click", async () => {
+  /* The deterministic check always runs; the model's advice is PROGRESS that rides on top:
+     without a model the conflicts still show, with an honest note instead of a fake silence. */
+  const button = $("verify-dictionary");
+  show(button, true, i18n.t("busy.checking"));
+  try {
+    const result = await request("/api/suggest-dictionary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!result.conflicts || !result.conflicts.length) {
+      renderDictionaryConflicts([]);
+      setStatus($("entities-status"), i18n.t("dict.clean"), "ok");
+      return;
+    }
+    renderDictionaryConflicts(result.conflicts, result.advice || [], result.advice_error);
+    setStatus($("entities-status"), i18n.t("dict.refused", { n: result.conflicts.length }), "error");
+  } catch (error) {
+    setStatus($("entities-status"), String(error.message || error), "error");
+  } finally {
+    show(button, false);
+  }
+});
 async function loadEntities() {
   const entities = await request(`/api/entities?file=${encodeURIComponent(state.entitiesFile)}`);
   $("entities-text").value = entities.text || "";
   state.entitiesLoaded = $("entities-text").value;
   $("entities-path").textContent = entities.path;
+  renderDictionaryConflicts([]);
   refreshButtons();
 }
 
@@ -1220,7 +1290,7 @@ $("suggest-run").addEventListener("click", async () => {
    Il valore resta nel testo e viene nominato, non aggiunto: scartarlo in silenzio sarebbe peggio. */
 const dictionaryLine = (type, value) => (/[\n\r|]/.test(value) ? null : `${type}|${value}`);
 
-$("suggest-add").addEventListener("click", () => {
+$("suggest-add").addEventListener("click", async () => {
   const chosen = [];
   const skipped = [];
   for (const row of $("suggest-list").querySelectorAll(".suggest-row")) {
@@ -1238,14 +1308,63 @@ $("suggest-add").addEventListener("click", () => {
     return;
   }
   const area = $("entities-text");
-  area.value = `${area.value.replace(/\s*$/, "")}\n${chosen.join("\n")}\n`;
-  $("save-entities").disabled = false;
+  /* The append validates BEFORE it writes: a proposal whose voce the merged dictionary
+     already holds never enters it — the suggester cannot create what the save would refuse.
+     The check runs on the candidate text (what is on screen plus the chosen lines), the
+     refusal names the entry that is already there. */
+  const candidate = `${area.value.replace(/\s*$/, "")}\n${chosen.join("\n")}\n`;
+  let conflicts = [];
+  try {
+    const verdict = await request("/api/dictionary/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: state.entitiesFile, text: candidate }),
+    });
+    conflicts = verdict.conflicts || [];
+  } catch (error) {
+    setStatus($("suggest-status"), String(error.message || error), "error");
+    return;
+  }
+  const refusals = [];
+  const accepted = [];
+  for (const line of chosen) {
+    const bar = line.indexOf("|");
+    const type = line.slice(0, bar).toLowerCase();
+    const value = line.slice(bar + 1);
+    // The engine keys a voce by its NFC-normalized casefold: match the same way, so a Unicode
+    // form variant of an existing entry is refused here too, not just at the save.
+    const voce = value.normalize("NFC").toLowerCase();
+    const conflict = conflicts.find((item) =>
+      item.entries.some(
+        (entry) => entry.value.normalize("NFC").toLowerCase() === voce));
+    if (!conflict) {
+      accepted.push(line);
+      continue;
+    }
+    const existing = conflict.entries.find(
+      (entry) => entry.type.toLowerCase() !== type || entry.value !== value);
+    refusals.push(
+      i18n.t("suggest.duplicate", {
+        value,
+        type: existing ? existing.type : "",
+        file: existing ? existing.path.split("/").pop() : "",
+        line: existing ? existing.line : "",
+      }),
+    );
+  }
+  if (accepted.length) {
+    area.value = `${area.value.replace(/\s*$/, "")}\n${accepted.join("\n")}\n`;
+    $("save-entities").disabled = false;
+  }
   renderSuggestions([]);
-  const added = i18n.t("entities.added", { n: chosen.length });
+  const added = i18n.t("entities.added", { n: accepted.length });
+  let message = added;
+  if (skipped.length) message += i18n.t("entities.addedSkipped", { n: skipped.length });
+  if (refusals.length) message += i18n.t("suggest.refused", { list: refusals.join(" · ") });
   setStatus(
     $("suggest-status"),
-    skipped.length ? added + i18n.t("entities.addedSkipped", { n: skipped.length }) : added,
-    skipped.length ? "error" : "ok",
+    message,
+    skipped.length || refusals.length ? "error" : "ok",
   );
 });
 
@@ -1259,9 +1378,16 @@ $("save-entities").addEventListener("click", async () => {
       body: JSON.stringify({ text: $("entities-text").value }),
     });
     state.entitiesLoaded = $("entities-text").value;
+    renderDictionaryConflicts([]);
     setStatus($("entities-status"), i18n.t("entities.saved", { n: result.entries }), "ok");
   } catch (error) {
-    setStatus($("entities-status"), String(error.message || error), "error");
+    const conflicts = error.payload && error.payload.conflicts;
+    if (conflicts) {
+      renderDictionaryConflicts(conflicts);
+      setStatus($("entities-status"), i18n.t("dict.refused", { n: conflicts.length }), "error");
+    } else {
+      setStatus($("entities-status"), String(error.message || error), "error");
+    }
   } finally {
     show(button, false);
     refreshButtons();

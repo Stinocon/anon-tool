@@ -703,6 +703,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._audit_document()
             elif path == "/api/entities":
                 self._save_entities()
+            elif path == "/api/dictionary/validate":
+                self._validate_dictionary()
+            elif path == "/api/suggest-dictionary":
+                self._suggest_dictionary()
             elif path == "/api/maps/reveal":
                 self._reveal_map()
             elif path == "/api/maps/purge":
@@ -1060,12 +1064,11 @@ class Handler(BaseHTTPRequestHandler):
                 failed += 1
         self._json({"deleted": deleted, "failed": failed})
 
-    def _save_entities(self) -> None:
-        name, target = _dictionary_path(self._query().get("file"))
-        payload = self._read_json()
-        text = payload.get("text")
-        if not isinstance(text, str):
-            raise ValueError("no text")
+    def _dictionary_conflicts(self, name: str, target: Path, text: str) -> tuple[list, list[dict]]:
+        """Validate one dictionary file's candidate content, then check the whole it would
+        belong to: the engine's `dictionary_conflicts` on the would-be file plus the other two
+        as they are on disk. Nothing is written; both the save and the validate endpoint run
+        this, so what the suggester checks is exactly what the save would refuse."""
         work = _request_work_dir()
         try:
             probe = work / f"{name}.txt"
@@ -1074,12 +1077,70 @@ class Handler(BaseHTTPRequestHandler):
                 entries = anon.load_entities(probe)  # validates BEFORE touching the real file
             except ValueError as exc:
                 raise ValueError(f"dictionary rejected: {exc}") from exc
-            anon._write_private(target, text if text.endswith("\n") else text + "\n")
-            self._json(
-                {"saved": True, "entries": anon.entity_count(entries), "path": str(target), "name": name}
-            )
         finally:
             shutil.rmtree(work, ignore_errors=True)
+        conflicts = anon.dictionary_conflicts(
+            list(anon.DICTIONARIES.values()), texts={target: text}
+        )
+        return entries, conflicts
+
+    def _save_entities(self) -> None:
+        """PUT /api/entities — one dictionary file at a time (`?file=` picks which).
+
+        Two things refuse a save, and both leave the file untouched: a line the engine cannot
+        parse, and a voce the merged dictionary would hold twice — the same surface, same
+        context, any types or files, matches the same text with the TYPE picked by file order.
+        """
+        name, target = _dictionary_path(self._query().get("file"))
+        payload = self._read_json()
+        text = payload.get("text")
+        if not isinstance(text, str):
+            raise ValueError("no text")
+        entries, conflicts = self._dictionary_conflicts(name, target, text)
+        if conflicts:
+            # A refusal, not a guess: both declarations go back, so the operator can pick one.
+            self._json({"error": "dictionary_conflicts", "conflicts": conflicts}, status=400)
+            return
+        anon._write_private(target, text if text.endswith("\n") else text + "\n")
+        self._json(
+            {"saved": True, "entries": anon.entity_count(entries), "path": str(target), "name": name}
+        )
+
+    def _validate_dictionary(self) -> None:
+        """POST /api/dictionary/validate — the save's check, read-only: would this candidate
+        text for one file create the same-voce conflicts in the merged dictionary? The
+        suggester's add runs this before appending, so a proposal can never create what the
+        save would then refuse. Syntax errors refuse here too: the answer is for an operator
+        who is about to edit, and a silent syntactically-broken verdict would be a lie."""
+        payload = self._read_json()
+        text = payload.get("text")
+        if not isinstance(text, str):
+            raise ValueError("no text")
+        name, target = _dictionary_path(payload.get("file"))
+        _entries, conflicts = self._dictionary_conflicts(name, target, text)
+        self._json({"conflicts": conflicts, "name": name, "path": str(target)})
+
+    def _suggest_dictionary(self) -> None:
+        """POST /api/suggest-dictionary — verify the merged custom dictionary, then ask the
+        model which declaration to keep per conflict.
+
+        The verify is deterministic and always runs (`anon.dictionary_conflicts` on the three
+        files); the advice is PROGRESS and optional: without a model the conflicts still come
+        back, with an honest `advice_error` — a fake empty advice would read as "the model saw
+        them and had nothing to say".
+        """
+        conflicts = anon.dictionary_conflicts(list(anon.DICTIONARIES.values()))
+        advice: list = []
+        advice_error = ""
+        if conflicts:
+            if SUGGEST_BACKEND is None:
+                advice_error = "the local model is not configured"
+            else:
+                try:
+                    advice = suggest_engine.suggest_dictionary(conflicts, SUGGEST_BACKEND)
+                except suggest_engine.BackendError as exc:
+                    advice_error = str(exc)
+        self._json({"conflicts": conflicts, "advice": advice, "advice_error": advice_error})
 
     def _reveal_map(self) -> None:
         payload = self._read_json()

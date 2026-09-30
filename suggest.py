@@ -89,6 +89,39 @@ CANDIDATES_SCHEMA: dict[str, object] = {
     "additionalProperties": False,
 }
 
+# The dictionary-curation question: the same surface declared twice, which TYPE to keep. The
+# advice is PROGRESS, never a verdict — nothing is applied until the operator saves.
+DICTIONARY_ADVICE_PROMPT = (
+    "You are the curator of a LOCAL document anonymizer's custom dictionary. The operator "
+    "declared the same surface twice, with different types, and one declaration must go. For "
+    "each conflict pick the TYPE that fits the surface best (AZIENDA a company, PERSONA a "
+    "person, CLIENTE a client, SEDE a location, ALTRO anything else) and give one short reason "
+    "in the OPERATOR's language. Your advice is never applied on its own: the operator decides. "
+    'Answer with JSON only: {"advice": [{"surface": "<verbatim>", "keep": "<one TYPE>", '
+    '"reason": "<one short line>"}]}. When you cannot tell, answer {"advice": []}.'
+)
+
+ADVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "advice": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "surface": {"type": "string"},
+                    "keep": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["surface", "keep"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["advice"],
+    "additionalProperties": False,
+}
+
 
 class BackendError(RuntimeError):
     """The backend did not answer usably. Always fatal: never an empty result set."""
@@ -322,9 +355,19 @@ class LoopbackBackend:
             }
         return payload
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, system: str | None = None,
+                 schema: "dict | None" = None) -> str:
+        """`system` and `schema` override the candidates' ones: `suggest_dictionary` asks a
+        different question, and must not be answered with the candidate contract."""
+        payload = self._payload(prompt, False)
+        if system or schema:
+            messages = payload["messages"]
+            if system:
+                messages[0] = {"role": "system", "content": system}
+            if schema and self.constrained:
+                payload["response_format"]["json_schema"] = {"name": "advice", "schema": schema}
         try:
-            raw = self.transport(self._payload(prompt, False), self.url, self.timeout, self.headers)
+            raw = self.transport(payload, self.url, self.timeout, self.headers)
         except Exception as exc:  # noqa: BLE001 - every transport failure is the same failure here
             raise BackendError(f"the backend did not answer: {type(exc).__name__}: {exc}") from exc
         return _content_of(raw)
@@ -637,6 +680,52 @@ def suggest(
         proposals=_merge(proposal_lists, limit), backend=backend,
         chunk_overlap=chunk_overlap if len(windows) > 1 else 0,
     )
+
+
+def parse_advice(content: str, conflicts: list[dict]) -> list[dict]:
+    """Validate the model's advice against the KNOWN conflicts.
+
+    A surface the dictionary does not hold, or a kept type that is not one of that conflict's
+    candidates, is dropped — the same distrust `parse_candidates` applies to values: the model
+    cannot invent what to keep, only choose among what is there.
+    """
+    data = _extract_json(content)
+    if not isinstance(data, dict) or not isinstance(data.get("advice"), list):
+        raise BackendError("the backend did not answer with the advice JSON")
+    advice: list[dict] = []
+    for item in data["advice"]:
+        if not isinstance(item, dict):
+            continue
+        conflict = next(
+            (entry for entry in conflicts
+             if str(entry.get("surface")) == str(item.get("surface"))), None)
+        keep = str(item.get("keep"))
+        if conflict is None or keep not in {str(e["type"]) for e in conflict["entries"]}:
+            continue  # invented, or not one of the candidates
+        advice.append({"surface": conflict["surface"], "keep": keep,
+                       "reason": str(item.get("reason") or "")})
+    return advice
+
+
+def suggest_dictionary(conflicts: list[dict], backend) -> list[dict]:
+    """One question, one answer: for each same-voce conflict, which declaration to keep.
+
+    The conflicts are ALREADY found — deterministically, by `anon.dictionary_conflicts` — so
+    this adds only the semantic judgement: which TYPE fits the surface. The advice is PROGRESS,
+    never the verdict: nothing is applied until the operator edits and saves (and the save
+    re-checks). With no conflicts there is nothing to ask, and the backend is not called.
+    """
+    if not conflicts:
+        return []
+    question = json.dumps(
+        [{"surface": conflict["surface"],
+          "candidates": [f"{entry['type']} (line {entry['line']})"
+                          for entry in conflict["entries"]]}
+         for conflict in conflicts],
+        ensure_ascii=False,
+    )
+    answer = backend.complete(question, system=DICTIONARY_ADVICE_PROMPT, schema=ADVICE_SCHEMA)
+    return parse_advice(answer, conflicts)
 
 
 def suggest_events(

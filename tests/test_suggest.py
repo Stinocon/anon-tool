@@ -50,7 +50,9 @@ def sse(content: str) -> bytes:
 
 
 class SilentBackend:
-    """The unit-test backend: no transport at all, a fixed answer."""
+    """The unit-test backend: no transport at all, a fixed answer — the CONTENT, exactly
+    the way the real backends return from `complete`. Extra call arguments (a system prompt,
+    a schema) are accepted and ignored: the real backends carry them."""
 
     name = "silent"
 
@@ -58,7 +60,7 @@ class SilentBackend:
         self.answer = answer
         self.prompts: list[str] = []
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, **_ignored) -> str:
         self.prompts.append(prompt)
         return self.answer
 
@@ -758,6 +760,68 @@ class BenchMetricTest(unittest.TestCase):
     def test_a_bounded_fragment_names_the_value(self) -> None:
         self.assertTrue(self.bench._named("Rossi", "Mario Rossi"))
         self.assertFalse(self.bench._named("ario", "Mario Rossi"))
+
+
+class DictionaryAdviceTest(unittest.TestCase):
+    """The same voce twice: the model says WHICH declaration to keep, the operator decides.
+
+    The advice is validated against the KNOWN conflicts — a surface the dictionary does not
+    hold, or a type that is not one of its candidates, is dropped: the same distrust the
+    candidate values get. The advice is PROGRESS, never a verdict."""
+
+    def _conflicts(self) -> list[dict]:
+        return [
+            {
+                "surface": "NOME AZIENDA",
+                "entries": [
+                    {"path": "/tmp/entities.txt", "line": 1, "type": "AZIENDA",
+                     "value": "NOME AZIENDA", "case_sensitive": False},
+                    {"path": "/tmp/entities.txt", "line": 2, "type": "ALTRO",
+                     "value": "NOME AZIENDA", "case_sensitive": False},
+                ],
+            }
+        ]
+
+    def test_the_advice_aligns_with_the_conflicts(self) -> None:
+        backend = SilentBackend(json.dumps(
+            {"advice": [{"surface": "NOME AZIENDA", "keep": "AZIENDA",
+                         "reason": "it reads as a company"}]}))
+        advice = suggest.suggest_dictionary(self._conflicts(), backend)
+        self.assertEqual(advice, [{"surface": "NOME AZIENDA", "keep": "AZIENDA",
+                                    "reason": "it reads as a company"}])
+        # the question carries the surfaces and BOTH candidate types, with their declarations
+        self.assertIn("NOME AZIENDA", backend.prompts[0])
+        self.assertIn("AZIENDA", backend.prompts[0])
+        self.assertIn("ALTRO", backend.prompts[0])
+
+    def test_an_invented_surface_is_dropped(self) -> None:
+        backend = SilentBackend(json.dumps(
+            {"advice": [{"surface": "Non esisto", "keep": "AZIENDA", "reason": "invented"}]}))
+        self.assertEqual(suggest.suggest_dictionary(self._conflicts(), backend), [])
+
+    def test_an_invented_type_is_dropped(self) -> None:
+        backend = SilentBackend(json.dumps(
+            {"advice": [{"surface": "NOME AZIENDA", "keep": "PERSONA",
+                         "reason": "not one of the candidates"}]}))
+        self.assertEqual(suggest.suggest_dictionary(self._conflicts(), backend), [])
+
+    def test_a_prose_wrapped_answer_still_parses(self) -> None:
+        backend = SilentBackend(
+            "Here is my advice:\n```json\n"
+            + json.dumps({"advice": [{"surface": "NOME AZIENDA", "keep": "AZIENDA",
+                                      "reason": "a company name"}]})
+            + "\n```\nEnjoy.")
+        self.assertEqual(len(suggest.suggest_dictionary(self._conflicts(), backend)), 1)
+
+    def test_no_conflicts_ask_nothing(self) -> None:
+        backend = SilentBackend(completion("{" + chr(34) + "advice" + chr(34) + ": []}"))
+        self.assertEqual(suggest.suggest_dictionary([], backend), [])
+        self.assertEqual(len(backend.prompts), 0)
+
+    def test_a_broken_answer_is_a_backend_error(self) -> None:
+        backend = SilentBackend("I would rather not answer in JSON, sorry.")
+        with self.assertRaises(suggest.BackendError):
+            suggest.suggest_dictionary(self._conflicts(), backend)
 
 
 if __name__ == "__main__":

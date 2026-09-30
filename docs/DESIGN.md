@@ -174,6 +174,21 @@ Deliberately *not* matched: intra-word variation (`Contoso-Italia` ≠ `Contoso`
 alias). Fuzzy matching was rejected: in a privacy tool a fuzzy rule that silently misses is worse
 than an explicit alias the operator adds once.
 
+**A surface is declared once.** The same casefolded surface, twice, in the same `@context`, is a
+conflict — whatever the types, whatever the files: both entries match the SAME text, and which one
+claims the span is file order. The load does not refuse (a duplicate never leaks: the span is
+redacted either way, typed by the first declaration to load — deterministic, and documented
+instead of pretended away); the WRITE boundaries refuse (`anon.dictionary_conflicts` powers the
+dictionary save, the suggester's add and `--verify-dictionary`). The key is the NFC-normalized
+casefolded surface — the engine matches an entry against the document's other Unicode form through
+its normalization variants, so NFC and NFD of one word are the same voce — not `_fold_entity`:
+`Contoso` and `Contoso Srl` fold together but match different spans — they are
+variants, near-miss territory, not duplicates. Two `@match case-sensitive` entries with different
+raw surfaces (`Dell`, `dell`) match different texts and do not conflict; a declaration that yields
+several Unicode forms is ONE declaration, reported once. The model's advice on which type to keep
+is PROGRESS under the same contract as every suggestion: the operator decides, and the save
+re-checks.
+
 ### 5b. Scanning cost (why the dictionary is not scanned entry by entry)
 
 A 200-entry dictionary compiles to 400 patterns (one per normalization form). Scanning each one over

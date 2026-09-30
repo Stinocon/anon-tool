@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>v2.1.0</strong> — <a href="CHANGELOG.md">changelog</a>
+  <strong>v2.2.0</strong> — <a href="CHANGELOG.md">changelog</a>
 </p>
 
 ---
@@ -136,6 +136,7 @@ python3 deanon.py final.docx <map.json>          # put the real values back (tex
 python3 convert.py report.docx > report.md       # docx/pdf -> Markdown, locally
 python3 anon.py --list-catalogs                  # which built-in lists are installed
 python3 anon.py --prune-maps 90                  # list the maps older than 90 days (--yes deletes)
+python3 anon.py --verify-dictionary             # the same surface declared twice? both lines, exit 1
 ```
 
 ### Web UI
@@ -259,6 +260,13 @@ without a `TIPO|` prefix takes the `@type` declared above it. Case (`Spa` = `SPA
 (`srl` = `S.r.l.`) are already folded, so one entry covers the whole family. The web UI's
 **Dizionario** tab edits the three files through the same engine.
 
+A surface is yours to declare **once**: `AZIENDA|Contoso` and `ALTRO|Contoso` match the same
+text, and which type wins is file order — deterministic, silent, and arbitrary from your side. The
+write boundaries refuse it (the dictionary save, the suggester's *Aggiungi al dizionario*),
+`--verify-dictionary` reports what a hand edit left behind (both declarations, `file:line`), and
+the load keeps the first: a duplicate never leaks — the span is redacted either way — so a stale
+dictionary keeps working while you pick one.
+
 ## The catalog system
 
 A catalog is the same file format as the custom dictionary, with directives:
@@ -296,9 +304,14 @@ imports it — the arrow is one-way and tested.
 
 The same thing exists in the UI, in the **Dizionario** tab, because approving a proposal *is* a
 dictionary edit: paste the text, press *Suggerisci*, tick what is real, pick a type, and
-*Aggiungi al dizionario* appends those lines to the dictionary file you are editing. Then save and
-re-run the anonymization. The panel is always visible: without an endpoint it is inert, the fields
-are closed in the HTML before any script runs, and it says how to turn the seam on.
+*Aggiungi al dizionario* appends those lines to the dictionary file you are editing — a proposal
+whose surface the merged dictionary already holds is refused with the entry that is there, so
+the suggester cannot create what the save would reject. Then save and re-run the anonymization.
+*Verifica il dizionario* runs the deterministic check on the three files, shows every duplicate
+with both declarations, and — with a model configured — asks which type fits the surface best:
+the advice is a proposal too, the operator picks. The panel is always visible: without an
+endpoint it is inert, the fields are closed in the HTML before any script runs, and it says how
+to turn the seam on.
 
 ![The local-model panel in the Dizionario tab, configured](docs/brand/ui-model.png)
 

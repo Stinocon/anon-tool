@@ -1220,6 +1220,69 @@ class WebUiTest(unittest.TestCase):
             status, _ = self.call(bad)
             self.assertEqual(status, 400, bad)
 
+    def test_dictionary_save_refuses_a_duplicated_surface(self) -> None:
+        """The same voce with two types is the ambiguity the write boundary exists for: the
+        refusal names both declarations, and the file on disk keeps what it had."""
+        status, saved = self.call("/api/entities", {"text": "AZIENDA|Contoso\n"}, method="PUT")
+        self.assertEqual(status, 200, saved)  # a clean baseline
+        status, refused = self.call(
+            "/api/entities", {"text": "AZIENDA|Contoso\nALTRO|Contoso\n"}, method="PUT")
+        self.assertEqual(status, 400, refused)
+        self.assertEqual(refused["error"], "dictionary_conflicts")
+        conflict = refused["conflicts"][0]
+        self.assertEqual(conflict["surface"], "Contoso")
+        self.assertEqual(
+            [(Path(entry["path"]).name, entry["line"], entry["type"])
+             for entry in conflict["entries"]],
+            [("entities.txt", 1, "AZIENDA"), ("entities.txt", 2, "ALTRO")],
+        )
+        status, after = self.call("/api/entities")
+        self.assertEqual(after["text"], "AZIENDA|Contoso\n",
+                         "the refusal must leave the dictionary untouched")
+
+    def test_dictionary_save_refuses_a_duplicate_across_files(self) -> None:
+        status, saved = self.call("/api/entities", {"text": "AZIENDA|Contoso\n"}, method="PUT")
+        self.assertEqual(status, 200, saved)
+        status, refused = self.call(
+            "/api/entities?file=people",
+            {"text": "@type PERSONA\nALTRO|Contoso\n"},
+            method="PUT",
+        )
+        self.assertEqual(status, 400, refused)
+        self.assertEqual(refused["error"], "dictionary_conflicts")
+        names = {Path(entry["path"]).name for entry in refused["conflicts"][0]["entries"]}
+        self.assertEqual(names, {"entities.txt", "people.txt"},
+                         "the refusal names the file that already holds the voce")
+        status, people = self.call("/api/entities?file=people")
+        self.assertNotIn("Contoso", people["text"], "the refused save must not write")
+
+    def test_dictionary_validate_reports_the_would_be_conflicts(self) -> None:
+        """`/api/dictionary/validate`: the same check the save runs, for the suggester's add —
+        read-only, nothing is written, the candidate content rides the answer."""
+        status, saved = self.call("/api/entities", {"text": "AZIENDA|Contoso\n"}, method="PUT")
+        self.assertEqual(status, 200, saved)
+        status, verdict = self.call(
+            "/api/dictionary/validate",
+            {"file": "entities", "text": "AZIENDA|Contoso\nALTRO|Contoso\n"})
+        self.assertEqual(status, 200, verdict)
+        self.assertEqual(verdict["conflicts"][0]["surface"], "Contoso")
+        status, clean = self.call(
+            "/api/dictionary/validate",
+            {"file": "entities", "text": "AZIENDA|Contoso\nALTRO|Alfa\n"})
+        self.assertEqual(status, 200, clean)
+        self.assertEqual(clean["conflicts"], [])
+
+    def test_suggest_dictionary_answers_conflicts_without_a_model(self) -> None:
+        """The verify is deterministic first: with no model configured the conflicts still come
+        back — the advice is optional PROGRESS, never the check itself."""
+        (self.tmp / "entities.txt").write_text(
+            "AZIENDA|Contoso\nALTRO|Contoso\n", encoding="utf-8")  # hand-edited: the save refuses
+        status, result = self.call("/api/suggest-dictionary", {})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["conflicts"][0]["surface"], "Contoso")
+        self.assertEqual(result["advice"], [])
+        self.assertTrue(result["advice_error"], "no backend means an honest error, not a fake empty")
+
     def test_map_list_exposes_metadata_only(self) -> None:
         status, data = self.call("/api/maps")
         self.assertEqual(status, 200)

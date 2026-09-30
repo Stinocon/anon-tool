@@ -50,7 +50,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape as _sax_escape
 from typing import Callable, Iterable
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))
@@ -657,6 +657,9 @@ class Entity:
     inner: str = ""
     context: str | None = None
     form: str = "NFC"
+    # Provenance, for the reports only — the matcher never reads these.
+    line: int = 0  # the dictionary line the entry was declared on
+    case_sensitive: bool = False  # how the entry matches, already compiled into `regex`
 
     def spans(self, text: str):
         """Yield (start, end, matched_text) for every occurrence.
@@ -762,7 +765,7 @@ STEM_MIN_CHARS = 5
 _WARNED_STEMS: set[str] = set()
 
 
-def _warn_short_stem(path: Path, lineno: int, value: str) -> None:
+def _warn_short_stem(display: str, lineno: int, value: str) -> None:
     """Warn — never refuse — when a `@stem` entry is short enough to over-redact.
 
     Refusing would be a hard error on a live dictionary, and an engine that fails to load is an
@@ -774,7 +777,7 @@ def _warn_short_stem(path: Path, lineno: int, value: str) -> None:
         return
     _WARNED_STEMS.add(body.casefold())
     print(
-        f"anon: {path.name} line {lineno}: @stem on {value!r} ({len(body)} characters) — a stem "
+        f"anon: {display} line {lineno}: @stem on {value!r} ({len(body)} characters) — a stem "
         "this short also matches unrelated words; declare the full forms instead",
         file=sys.stderr,
     )
@@ -803,11 +806,18 @@ def load_entities(path: Path) -> list[Entity]:
     """
     if not path.exists():
         return []
+    return _load_entity_lines(str(path), path.read_text(encoding="utf-8").splitlines())
+
+
+def _load_entity_lines(display: str, lines: list[str]) -> list[Entity]:
+    """Parse dictionary lines — `load_entities` on a file, the write boundaries on candidate
+    content: one parser, so what a save validates is exactly what a load reads. `display` rides
+    the errors and the warnings, so a candidate reports the real file, never a temp probe."""
     entries: list[Entity] = []
     seen: set[tuple[str, str]] = set()
     ptype, stem, case_sensitive, context = "ALTRO", False, False, None
 
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, raw in enumerate(lines, start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -815,23 +825,23 @@ def load_entities(path: Path) -> list[Entity]:
             name, _, argument = line[1:].partition(" ")
             name, argument = name.strip().lower(), argument.strip()
             if name not in KNOWN_DIRECTIVES:
-                raise ValueError(f"{path}:{lineno}: unknown directive '@{name}'")
+                raise ValueError(f"{display}:{lineno}: unknown directive '@{name}'")
             if name == "type":
                 if not argument:
-                    raise ValueError(f"{path}:{lineno}: @type needs a value")
+                    raise ValueError(f"{display}:{lineno}: @type needs a value")
                 if any(ch.isspace() for ch in argument):
                     raise ValueError(
-                        f"{path}:{lineno}: the type {argument!r} contains a space — a type is one token "
+                        f"{display}:{lineno}: the type {argument!r} contains a space — a type is one token "
                         f"(the explicit line form is `TYPE|value`, the alias form `TYPE|value|alias`)"
                     )
                 ptype = argument.upper()
             elif name == "stem":
                 if argument.lower() not in _TRUE + _FALSE:
-                    raise ValueError(f"{path}:{lineno}: @stem takes on|off, not {argument!r}")
+                    raise ValueError(f"{display}:{lineno}: @stem takes on|off, not {argument!r}")
                 stem = argument.lower() in _TRUE
             elif name == "match":
                 if argument.lower() not in ("case-sensitive", "sensitive", "insensitive", "case-insensitive", "i"):
-                    raise ValueError(f"{path}:{lineno}: @match takes case-sensitive|insensitive")
+                    raise ValueError(f"{display}:{lineno}: @match takes case-sensitive|insensitive")
                 case_sensitive = argument.lower() in ("case-sensitive", "sensitive")
             else:  # context
                 # ONLY the exact token `off` clears the context. Deliberately not the shared
@@ -841,13 +851,13 @@ def load_entities(path: Path) -> list[Entity]:
                     context = None
                 else:
                     if not argument:
-                        raise ValueError(f"{path}:{lineno}: @context needs a regex (or 'off')")
+                        raise ValueError(f"{display}:{lineno}: @context needs a regex (or 'off')")
                     try:
                         re.compile(argument)  # fail loudly on a broken context, not at match time
                     except re.error as exc:
                         # Normalized to ValueError so every bad-dictionary failure reaches the caller
                         # as one error type (the CLI turns it into exit 2).
-                        raise ValueError(f"{path}:{lineno}: invalid @context regex: {exc}") from exc
+                        raise ValueError(f"{display}:{lineno}: invalid @context regex: {exc}") from exc
                     context = argument
             continue
 
@@ -858,7 +868,7 @@ def load_entities(path: Path) -> list[Entity]:
         # is that mistake, so it fails loudly instead of leaking (the README once showed it).
         if len(fields) >= 2 and fields[0] and any(ch.isspace() for ch in fields[0]):
             raise ValueError(
-                f"{path}:{lineno}: the type {fields[0]!r} contains a space — a line is `TYPE|value`, "
+                f"{display}:{lineno}: the type {fields[0]!r} contains a space — a line is `TYPE|value`, "
                 f"and the alias form is `TYPE|value|alias` (under an `@type`: `value` or `|value|alias`)"
             )
         if len(fields) >= 2:
@@ -867,7 +877,7 @@ def load_entities(path: Path) -> list[Entity]:
         else:
             line_type, forms = ptype, [line]
         if not forms:
-            print(f"anon: {path.name} line {lineno}: no value, skipped", file=sys.stderr)
+            print(f"anon: {display} line {lineno}: no value, skipped", file=sys.stderr)
             continue
         for value in forms:
             key = (line_type, value.casefold())
@@ -878,10 +888,10 @@ def load_entities(path: Path) -> list[Entity]:
                 value, stem=stem, case_sensitive=case_sensitive, context=context
             )
             if not variants:
-                print(f"anon: {path.name} line {lineno}: '{line_type}' has no usable name, skipped", file=sys.stderr)
+                print(f"anon: {display} line {lineno}: '{line_type}' has no usable name, skipped", file=sys.stderr)
                 continue
             if stem:
-                _warn_short_stem(path, lineno, value)
+                _warn_short_stem(display, lineno, value)
             entries.extend(
                 Entity(
                     line_type,
@@ -891,6 +901,8 @@ def load_entities(path: Path) -> list[Entity]:
                     inner=variant.inner,
                     context=variant.context,
                     form=variant.form,
+                    line=lineno,
+                    case_sensitive=case_sensitive,
                 )
                 for variant in variants
             )
@@ -906,6 +918,60 @@ def load_entities_many(paths: Iterable[Path]) -> list[Entity]:
         merged.extend(load_entities(Path(path).expanduser()))
     merged.sort(key=lambda entity: len(entity.surface), reverse=True)
     return merged
+
+
+def dictionary_conflicts(
+    paths: Iterable[Path | str], texts: "dict[Path | str, str] | None" = None
+) -> list[dict[str, object]]:
+    """The same voce declared twice: same surface (case-insensitively), same context, any types.
+
+    Two such entries match the same text, and which TYPE claims the span is decided by file order:
+    deterministic, silent, and arbitrary from the operator's side. The load keeps the first, and
+    nothing leaks — the span is redacted either way — so this is a REPORT, not a refusal: the
+    write boundaries act on it (the dictionary save rejects it, the suggester never adds to it,
+    `--verify-dictionary` prints it).
+
+    The voce key is the casefolded surface, not `_fold_entity`: `Contoso` and `Contoso Srl` fold
+    together but match different spans — they are variants (near-miss territory), not duplicates.
+    Two case-sensitive entries with different raw surfaces (`Dell`, `dell`) match different texts
+    and do not conflict. Repeats the loader already drops (the same type and surface in one file)
+    are not re-reported; the same voce in two files is one, because the loader dedups per file.
+    The key is the NFC-normalized casefold: the engine matches an entry against the document's
+    OTHER Unicode form through its normalization variants, so NFC and NFD of the same word
+    claim the same span and are one voce here too.
+
+    `texts` maps a path to candidate content: that content is parsed instead of the file, and
+    the entry reports the path it was given — so the write boundaries can check the dictionary
+    that WOULD result, before saving anything. Keys are expanded like the paths, so a caller
+    that writes `~` is heard like one that writes the expanded form.
+    """
+    texts = {Path(key).expanduser(): value for key, value in texts.items()} if texts else texts
+    declarations: dict[tuple[str, str | None], dict[tuple[str, int, str], dict[str, object]]] = {}
+    for item in paths:
+        path = Path(item).expanduser()
+        candidate = texts.get(path) if texts else None
+        entities = (
+            _load_entity_lines(str(path), str(candidate).splitlines())
+            if candidate is not None else load_entities(path)
+        )
+        for entity in entities:
+            # One declaration can yield several entities (its Unicode forms): one report entry.
+            key = (str(path), entity.line, entity.type)
+            bucket = declarations.setdefault(
+                (unicodedata.normalize("NFC", entity.surface).casefold(), entity.context), {})
+            bucket.setdefault(key, {"path": str(path), "line": entity.line,
+                                     "type": entity.type, "value": entity.surface,
+                                     "case_sensitive": entity.case_sensitive})
+    conflicts: list[dict[str, object]] = []
+    for voce, bucket in sorted(declarations.items()):
+        entries = [bucket[key] for key in sorted(bucket)]
+        if len(entries) < 2:
+            continue
+        if (all(bool(entry["case_sensitive"]) for entry in entries)
+                and len({str(entry["value"]) for entry in entries}) > 1):
+            continue  # case-sensitive entries with different raw surfaces match different texts
+        conflicts.append({"surface": entries[0]["value"], "entries": entries})
+    return conflicts
 
 
 def _as_list(value) -> list[str]:
@@ -2315,8 +2381,8 @@ def near_misses(
     return out, len(words) >= NEAR_MISS_WORD_LIMIT or len(vocabulary) > NEAR_MISS_VOCAB_LIMIT
 
 
-def resolve_entities(args: argparse.Namespace) -> list[Entity]:
-    """The custom dictionaries plus the selected catalogs, as one list.
+def _dictionary_paths(args: argparse.Namespace) -> list[Path]:
+    """The custom dictionary files to load, before any catalog.
 
     `--entities` is repeatable. When it is given, every path must exist (a typo must fail loudly,
     not silently drop a dictionary). When it is not, the default dictionaries that exist are used:
@@ -2330,19 +2396,25 @@ def resolve_entities(args: argparse.Namespace) -> list[Entity]:
         missing = [str(path) for path in paths if not path.is_file()]
         if missing:
             raise ValueError("dictionary file not found: " + ", ".join(missing))
-    else:
-        paths = [path for path in DEFAULT_DICTIONARIES if path.is_file()]
-        if not paths:
-            # NOT fatal. A fresh install has no curated dictionary, and the engine must keep working
-            # with the pattern rules alone. A hard error here would make `--check --json` print
-            # nothing, and the Pi guard reads "no JSON" as "engine broken" and fails OPEN for the
-            # session — a leak, and worse than having no dictionary.
-            print(
-                "anon: no dictionary file found; using the built-in patterns only (expected one of "
-                + ", ".join(str(path) for path in DEFAULT_DICTIONARIES)
-                + ")",
-                file=sys.stderr,
-            )
+        return paths
+    paths = [path for path in DEFAULT_DICTIONARIES if path.is_file()]
+    if not paths:
+        # NOT fatal. A fresh install has no curated dictionary, and the engine must keep working
+        # with the pattern rules alone. A hard error here would make `--check --json` print
+        # nothing, and the Pi guard reads "no JSON" as "engine broken" and fails OPEN for the
+        # session — a leak, and worse than having no dictionary.
+        print(
+            "anon: no dictionary file found; using the built-in patterns only (expected one of "
+            + ", ".join(str(path) for path in DEFAULT_DICTIONARIES)
+            + ")",
+            file=sys.stderr,
+        )
+    return paths
+
+
+def resolve_entities(args: argparse.Namespace) -> list[Entity]:
+    """The custom dictionaries plus the selected catalogs, as one list."""
+    paths = _dictionary_paths(args)
     for name in _as_list(getattr(args, "catalogs", None)):
         if True:
             path = catalog_path(name)
@@ -3121,6 +3193,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="list the maps in ~/.anon/maps older than DAYS (1 or more) and exit (add --yes to delete them)",
     )
     parser.add_argument(
+        "--verify-dictionary",
+        action="store_true",
+        help="report the same surface declared twice in the custom dictionaries (same context, any"
+             " types or files) and exit 1 if there are any",
+    )
+    parser.add_argument(
         "--yes", action="store_true", help="with --prune-maps: actually delete the listed maps"
     )
     parser.add_argument("--allow", help="path-glob allowlist used by --check (default: ~/.anon/allow.txt)")
@@ -3163,8 +3241,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cmd_verify_dictionary(args: argparse.Namespace) -> int:
+    """`--verify-dictionary`: report the same voce declared twice, exit 1 if there are any.
+
+    A duplicate never leaks — the first entry to load claims the span and redacts it — but the
+    TYPE the span gets is file order, which is arbitrary from the operator's side. Both
+    declarations are printed so the operator can pick one; the write boundaries (the dictionary
+    save, the suggester's add) refuse what this reports.
+    """
+    paths = _dictionary_paths(args)
+    conflicts = dictionary_conflicts(paths)
+    if args.json:
+        print(json.dumps(_envelope("verify-dictionary") | {"conflicts": conflicts},
+                         ensure_ascii=False, sort_keys=True))
+        return 1 if conflicts else 0
+    if not conflicts:
+        names = ", ".join(Path(str(path)).name for path in paths) or "(no dictionary file)"
+        print(f"anon: {names}: no duplicate surfaces")
+        return 0
+    for conflict in conflicts:
+        print(f"anon: {conflict['surface']} is declared twice:")
+        for entry in conflict["entries"]:
+            print(f"  {Path(str(entry['path'])).name}:{entry['line']}  "
+                  f"{entry['type']}|{entry['value']}")
+    print(f"anon: {len(conflicts)} duplicated surface(s) — the first to load wins the match, "
+          "pick one", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.verify_dictionary:
+        try:
+            return cmd_verify_dictionary(args)
+        except ValueError as exc:
+            print(f"anon: {exc}", file=sys.stderr)
+            return 2
     if args.list_catalogs:
         available = list_catalogs()
         if not available:

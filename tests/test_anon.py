@@ -968,6 +968,131 @@ class CliTest(unittest.TestCase):
         self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
 
 
+class DictionaryConflictsTest(unittest.TestCase):
+    """The same voce declared twice — same surface, same context, any types or files — matches
+    the same text, and which TYPE claims the span is decided by file order: deterministic,
+    silent, and arbitrary from the operator's side. The load keeps the first (nothing leaks:
+    the span is redacted either way), so this is a report for the write boundaries to refuse."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="anon-test-"))
+        self.env = {**os.environ, "ANON_HOME": str(self.tmp)}
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _file(self, name: str, content: str) -> Path:
+        path = self.tmp / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_the_same_surface_with_two_types_is_one_conflict(self) -> None:
+        path = self._file("entities.txt", "AZIENDA|NOME AZIENDA\nALTRO|NOME AZIENDA\n")
+        conflicts = anon.dictionary_conflicts([path])
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["surface"], "NOME AZIENDA")
+        self.assertEqual([(e["line"], e["type"]) for e in conflicts[0]["entries"]],
+                         [(1, "AZIENDA"), (2, "ALTRO")])
+
+    def test_the_same_surface_across_files_is_one_conflict(self) -> None:
+        first = self._file("entities.txt", "AZIENDA|Contoso\n")
+        second = self._file("people.txt", "ALTRO|Contoso\n")
+        conflicts = anon.dictionary_conflicts([first, second])
+        self.assertEqual(len(conflicts), 1)
+        names = {Path(e["path"]).name for e in conflicts[0]["entries"]}
+        self.assertEqual(names, {"entities.txt", "people.txt"})
+
+    def test_case_variants_are_the_same_voce(self) -> None:
+        path = self._file("entities.txt", "AZIENDA|Contoso\nALTRO|CONTOSO\n")
+        self.assertEqual(len(anon.dictionary_conflicts([path])), 1)
+
+    def test_a_repeated_identical_line_is_not_reported(self) -> None:
+        # the loader already drops the second identical (type, surface): it matches once, same type
+        path = self._file("entities.txt", "AZIENDA|Contoso\nAZIENDA|Contoso\n")
+        self.assertEqual(anon.dictionary_conflicts([path]), [])
+
+    def test_different_contexts_match_different_text(self) -> None:
+        path = self._file("entities.txt",
+                          "@context (presso|vicino)\nAZIENDA|Contoso\n"
+                          "@context (da|di)\nALTRO|Contoso\n")
+        self.assertEqual(anon.dictionary_conflicts([path]), [])
+
+    def test_case_sensitive_entries_with_different_surfaces_do_not_conflict(self) -> None:
+        # `Dell` and `dell` under case-sensitive matching catch different texts: no ambiguity
+        path = self._file("entities.txt",
+                          "@match case-sensitive\nAZIENDA|Dell\n"
+                          "@match case-sensitive\nALTRO|dell\n")
+        self.assertEqual(anon.dictionary_conflicts([path]), [])
+
+    def test_a_case_sensitive_entry_conflicts_with_an_insensitive_one(self) -> None:
+        # the insensitive one matches both cases: the ambiguity is real
+        path = self._file("entities.txt",
+                          "@match case-sensitive\nAZIENDA|Dell\n"
+                          "@match insensitive\nALTRO|dell\n")
+        self.assertEqual(len(anon.dictionary_conflicts([path])), 1)
+
+    def test_unicode_form_variants_are_the_same_voce(self) -> None:
+        """The engine matches an NFC entry against an NFD document (and vice versa) through its
+        normalization variants, so NFC and NFD of the same word claim the same span: the
+        detector must group them, not just the byte-identical casefold."""
+        nfc = "Café"
+        nfd = unicodedata.normalize("NFD", nfc)
+        path = self._file("entities.txt", f"AZIENDA|{nfc}\nALTRO|{nfd}\n")
+        self.assertEqual(len(anon.dictionary_conflicts([path])), 1)
+
+    def test_texts_keys_with_a_tilde_are_heard(self) -> None:
+        """A caller that passes a `~`-relative key must be heard like one that passes the
+        expanded path: the candidate lookup cannot silently fall back to the file on disk."""
+        path = self._file("entities.txt", "")
+        with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
+            conflicts = anon.dictionary_conflicts(
+                [path], texts={Path("~/entities.txt"): "AZIENDA|Contoso\nALTRO|Contoso\n"})
+        self.assertEqual(len(conflicts), 1,
+                         "the candidate text must be used, not the file on disk")
+
+    def test_a_clean_dictionary_reports_nothing(self) -> None:
+        first = self._file("entities.txt", "AZIENDA|Contoso\nPERSONA|Mario Rossi\n")
+        second = self._file("people.txt", "PERSONA|Lucia Bianchi\n")
+        self.assertEqual(anon.dictionary_conflicts([first, second]), [])
+
+    def test_the_report_is_deterministic(self) -> None:
+        first = self._file("a-entities.txt", "ALTRO|Zeta\nALTRO|Alfa\nAZIENDA|Zeta\n")
+        second = self._file("b-people.txt", "AZIENDA|Alfa\n")
+        conflicts = anon.dictionary_conflicts([first, second])
+        self.assertEqual([c["surface"] for c in conflicts], ["Alfa", "Zeta"])
+        zeta = conflicts[1]["entries"]
+        self.assertEqual([(Path(e["path"]).name, e["line"]) for e in zeta],
+                         [("a-entities.txt", 1), ("a-entities.txt", 3)])
+
+    def run_anon(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ANON_PY), *args],
+            capture_output=True, text=True, env=self.env, check=False,
+        )
+
+    def test_the_cli_reports_conflicts_and_exits_one(self) -> None:
+        self._file("entities.txt", "AZIENDA|NOME AZIENDA\nALTRO|NOME AZIENDA\n")
+        result = self.run_anon("--verify-dictionary")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("entities.txt:1", result.stdout)
+        self.assertIn("AZIENDA|NOME AZIENDA", result.stdout)
+        self.assertIn("ALTRO|NOME AZIENDA", result.stdout)
+
+    def test_the_cli_exits_zero_when_the_dictionary_is_clean(self) -> None:
+        self._file("entities.txt", "AZIENDA|Contoso\n")
+        result = self.run_anon("--verify-dictionary")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no duplicate", result.stdout)
+
+    def test_the_cli_json_envelope_carries_the_conflicts(self) -> None:
+        self._file("entities.txt", "AZIENDA|NOME AZIENDA\nALTRO|NOME AZIENDA\n")
+        result = self.run_anon("--verify-dictionary", "--json")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["conflicts"][0]["surface"], "NOME AZIENDA")
+        self.assertEqual(len(payload["conflicts"][0]["entries"]), 2)
+
+
 class CodeFingerprintTest(unittest.TestCase):
     """The build fingerprint is what makes a stale container detectable: deterministic, over the
     shipped files, and moving the moment one of them is edited."""

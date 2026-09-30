@@ -199,9 +199,11 @@
       <textarea id="entities-text" rows="16" spellcheck="false" aria-label="Dizionario"></textarea>
       <div class="actions">
         <button id="save-entities" class="primary" disabled>Salva</button>
+        <button id="verify-dictionary">Verifica il dizionario</button>
         <button id="download-entities">Scarica il file</button>
         <span id="entities-status" class="status" role="status" aria-live="polite"></span>
       </div>
+      <div id="dict-conflicts" class="conflicts" hidden></div>
       <p class="muted small"><span id="entities-file-prefix">File:</span> <code id="entities-path">~/.anon/entities.txt</code> <span id="entities-path-tail">— resta sulla tua macchina, fuori da ogni repository.</span></p>
     </div>
 
