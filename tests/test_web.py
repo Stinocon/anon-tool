@@ -304,6 +304,31 @@ class StaticUiTest(unittest.TestCase):
         """`candidates_capped` means the list is partial: silence would read as 'nothing found'."""
         self.assertIn("candidates_capped", self.JS)
 
+    def test_the_audit_says_where_and_hands_off_not_away(self) -> None:
+        """The 'sensitive' verdict used to end the conversation: the server counted, the page never
+        said WHERE. The findings (line + type, never the value) are rendered, a truncated list says
+        so, and the proposal is a hand-off into the SAME anonymize flow — the audit must not grow
+        a second redaction path (a document goes back as a FILE, its extracted text never becomes
+        the artifact)."""
+        self.assertIn('$("audit-found")', self.JS)
+        self.assertIn("result.findings || []", self.JS)
+        self.assertIn("findings_truncated", self.JS, "a partial list must never read as 'that was all'")
+        self.assertIn('$("audit-anonymize").hidden = result.verdict !== "sensitive"', self.JS)
+        self.assertIn("acceptAnonFile(state.auditFile)", self.JS)
+        self.assertIn('"X-Filename": state.auditFile.name', self.JS)
+
+    def test_deleting_every_map_is_a_three_step_confirmation(self) -> None:
+        """The purge is the destructive act of this tool. The page must arm it against the live
+        count, demand that exact count typed back, and re-arm on a refusal (fresh count) instead
+        of guessing — and the go button stays disabled until the typed value matches."""
+        self.assertIn("confirm: true, expect: state.purgeExpect", self.JS)
+        self.assertIn("maps-purge-count-label", self.JS)
+        self.assertIn(
+            '$("maps-purge-go").disabled = $("maps-purge-count").value !== String(state.purgeExpect)',
+            self.JS,
+        )
+        self.assertIn("error.payload.count", self.JS, "a refusal re-arms with the fresh count, never guesses")
+
 
 class SuggestTest(unittest.TestCase):
     """The local-model seam from the UI: proposals, and the failures that must NOT look empty.
@@ -1006,6 +1031,155 @@ class WebUiTest(unittest.TestCase):
         status, revealed = self.call("/api/audit", {"text": "Il cliente Con Toso e mario@contoso.it\n", "reveal": True})
         self.assertEqual(status, 200)
         self.assertEqual(revealed["near_miss"][0]["token"], "Con Toso")
+
+    @unittest.skipUnless(DOCX_AVAILABLE, "document converter not installed")
+    def test_audit_document_answers_inside_the_package(self) -> None:
+        """`anon.py verbale.docx --audit` answers inside the package; the Verifica tab could only
+        read a dropped file as raw bytes, which turns a .docx into binary garbage — not an audit.
+        The endpoint answers with the same view the rewrite uses, so "sensitive" means the same
+        thing it means there. The findings carry a line and a type, never the value; the scanned
+        text is the user's own content, returned so the line numbers point at something visible."""
+        work = Path(tempfile.mkdtemp(prefix="anon-web-audit-"))
+        try:
+            markdown = work / "doc.md"
+            markdown.write_text(
+                "# Verbale\nCliente Contoso, referente mario@contoso.it\n", encoding="utf-8"
+            )
+            docx = work / "doc.docx"
+            subprocess.run(["pandoc", str(markdown), "-o", str(docx)], check=True)
+            status, result = self.call("/api/audit-document", None,
+                                       headers={"X-Filename": "doc.docx", "X-Catalogs": "",
+                                                "X-Patterns": "identity", "Content-Type": "application/octet-stream"},
+                                       raw=docx.read_bytes())
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["verdict"], "sensitive")
+            self.assertEqual(result["origin"], "container", "a docx is scanned as a package")
+            self.assertTrue(result["container"])
+            types = {item["type"] for item in result["findings"]}
+            self.assertEqual(types, {"AZIENDA", "EMAIL"})
+            for item in result["findings"]:
+                self.assertEqual(sorted(item.keys()), ["line", "type"],
+                                 "a finding is a position, not a value")
+                self.assertGreater(item["line"], 0)
+            # What was scanned is visible (it came from the user's own package), but the findings
+            # and the near-misses never repeat the values as data.
+            self.assertIn("mario@contoso.it", result["text"])
+            raw = json.dumps(result["findings"]) + json.dumps(result["near_miss"])
+            self.assertNotIn("contoso.it", raw)
+            self.assertNotIn("Contoso", raw)
+            self.assertEqual(result["verdict"], "sensitive")
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_audit_document_refuses_what_it_cannot_read(self) -> None:
+        """An image is refused with the honest answer (the same one the anonymize path gives),
+        not audited as garbage on the raw bytes."""
+        png = b"\x89PNG\r\n\x1a\n" + b"" * 16
+        status, result = self.call("/api/audit-document", None,
+                                   headers={"X-Filename": "pic.png", "X-Catalogs": "",
+                                            "X-Patterns": "", "Content-Type": "application/octet-stream"},
+                                   raw=png)
+        self.assertEqual(status, 400)
+        self.assertIn("image", result["error"])
+
+    def test_the_purge_needs_confirmation_and_the_exact_count(self) -> None:
+        """Deleting every map is the destructive act of this tool: without its map a redacted
+        document is unrestorable forever. The endpoint refuses a body without `confirm`, and an
+        `expect` that does not match what is on disk — the user confirmed the set they SAW, so a
+        map that appeared meanwhile must stop the deletion, not ride along. On a match it deletes
+        exactly the counted set, corrupt maps included (they are files too)."""
+        # The class shares one home: earlier tests leave maps behind, so the test works on
+        # RELATIVE counts — the confirmed number is the count on disk at the moment of the call.
+        before = len(list((self.tmp / "maps").glob("*.map.json")))
+        for i in range(3):
+            (self.tmp / "maps" / f"20200101-00000{i}-aaaaaa.map.json").write_text(
+                '{"entries": {}, "counts": {}, "created": "2020-01-01"}', encoding="utf-8"
+            )
+        (self.tmp / "maps" / "20200101-000003-corrupt.map.json").write_text(
+            "{ questo non e' json", encoding="utf-8"
+        )
+        on_disk = before + 4
+
+        unconfirmed = self.call("/api/maps/purge", {"expect": on_disk})
+        self.assertEqual(unconfirmed[0], 400, "deleting every map needs an explicit confirmation")
+        self.assertEqual(len(list((self.tmp / "maps").glob("*.map.json"))), on_disk)
+
+        stale = self.call("/api/maps/purge", {"confirm": True, "expect": on_disk - 1})
+        self.assertEqual(stale[0], 400, "a count that no longer matches must refuse, not guess")
+        self.assertEqual(stale[1]["count"], on_disk, "the refusal carries the fresh count")
+        self.assertEqual(len(list((self.tmp / "maps").glob("*.map.json"))), on_disk)
+
+        status, done = self.call("/api/maps/purge", {"confirm": True, "expect": on_disk})
+        self.assertEqual(status, 200, done)
+        self.assertEqual(done["deleted"], on_disk)
+        self.assertEqual(done["failed"], 0)
+        self.assertEqual(list((self.tmp / "maps").glob("*.map.json")), [],
+                         "the corrupt map is a file in the set: it goes with the rest")
+        status, empty = self.call("/api/maps")
+        self.assertEqual(empty["total"], 0)
+
+    def test_an_upload_name_is_reduced_to_its_basename(self) -> None:
+        """A traversal-shaped `X-Filename` is reduced to its basename before it is ever joined
+        to a path: the write cannot point outside the per-request directory."""
+        status, result = self.call(
+            "/api/audit-document",
+            None,
+            headers={"X-Filename": "../../outside.txt"},
+            raw="Contoso e' il cliente\n".encode(),
+        )
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["filename"], "outside.txt",
+                         "the name must be a basename before it touches a directory")
+        self.assertFalse((self.tmp / "outside.txt").exists())
+
+    def test_a_map_the_purge_cannot_delete_is_reported_not_ignored(self) -> None:
+        """`deleted` counts only what went: a deletion that fails lands in `failed` and the map
+        stays on disk. The purge never claims a deletion it did not perform."""
+        if os.geteuid() == 0:  # root unlinks through directory permissions — nothing fails
+            self.skipTest("meaningless as root")
+        maps = self.tmp / "maps"
+        for index in range(2):
+            (maps / f"20200202-00000{index}-bbbbbb.map.json").write_text(
+                '{"entries": {}, "counts": {}, "created": "2020-01-01"}', encoding="utf-8"
+            )
+        before = len(list(maps.glob("*.map.json")))
+        mode = maps.stat().st_mode
+        maps.chmod(0o555)  # no write permission on the directory: every unlink fails
+        try:
+            status, done = self.call("/api/maps/purge", {"confirm": True, "expect": before})
+            self.assertEqual(status, 200, done)
+            self.assertEqual(done["deleted"], 0)
+            self.assertEqual(done["failed"], before)
+            self.assertEqual(len(list(maps.glob("*.map.json"))), before,
+                             "nothing went, and the answer says so")
+        finally:
+            maps.chmod(mode)
+
+    def test_the_reveal_query_needs_its_exact_flag(self) -> None:
+        """`?reveal=1` is a literal, not a truthiness parse: `reveal=0` (or anything else)
+        leaves the near-miss candidates masked exactly as the default does."""
+        status, masked = self.call(
+            "/api/audit-document?reveal=0",
+            None,
+            headers={"X-Filename": "note.txt"},
+            raw="Il cliente Con Toso e mario@contoso.it\n".encode(),
+        )
+        self.assertEqual(status, 200, masked)
+        self.assertFalse(masked["revealed"])
+        for candidate in masked["near_miss"]:
+            self.assertNotIn("token", candidate, "the values travel only behind the exact flag")
+            self.assertNotIn("entity", candidate, "the values travel only behind the exact flag")
+
+        # The exact flag still reveals them — the mask is the default, not the ceiling.
+        status, revealed = self.call(
+            "/api/audit-document?reveal=1",
+            None,
+            headers={"X-Filename": "note.txt"},
+            raw="Il cliente Con Toso e mario@contoso.it\n".encode(),
+        )
+        self.assertEqual(status, 200, revealed)
+        self.assertTrue(revealed["revealed"])
+        self.assertTrue(any("token" in candidate for candidate in revealed["near_miss"]))
 
     def test_entities_can_be_read_and_saved(self) -> None:
         status, data = self.call("/api/entities")

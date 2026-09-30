@@ -30,6 +30,14 @@ anon-tool is a **local** tool. Its whole security value is a boundary, and the b
   in 64 KB blocks: it is already redacted, so a leftover is not a leak, and it is never written next
   to the original. `/api/maps` exposes counts only, and the
   placeholder→real-value mapping is shown only behind an explicit, warned action with a timeout.
+  `/api/audit-document` holds the same line for the redacted file: the upload is converted in a
+  per-request temp directory that is deleted before the answer, the response carries verdict,
+  counts and findings — a line number and a type, never a value — plus the extracted text so the
+  line numbers point at something the operator can see, and the file is never published to the
+  downloads store. `/api/maps/purge` is the perimeter's only deleting endpoint: it requires the
+  explicit confirmation and a count that still matches the store, deletes exactly that counted
+  set (a map created after the count survives; a stale count deletes nothing) and reports how many
+  went.
 - size limits on uploads (160 MB, `ANON_MAX_UPLOAD_BYTES`) and on `/api/*` requests per minute (token bucket,
   `--rate-limit`, default 120/min, 0 disables), no shell, no `eval`, no content or value logging.
 - the socket has a 30 s read timeout, so a client that announces a body and stalls cannot pin a

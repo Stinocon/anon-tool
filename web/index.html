@@ -135,6 +135,20 @@
       </label>
       <h3 class="sub" id="deanon-map-title">Mappa da usare</h3>
       <div id="map-list" class="map-list" role="radiogroup" aria-label="Mappa"></div>
+      <div class="actions" id="maps-purge-row" hidden>
+        <button id="maps-purge" class="danger">Elimina tutte le mappe</button>
+      </div>
+      <div id="maps-purge-confirm" hidden>
+        <p class="warn" id="maps-purge-warn">Senza la sua mappa un documento redatto non torna piu' indietro: l'eliminazione e' irreversibile. Per confermare digita qui sotto il numero esatto di mappe presenti.</p>
+        <label class="inline" for="maps-purge-count"><span id="maps-purge-count-label"></span>
+          <input id="maps-purge-count" inputmode="numeric" autocomplete="off" aria-label="Numero di mappe">
+        </label>
+        <div class="actions">
+          <button id="maps-purge-go" class="danger" disabled>Elimina definitivamente</button>
+          <button id="maps-purge-cancel">Annulla</button>
+          <span id="maps-purge-status" class="status" role="status" aria-live="polite"></span>
+        </div>
+      </div>
       <div class="actions">
         <button id="run-deanon" class="primary" disabled>Ripristina i valori reali</button>
         <span id="deanon-status" class="status" role="status" aria-live="polite"></span>
@@ -162,7 +176,11 @@
       <div id="audit-result" hidden>
         <p class="verdict" id="audit-verdict"></p>
         <div id="audit-types" class="chips"></div>
+        <div id="audit-found" class="report"></div>
         <div id="audit-near" class="report"></div>
+        <div class="actions">
+          <button id="audit-anonymize" class="primary" hidden>Anonimizza ora</button>
+        </div>
       </div>
     </div>
   </section>

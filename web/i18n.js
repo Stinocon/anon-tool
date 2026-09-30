@@ -71,6 +71,13 @@ const EN = {
   "#drop-deanon-title": { inner: "Drop the final document here" },
   "#deanon-map-title": { inner: "Map to use" },
   "#run-deanon": { inner: "Restore the real values" },
+  "#maps-purge": { inner: "Delete every map" },
+  "#maps-purge-warn": {
+    inner:
+      "Without its map a redacted document can never be restored: deleting is irreversible. To confirm, type below the exact number of maps currently present.",
+  },
+  "#maps-purge-go": { inner: "Delete for good" },
+  "#maps-purge-cancel": { inner: "Cancel" },
   "#audit-title": { inner: "Is it really anonymized?" },
   "#audit-intro": {
     inner:
@@ -78,6 +85,7 @@ const EN = {
   },
   "#drop-audit-title": { inner: "Drop the file to check here" },
   "#run-audit": { inner: "Check" },
+  "#audit-anonymize": { inner: "Anonymize now" },
   "#entities-title": { inner: "Custom dictionary" },
   "#entities-format": {
     inner:
@@ -199,6 +207,12 @@ const DYNAMIC = {
     "audit.cappedLabel": "limite scansione",
     "audit.capped": "elenco parziale: la ricerca dei candidati si è fermata ai limiti (400 parole / 200 entità)",
     "audit.placeholders": "{n} presenti — coerente con un documento già redatto",
+    "audit.foundCapped": "mostrati i primi {n}: il totale è nel verdetto",
+    "audit.scannedFile": "verificato dentro il file: le righe si riferiscono al testo estratto, mostrato sopra",
+    "maps.purgeConfirmLabel": "mappe presenti: {n} — digita {n} per confermare",
+    "maps.purged": "{n} mappe eliminate",
+    "maps.purgePartial": "{n} eliminate, {failed} no",
+    "maps.purgeStale": "il numero è cambiato: ora {n} mappe — conferma di nuovo",
     "entities.unsaved": "Ci sono modifiche non salvate: cambiare file le perde. Continuare?",
     "entities.saved": "salvato — {n} entità attive",
     "entities.tooLong": "il server lo rifiuterebbe, quindi non viene caricato. Usa la CLI sul file, o spezzalo.",
@@ -231,7 +245,7 @@ const DYNAMIC = {
     "queue.document": "Scarica il documento redatto",
     "queue.text": "Scarica il testo (.md)",
     "queue.report": "Scarica il report",
-    "maps.truncated": "Mostrate le prime {shown} mappe su {total}. Le più vecchie si ripuliscono con `anon.py --prune-maps <giorni>`.",
+    "maps.truncated": "Mostrate le prime {shown} mappe su {total}. Le più vecchie si ripuliscono con `anon.py --prune-maps <giorni>`; tutte si eliminano dal pannello Ripristina, con conferma.",
   },
   en: {
     options: "Options",
@@ -306,6 +320,12 @@ const DYNAMIC = {
     "audit.cappedLabel": "scan bound",
     "audit.capped": "partial list: the candidate search stopped at its bounds (400 words / 200 entities)",
     "audit.placeholders": "{n} present — consistent with an already redacted document",
+    "audit.foundCapped": "the first {n} are listed: the total is in the verdict",
+    "audit.scannedFile": "checked inside the file: the lines refer to the extracted text, shown above",
+    "maps.purgeConfirmLabel": "maps present: {n} — type {n} to confirm",
+    "maps.purged": "{n} maps deleted",
+    "maps.purgePartial": "{n} deleted, {failed} not",
+    "maps.purgeStale": "the count changed: {n} maps now — confirm again",
     "entities.unsaved": "There are unsaved changes: switching file loses them. Continue?",
     "entities.saved": "saved — {n} active entries",
     "entities.tooLong": "the server would refuse it, so it is not uploaded. Use the CLI on the file, or split it.",
@@ -338,7 +358,7 @@ const DYNAMIC = {
     "queue.document": "Download the redacted document",
     "queue.text": "Download the text (.md)",
     "queue.report": "Download the report",
-    "maps.truncated": "Showing the first {shown} maps of {total}. The older ones are pruned with `anon.py --prune-maps <days>`.",
+    "maps.truncated": "Showing the first {shown} maps of {total}. The older ones are pruned with `anon.py --prune-maps <days>`; every map can be deleted from the Restore panel, with confirmation.",
   },
 };
 

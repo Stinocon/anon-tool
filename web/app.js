@@ -4,7 +4,7 @@
 
 const TOKEN = window.ANON_TOKEN;
 const $ = (id) => document.getElementById(id);
-const state = { maps: [], selectedMap: null, anonFile: null, anonQueue: [], deanonFile: null, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestChunkChars: 0, suggestChunkOverlap: 0, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
+const state = { maps: [], selectedMap: null, anonFile: null, anonQueue: [], deanonFile: null, auditFile: null, purgeExpect: 0, entitiesFile: "entities", entitiesLoaded: "", lastMapId: null, maxUploadBytes: null, suggest: false, suggestMaxChars: null, suggestTimeout: null, suggestChunkChars: 0, suggestChunkOverlap: 0, suggestions: [], version: null, build: null, lastReport: null, lastReportName: "" };
 
 const api = (path, options = {}) =>
   fetch(path, { ...options, headers: { "X-Anon-Token": TOKEN, ...(options.headers || {}) } });
@@ -17,7 +17,13 @@ async function request(path, options) {
   } catch {
     payload = {};
   }
-  if (!response.ok) throw new Error(payload.error || i18n.t("error.request", { status: response.status }));
+  if (!response.ok) {
+    // The payload rides along: a refusal can carry data (the purge refusal carries the fresh
+    // count) that a message string alone cannot.
+    const error = new Error(payload.error || i18n.t("error.request", { status: response.status }));
+    error.payload = payload;
+    throw error;
+  }
   return payload;
 }
 
@@ -403,7 +409,7 @@ function refreshButtons() {
   $("run-anon").disabled = !$("text-anon").value.trim() && !state.anonFile && !state.anonQueue.length;
   $("clear-anon").hidden = !$("text-anon").value && !state.anonFile && !state.anonQueue.length;
   $("run-deanon").disabled = !state.deanonFile || !state.selectedMap;
-  $("run-audit").disabled = !$("text-audit").value.trim();
+  $("run-audit").disabled = !$("text-audit").value.trim() && !state.auditFile;
   $("save-entities").disabled = $("entities-text").value === state.entitiesLoaded;
 }
 
@@ -473,6 +479,9 @@ async function boot() {
 async function loadMaps() {
   const { maps = [], total = maps.length, truncated = false } = await request("/api/maps");
   state.maps = maps;
+  // The purge button rides the listing: it exists only when there is something to delete. Its
+  // confirmation is always armed against the count on disk, never against page state.
+  $("maps-purge-row").hidden = !total;
   const list = $("map-list");
   list.innerHTML = "";
   if (truncated) {
@@ -854,59 +863,110 @@ $("run-deanon").addEventListener("click", async () => {
   }
 });
 
+/* --------------------------------------------------------- pulizia mappe */
+
+/* Deleting every map is the destructive act of this tool: without its map a redacted document
+   is unrestorable forever. The confirmation is THREE steps — arm, type the exact count, send —
+   and the server re-checks the count at deletion time, so a map that appeared in the meantime
+   stops the deletion instead of riding along. */
+function closePurgeConfirm() {
+  $("maps-purge-confirm").hidden = true;
+  $("maps-purge-count").value = "";
+  $("maps-purge-go").disabled = true;
+  state.purgeExpect = 0;
+}
+
+function armPurgeConfirm(total) {
+  state.purgeExpect = total;
+  $("maps-purge-count-label").textContent = i18n.t("maps.purgeConfirmLabel", { n: total });
+  $("maps-purge-count").value = "";
+  $("maps-purge-go").disabled = true;
+  $("maps-purge-confirm").hidden = false;
+  $("maps-purge-count").focus();
+}
+
+$("maps-purge").addEventListener("click", async () => {
+  // The count to confirm is what is on disk NOW: the map list can be capped, the count is not.
+  try {
+    const { total } = await request("/api/maps");
+    if (!total) return;
+    armPurgeConfirm(total);
+  } catch (error) {
+    setStatus($("maps-purge-status"), String(error.message || error), "error");
+  }
+});
+
+$("maps-purge-count").addEventListener("input", () => {
+  $("maps-purge-go").disabled = $("maps-purge-count").value !== String(state.purgeExpect);
+});
+
+$("maps-purge-cancel").addEventListener("click", closePurgeConfirm);
+
+$("maps-purge-go").addEventListener("click", async () => {
+  const button = $("maps-purge-go");
+  show(button, true);
+  try {
+    const result = await request("/api/maps/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true, expect: state.purgeExpect }),
+    });
+    setStatus($("maps-purge-status"),
+      result.failed ? i18n.t("maps.purgePartial", { n: result.deleted, failed: result.failed })
+                    : i18n.t("maps.purged", { n: result.deleted }),
+      result.failed ? "error" : "ok");
+    closePurgeConfirm();
+    await loadMaps();
+  } catch (error) {
+    // A refusal carries the fresh count: re-arm against what is on disk NOW, never guess.
+    if (error.payload && typeof error.payload.count === "number") {
+      setStatus($("maps-purge-status"), i18n.t("maps.purgeStale", { n: error.payload.count }), "error");
+      armPurgeConfirm(error.payload.count);
+    } else {
+      setStatus($("maps-purge-status"), String(error.message || error), "error");
+    }
+  } finally {
+    show(button, false);
+    refreshButtons();
+  }
+});
+
 /* ---------------------------------------------------------------- verifica */
 $("run-audit").addEventListener("click", async () => {
   const button = $("run-audit");
   show(button, true);
   setStatus($("audit-status"), i18n.t("progress.checking"));
   try {
-    const result = await request("/api/audit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: $("text-audit").value,
-        catalogs: selected(".catalog"),
-        patterns: selected(".pattern"),
-        reveal: $("audit-reveal").checked,
-      }),
-    });
-    $("audit-result").hidden = false;
-    const verdict = $("audit-verdict");
-    verdict.className = `verdict ${result.verdict}`;
-    verdict.textContent =
-      result.verdict === "clean"
-        ? i18n.t("audit.clean")
-        : result.verdict === "sensitive"
-          ? i18n.t("audit.sensitive", { n: result.total })
-          : i18n.t("audit.suspect");
-    chips($("audit-types"), result.types);
-
-    const near = $("audit-near");
-    near.innerHTML = "";
-    if (result.candidates_capped) {
-      // The engine stops the near-miss search at a bound (400 words / 200 entities). Said out
-      // loud: a short list would otherwise read as "nothing suspicious" when it is only partial.
-      const row = document.createElement("div");
-      row.className = "row bad";
-      row.innerHTML = `<span class="k">${i18n.t("audit.cappedLabel")}</span><span></span>`;
-      row.lastChild.textContent = i18n.t("audit.capped");
-      near.append(row);
+    let result;
+    if (state.auditFile) {
+      // A document is audited the way `anon.py --audit` audits it: INSIDE the package, on the
+      // same view the rewrite uses. Reading its bytes as text would be binary garbage, not an
+      // audit. The scanned text comes back — it is the user's own content — so the line numbers
+      // of the findings point at something visible.
+      result = await request(`/api/audit-document${$("audit-reveal").checked ? "?reveal=1" : ""}`, {
+        method: "POST",
+        headers: {
+          "X-Filename": state.auditFile.name,
+          "X-Catalogs": selected(".catalog").join(","),
+          "X-Patterns": selected(".pattern").join(","),
+          "Content-Type": "application/octet-stream",
+        },
+        body: state.auditFile,
+      });
+      $("text-audit").value = result.text || "";
+    } else {
+      result = await request("/api/audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: $("text-audit").value,
+          catalogs: selected(".catalog"),
+          patterns: selected(".pattern"),
+          reveal: $("audit-reveal").checked,
+        }),
+      });
     }
-    if (result.placeholders_present) {
-      const row = document.createElement("div");
-      row.className = "row";
-      row.innerHTML = `<span class="k">placeholder</span><span></span>`;
-      row.lastChild.textContent = i18n.t("audit.placeholders", { n: result.placeholders_present });
-      near.append(row);
-    }
-    for (const item of result.near_miss || []) {
-      const row = document.createElement("div");
-      row.className = "row";
-      row.innerHTML = `<span class="k">${i18n.t("audit.line", { n: item.line })}</span><span class="muted">${item.kind} · ${item.type}</span><span></span>`;
-      row.lastChild.textContent = item.token ? `${item.token} ~ ${item.entity}` : item.token_masked;
-      near.append(row);
-    }
-    setStatus($("audit-status"), i18n.t("audit.verdict", { verdict: result.verdict }), result.verdict === "clean" ? "ok" : "");
+    renderAudit(result);
   } catch (error) {
     setStatus($("audit-status"), String(error.message || error), "error");
   } finally {
@@ -914,6 +974,101 @@ $("run-audit").addEventListener("click", async () => {
     refreshButtons();
   }
 });
+
+function renderAudit(result) {
+  $("audit-result").hidden = false;
+  const verdict = $("audit-verdict");
+  verdict.className = `verdict ${result.verdict}`;
+  verdict.textContent =
+    result.verdict === "clean"
+      ? i18n.t("audit.clean")
+      : result.verdict === "sensitive"
+        ? i18n.t("audit.sensitive", { n: result.total })
+        : i18n.t("audit.suspect");
+  chips($("audit-types"), result.types);
+
+  // WHERE, never WHAT: a finding is a line and a type. The value stays in the document the
+  // user is looking at — the server never echoes it, the page never carries it.
+  const found = $("audit-found");
+  found.innerHTML = "";
+  for (const item of result.findings || []) {
+    const row = document.createElement("div");
+    row.className = "row bad";
+    row.innerHTML = `<span class="k">${i18n.t("audit.line", { n: item.line })}</span><span></span>`;
+    row.lastChild.textContent = item.type;
+    found.append(row);
+  }
+  if (result.findings_truncated) {
+    // The list stopped at the cap: the verdict holds the whole count, this says so out loud —
+    // a short list must never read as "that was all of them".
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="k">${i18n.t("audit.cappedLabel")}</span><span></span>`;
+    row.lastChild.textContent = i18n.t("audit.foundCapped", { n: (result.findings || []).length });
+    found.append(row);
+  }
+  if (result.origin && result.origin !== "text") {
+    const row = document.createElement("div");
+    row.className = "row";
+    const k = document.createElement("span");
+    k.className = "k";
+    k.textContent = result.filename || "";
+    const value = document.createElement("span");
+    value.textContent = i18n.t("audit.scannedFile");
+    row.append(k, value);
+    found.append(row);
+  }
+
+  const near = $("audit-near");
+  near.innerHTML = "";
+  if (result.candidates_capped) {
+    // The engine stops the near-miss search at a bound (400 words / 200 entities). Said out
+    // loud: a short list would otherwise read as "nothing suspicious" when it is only partial.
+    const row = document.createElement("div");
+    row.className = "row bad";
+    row.innerHTML = `<span class="k">${i18n.t("audit.cappedLabel")}</span><span></span>`;
+    row.lastChild.textContent = i18n.t("audit.capped");
+    near.append(row);
+  }
+  if (result.placeholders_present) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="k">placeholder</span><span></span>`;
+    row.lastChild.textContent = i18n.t("audit.placeholders", { n: result.placeholders_present });
+    near.append(row);
+  }
+  for (const item of result.near_miss || []) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span class="k">${i18n.t("audit.line", { n: item.line })}</span><span class="muted">${item.kind} · ${item.type}</span><span></span>`;
+    row.lastChild.textContent = item.token ? `${item.token} ~ ${item.entity}` : item.token_masked;
+    near.append(row);
+  }
+
+  // The proposal: what was just audited goes through the SAME anonymize flow — a hand-off,
+  // not a second redaction path.
+  $("audit-anonymize").hidden = result.verdict !== "sensitive";
+  setStatus($("audit-status"), i18n.t("audit.verdict", { verdict: result.verdict }), result.verdict === "clean" ? "ok" : "");
+}
+
+$("audit-anonymize").addEventListener("click", async () => {
+  // A document goes back as a FILE — the anonymize flow rewrites the package in place, and the
+  // extracted text shown in the Verifica tab never becomes the artifact. Text goes as text.
+  if (state.auditFile) {
+    await acceptAnonFile(state.auditFile);
+    if (!state.anonFile) return; // refused (too large): the status already says why
+  } else {
+    state.anonFile = null;
+    state.anonQueue = [];
+    $("file-anon").value = "";
+    $("text-anon").value = $("text-audit").value;
+    renderQueue();
+  }
+  activateTab($("tab-anon"));
+  refreshButtons();
+  $("run-anon").click();
+});
+
 $("audit-reveal").addEventListener("change", () => {
   if (!$("audit-result").hidden) $("run-audit").click();
 });
@@ -1191,12 +1346,29 @@ dropzone($("drop-deanon"), $("file-deanon"), (files) => {
   refreshButtons();
 });
 dropzone($("drop-audit"), $("file-audit"), async (files) => {
-  $("text-audit").value = await files[0].text();
-  setStatus($("audit-status"), i18n.t("file.loaded", { name: files[0].name }), "ok");
+  const file = files[0];
+  if (isDocument(file.name)) {
+    // A document stays a FILE here: the server audits it inside the package (the way
+    // `anon.py --audit` does), and the hand-off to the anonymize flow re-feeds the file —
+    // the package is rewritten in place, its extracted text never becomes the artifact.
+    state.auditFile = file;
+    $("text-audit").value = "";
+    setStatus($("audit-status"), i18n.t("file.ready", { name: file.name }), "ok");
+  } else {
+    state.auditFile = null;
+    $("text-audit").value = await file.text();
+    setStatus($("audit-status"), i18n.t("file.loaded", { name: file.name }), "ok");
+  }
   refreshButtons();
 });
 
-for (const id of ["text-anon", "text-audit"]) $(id).addEventListener("input", refreshButtons);
+$("text-anon").addEventListener("input", refreshButtons);
+$("text-audit").addEventListener("input", () => {
+  // Editing the scanned text turns the audit back into a TEXT audit: the file is no longer what
+  // is on screen, and the hand-off must not re-feed it as a document.
+  state.auditFile = null;
+  refreshButtons();
+});
 $("suggest-text").addEventListener("input", updateSuggestCount);
 $("entities-text").addEventListener("input", refreshButtons);
 document.querySelectorAll(".pattern").forEach((input) => input.addEventListener("change", optionsSummary));

@@ -50,7 +50,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape as _sax_escape
 from typing import Callable, Iterable
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 SCHEMA = "anon/1"  # stable machine contract for every --json output of the suite
 
 ANON_HOME = Path(os.environ.get("ANON_HOME") or (Path.home() / ".anon"))

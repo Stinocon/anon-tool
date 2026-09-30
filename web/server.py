@@ -80,6 +80,7 @@ CONVERT_TIMEOUT_SECONDS = int(os.environ.get("ANON_CONVERT_TIMEOUT") or 300)
 STDERR_KEEP_BYTES = 8192
 DEFAULT_RATE_LIMIT = 120  # requests per minute on /api/*, per process; 0 disables the bucket
 MAP_LIST_LIMIT = 100  # `/api/maps` is capped; the COUNT is not (see `_list_maps`)
+AUDIT_FINDING_LIMIT = 50  # how many findings the audit lists; `findings_truncated` says when there are more
 # The tool ships its own converter; the Pi `docs` skill is used only as a fallback when the
 # tool's own convert.py is missing (older installs).
 def _default_converter() -> Path:
@@ -633,10 +634,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._deanonymize()
             elif path == "/api/audit":
                 self._audit()
+            elif path == "/api/audit-document":
+                self._audit_document()
             elif path == "/api/entities":
                 self._save_entities()
             elif path == "/api/maps/reveal":
                 self._reveal_map()
+            elif path == "/api/maps/purge":
+                self._purge_maps()
             elif path == "/api/suggest":
                 self._suggest()
             elif path == "/api/suggest-stream":
@@ -756,6 +761,37 @@ class Handler(BaseHTTPRequestHandler):
             return []
         return sorted(anon.DEFAULT_MAPS.glob("*.map.json"), reverse=True)
 
+    def _audit_result(self, text: str, entities, families, *, reveal: bool) -> dict:
+        """THE audit semantics, shared by the text endpoint and the document endpoint: verdict,
+        per-type counts, and findings as LINE+TYPE. A finding is a position, never a value — the
+        document is the user's, a line is enough to find what is in it, and the response must not
+        echo what it detected. `findings_truncated` says the list stopped at the cap; `total` is
+        the whole truth."""
+        found = anon.detect(text, entities, families=families)
+        candidates, capped = anon.near_misses(text, entities, found)
+        by_type: dict[str, int] = {}
+        findings: list[dict[str, object]] = []
+        for start, _end, ptype in found:
+            by_type[ptype] = by_type.get(ptype, 0) + 1
+            if len(findings) < AUDIT_FINDING_LIMIT:
+                findings.append({"type": ptype, "line": text.count("\n", 0, start) + 1})
+        candidates = candidates if reveal else [
+            {k: v for k, v in item.items() if k not in ("token", "entity")} for item in candidates
+        ]
+        verdict = "sensitive" if found else ("suspicious" if candidates else "clean")
+        return {
+            "schema": anon.SCHEMA,
+            "verdict": verdict,
+            "total": len(found),
+            "types": by_type,
+            "findings": findings,
+            "near_miss": candidates,
+            "revealed": bool(reveal),
+            "candidates_capped": capped,
+            "placeholders_present": sum(1 for _ in anon.PLACEHOLDER_RE.finditer(text)),
+            "findings_truncated": len(found) > len(findings),
+        }
+
     def _list_maps(self, paths: list[Path], limit: int | None = MAP_LIST_LIMIT) -> list[dict]:
         """Metadata only: the map holds the REAL values and must not travel on a list call.
 
@@ -873,33 +909,91 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(text, str):
             raise ValueError("no text")
         entities, families = _resolve(payload.get("catalogs"), payload.get("patterns"))
-        found = anon.detect(text, entities, families=families)
-        candidates, capped = anon.near_misses(text, entities, found)
-        reveal = bool(payload.get("reveal"))
-        by_type: dict[str, int] = {}
-        findings = []
-        for start, _end, ptype in found:
-            by_type[ptype] = by_type.get(ptype, 0) + 1
-            if len(findings) < 50:
-                findings.append({"type": ptype, "line": text.count("\n", 0, start) + 1})
-        candidates = candidates if reveal else [
-            {k: v for k, v in item.items() if k not in ("token", "entity")} for item in candidates
-        ]
-        verdict = "sensitive" if found else ("suspicious" if candidates else "clean")
-        self._json(
-            {
-                "schema": anon.SCHEMA,
-                "verdict": verdict,
-                "total": len(found),
-                "types": by_type,
-                "findings": findings,
-                "near_miss": candidates,
-                "revealed": reveal,
-                "candidates_capped": capped,
-                "placeholders_present": sum(1 for _ in anon.PLACEHOLDER_RE.finditer(text)),
-                "findings_truncated": len(found) > len(findings),
-            }
-        )
+        self._json(self._audit_result(text, entities, families,
+                                       reveal=bool(payload.get("reveal"))))
+
+    def _audit_document(self) -> None:
+        """`anon.py file --audit`, from the Verifica dropzone: the same question answered INSIDE
+        the package — a .docx read as raw bytes is binary garbage, not an audit. Containers are
+        scanned with the same view the rewrite uses, so "sensitive" means the same thing it means
+        there; a PDF is audited on the same Markdown a PDF redaction is based on; anything else
+        binary is refused with the honest answer. The scanned text travels back — it is the user's
+        own content — so the line numbers of the findings point at something the user can see."""
+        raw = self._read_body()
+        if not raw:
+            raise ValueError("empty upload")
+        filename = Path(self.headers.get("X-Filename") or "upload.bin").name
+        catalogs = self.headers.get("X-Catalogs")
+        patterns = self.headers.get("X-Patterns")
+        work = Path(tempfile.mkdtemp(prefix="anon-web-"))
+        try:
+            source = work / filename
+            source.write_bytes(raw)
+            entities, families = _resolve(catalogs, patterns)
+            kind = anon.sniff(source)
+            inside_container = False
+            if kind == "image":
+                raise ValueError("an image cannot be audited: its pixels are not scannable")
+            if kind == "binary":
+                raise ValueError(f"{filename} is binary — convert it to Markdown first")
+            if kind == "container":
+                try:
+                    text = anon.container_text(source, max_total=anon.SCAN_MAX_BYTES)
+                    inside_container = True
+                    origin = "container"
+                except (anon.UnreadableContainer, OSError, zipfile.BadZipFile):
+                    if not _is_pdf(source):
+                        raise ValueError(
+                            f"{filename} is binary, or a container that cannot be read as a "
+                            "package — convert it to Markdown first"
+                        ) from None
+                    # A PDF cannot be scanned part by part: the Markdown conversion is what a
+                    # PDF redaction is based on, so that is what its audit checks.
+                    text = _convert_to_markdown(source)
+                    origin = "converted"
+            else:
+                text = source.read_text(errors="replace")
+                origin = "text"
+            result = self._audit_result(text, entities, families, reveal=self._reveal_wanted())
+            result.update({"filename": filename, "origin": origin,
+                           "container": inside_container, "text": text})
+            with LOCK:
+                STATE["jobs"] += 1
+            self._json(result)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _reveal_wanted(self) -> bool:
+        """A raw upload carries the reveal flag in the query string (`?reveal=1`): the same
+        meaning as the text audit's checkbox — the near-miss candidates, never the values."""
+        return "reveal=1" in self.path.split("?", 1)[-1]
+
+    def _purge_maps(self) -> None:
+        """Delete EVERY reversible map — the destructive act of this tool: without its map a
+        redacted document is unrestorable forever. Nothing moves without an explicit `confirm`,
+        and the `expect` count must match what is on disk: the user confirmed the set they SAW,
+        so a map that appeared meanwhile must stop the deletion, not ride along. On a match
+        exactly the counted set goes — a map created during the deletion survives, and comes
+        back in the listing with its own line."""
+        payload = self._read_json()
+        if payload.get("confirm") is not True:
+            raise ValueError("deleting every map needs an explicit confirmation")
+        expect = payload.get("expect")
+        maps = self._map_files()
+        if type(expect) is not int or expect != len(maps):
+            # A refusal, not a guess: the fresh count goes back so the confirmation can be
+            # re-armed against what is on disk NOW. Nothing is deleted.
+            self._json({"error": "the map count changed: confirm the new count",
+                        "count": len(maps)}, status=400)
+            return
+        deleted = failed = 0
+        for path in maps:
+            try:
+                path.unlink(missing_ok=True)
+                deleted += 1
+            except OSError:
+                failed += 1
+        self._json({"deleted": deleted, "failed": failed})
 
     def _save_entities(self) -> None:
         name, target = _dictionary_path(self._query().get("file"))

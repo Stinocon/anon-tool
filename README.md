@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>v2.0.0</strong> — <a href="CHANGELOG.md">changelog</a>
+  <strong>v2.1.0</strong> — <a href="CHANGELOG.md">changelog</a>
 </p>
 
 ---
@@ -181,6 +181,19 @@ place: it is rebuilt as a **new text-only PDF** (layout not preserved, and the p
 the Markdown, both from the same map. A package the engine cannot open falls back to the Markdown
 alone and says so. The reason not to redact the two
 independently: the same placeholder would end up meaning two different values.
+
+**Verifica** asks the `--audit` question where the file is. The dropzone takes the redacted
+document itself: the tab shows the extracted text and answers with the verdict, the per-type counts
+and each finding as a line number and a type — a position, never a value. The list stops at the
+first 50 findings and says so; the verdict counts them all. When the verdict is `sensitive`,
+**Anonimizza ora** hands the same file to the anonymize flow — one redaction path, no second copy of
+the text left around.
+
+The **Deanonimizza** tab can also empty the store. **Elimina tutte le mappe** is the one
+destructive act in the UI, and it asks twice: the operator must type the exact number of maps
+present, and the server re-counts at deletion time — a stale number is refused with the fresh count
+and deletes nothing, and a map created in between was never in the counted set. The deletion never
+matches a pattern: it acts on exactly the files it counted.
 
 `make up | down | logs | native | test | smoke` wraps the same operations.
 

@@ -108,6 +108,7 @@ def main() -> int:
     claim("converter timeout", rf"{server.CONVERT_TIMEOUT_SECONDS} s, `ANON_CONVERT_TIMEOUT`", "SECURITY.md")
     claim("rate limit (README)", rf"default {server.DEFAULT_RATE_LIMIT}/min", "README.md")
     claim("rate limit (SECURITY)", rf"default {server.DEFAULT_RATE_LIMIT}/min", "SECURITY.md")
+    claim("audit finding cap", rf"first {server.AUDIT_FINDING_LIMIT} findings", "README.md")
 
     # 5. the near-miss bounds, as told to the user. The wording moved into the language table with
     # the bilingual interface, and it exists in BOTH languages: binding only one would let the other

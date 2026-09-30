@@ -111,6 +111,14 @@ adversary it addresses, someone who already reads that filesystem, while breakin
 the tool is built on. The threat it *does* address — the store copied to another disk, lost with a
 laptop, sent to a NAS — is the backup's job.
 
+**On the way out by deletion: counted, never patterned.** Maps leave by age (`anon.py
+--prune-maps 90`, one unattended deletion) or all at once, from the UI, behind two gates. The bulk
+purge never expands a pattern over `maps/`: the server lists the files, the operator confirms by
+typing that count back, and the request must carry a count that still matches the store — the
+deletion acts on exactly that snapshot, so a map created in between survives (the engine's own
+included, if it is writing one at that moment) and a stale count deletes nothing and reports the
+fresh number.
+
 **On the way out: verified.** `scripts/anon-home-backup.sh` writes an AES-256-CBC/PBKDF2 archive and
 then reads it back: decryption, a member audit (every entry a plain relative file), a sha256 per file
 against a manifest carried *inside* the archive, and the file count against the manifest's line

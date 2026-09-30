@@ -8,7 +8,26 @@ The product version is single-sourced: it lives in `anon.py` (`VERSION`), and `d
 UI and `--version` all report it. `tests/test_anon.py::CliTest::test_product_version_is_single_sourced`
 enforces that they agree.
 
-## [Unreleased]
+## [2.1.0] - 2026-09-30
+
+### Added
+
+- **The Verifica tab says where.** The `sensitive` verdict used to stop at a count: the server
+  had the findings (line + type, never the value — that invariant stays), the page dropped them.
+  The findings are now listed under the verdict, a capped list says so, and the verdict is no
+  longer the end of the conversation: **Anonimizza ora** hands what was just audited to the SAME
+  anonymize flow — a document as a file (the package is rewritten in place), text as text.
+- **The Verifica tab answers inside a package.** A dropped .docx/.xlsx/.pptx/.odt/.pdf used to
+  be read as raw bytes — binary garbage, not an audit. `/api/audit-document` scans a container
+  with the same view the rewrite uses (the way `anon.py --audit` does), a PDF on the Markdown its
+  redaction is based on, and the extracted text comes back so the line numbers point at something
+  visible. Images and other binaries are refused with the honest answer.
+- **Every map can be deleted from the Restore panel.** `~/.anon/maps` grows one map per run and
+  nothing could remove them but the CLI (`--prune-maps`). The **Elimina tutte le mappe** button
+  is a three-step confirmation: arm against the live count, type that exact count, send — and
+  the server re-checks the count at deletion time, so a map that appeared in the meantime stops
+  the deletion instead of riding along. `/api/maps/purge` refuses a missing `confirm` and a
+  stale `expect`, and deletes exactly the counted set.
 
 ### Fixed
 
